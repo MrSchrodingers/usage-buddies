@@ -20,7 +20,30 @@ from collections import defaultdict
 CLAUDE_DIR = Path.home() / ".claude"
 OUTPUT_FILE = CLAUDE_DIR / "widget-data.json"
 STATUS_CACHE_FILE = CLAUDE_DIR / "widget-status-prev.json"
+EVENTS_STATE_FILE = CLAUDE_DIR / "widget-events-state.json"
 CONFIG_FILE = CLAUDE_DIR / "widget-config.json"
+
+# Defaults para os 4 eventos de uso.
+# - sound: nome freedesktop (Linux/macOS via paplay) ou caminho absoluto.
+# - winSound: System.Media.SystemSounds equivalente no Windows.
+USAGE_EVENT_DEFAULTS = {
+    "sessionEnded": {"sound": "dialog-warning",    "winSound": "Exclamation",
+                     "urgency": "normal",
+                     "title": "Sessão Claude esgotada",
+                     "body": "A janela de 5h atingiu 100%."},
+    "sessionReset": {"sound": "complete",          "winSound": "Asterisk",
+                     "urgency": "low",
+                     "title": "Sessão Claude renovada",
+                     "body": "A janela de 5h foi resetada."},
+    "weeklyEnded":  {"sound": "phone-outgoing-busy","winSound": "Hand",
+                     "urgency": "critical",
+                     "title": "Limite semanal Claude esgotado",
+                     "body": "A janela de 7 dias atingiu 100%."},
+    "weeklyReset":  {"sound": "service-login",     "winSound": "Asterisk",
+                     "urgency": "normal",
+                     "title": "Limite semanal Claude renovado",
+                     "body": "A janela de 7 dias foi resetada."},
+}
 
 # Anthropic pricing (per 1M tokens) — May 2025 public prices
 PRICING = {
@@ -951,6 +974,258 @@ def notify_status_change(new_status):
         )
     except Exception:
         pass
+
+
+_FREEDESKTOP_SOUND_DIRS = [
+    "/usr/share/sounds/freedesktop/stereo",
+    "/usr/share/sounds/freedesktop",
+    "/usr/share/sounds/gnome/default/alerts",  # fallback Ubuntu/GNOME
+]
+
+# Players cross-platform tentados em ordem (primeiro disponível vence)
+_LINUX_PLAYERS = ["paplay", "pw-play", "aplay", "ffplay", "play"]
+
+
+def _which(cmd):
+    import shutil
+    return shutil.which(cmd)
+
+
+def _resolve_sound_path(sound_spec):
+    """Resolve nome freedesktop para caminho .oga/.ogg/.wav.
+    Retorna spec original se já for caminho válido, ou None."""
+    if not sound_spec:
+        return None
+    p = Path(sound_spec)
+    if p.is_absolute() or "/" in sound_spec or "\\" in sound_spec:
+        return str(p) if p.exists() else None
+    for d in _FREEDESKTOP_SOUND_DIRS:
+        for ext in (".oga", ".ogg", ".wav"):
+            cand = Path(d) / f"{sound_spec}{ext}"
+            if cand.exists():
+                return str(cand)
+    return None
+
+
+def _play_event_sound(sound_spec, win_sound=None):
+    """Toca som de forma cross-platform. Fire-and-forget."""
+    import subprocess
+    import platform
+
+    system = platform.system()
+
+    if system == "Windows":
+        # PowerShell + System.Media.SystemSounds (sempre disponível)
+        win_name = win_sound or "Asterisk"
+        ps_cmd = f"[System.Media.SystemSounds]::{win_name}.Play(); Start-Sleep -Milliseconds 600"
+        try:
+            subprocess.Popen(
+                ["powershell", "-NoProfile", "-Command", ps_cmd],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as e:
+            print(f"warn: falha ao tocar som Windows '{win_name}': {e}", file=sys.stderr)
+        return
+
+    if system == "Darwin":  # macOS
+        path = _resolve_sound_path(sound_spec) or f"/System/Library/Sounds/{sound_spec}.aiff"
+        if not Path(path).exists():
+            path = "/System/Library/Sounds/Glass.aiff"
+        try:
+            subprocess.Popen(["afplay", path],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+        except Exception as e:
+            print(f"warn: falha ao tocar som macOS: {e}", file=sys.stderr)
+        return
+
+    # Linux: tenta paplay/pw-play/aplay no arquivo resolvido; fallback canberra
+    path = _resolve_sound_path(sound_spec)
+    cmd = None
+    if path:
+        for player in _LINUX_PLAYERS:
+            if _which(player):
+                cmd = [player, path]
+                break
+    if cmd is None and _which("canberra-gtk-play"):
+        cmd = ["canberra-gtk-play", "-i", sound_spec]
+    if cmd is None:
+        print(f"warn: nenhum player de áudio encontrado para '{sound_spec}'", file=sys.stderr)
+        return
+    try:
+        subprocess.Popen(cmd,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    except Exception as e:
+        print(f"warn: falha ao tocar som '{sound_spec}': {e}", file=sys.stderr)
+
+
+def _load_events_state():
+    if not EVENTS_STATE_FILE.exists():
+        return None
+    try:
+        return json.loads(EVENTS_STATE_FILE.read_text())
+    except Exception:
+        return None
+
+
+def _save_events_state(state):
+    try:
+        EVENTS_STATE_FILE.write_text(json.dumps(state, indent=2))
+        try:
+            os.chmod(EVENTS_STATE_FILE, 0o600)
+        except OSError:
+            pass
+    except Exception as e:
+        print(f"warn: falha ao gravar events state: {e}", file=sys.stderr)
+
+
+def detect_usage_transitions(prev_state, curr_data):
+    """Função pura: compara snapshot anterior com dados atuais e retorna
+    a lista de IDs de eventos disparados ('sessionEnded', 'sessionReset',
+    'weeklyEnded', 'weeklyReset'). Também devolve o snapshot novo."""
+    rate_limits = curr_data.get("rateLimits") or {}
+    scopes = {
+        "session":   ("sessionEnded",  "sessionReset"),
+        "weeklyAll": ("weeklyEnded",   "weeklyReset"),
+    }
+
+    events = []
+    new_snapshot = {"lastRun": datetime.now(timezone.utc).isoformat()}
+
+    for scope_key, (ended_id, reset_id) in scopes.items():
+        curr = rate_limits.get(scope_key) or {}
+        curr_pct = curr.get("percentUsed")
+        curr_reset = curr.get("resetsAt") or ""
+
+        prev_scope = (prev_state or {}).get(scope_key) or {}
+        prev_pct = prev_scope.get("percentUsed")
+        prev_reset = prev_scope.get("resetsAt") or ""
+
+        # ACABOU: 1ª execução já em 100%, ou transição de <100 para >=100
+        if curr_pct is not None and curr_pct >= 100:
+            if prev_pct is None or prev_pct < 100:
+                events.append(ended_id)
+
+        # RESETOU: resetsAt avançou claramente E havia uso significativo antes
+        if prev_reset and curr_reset:
+            try:
+                p = parse_timestamp(prev_reset)
+                c = parse_timestamp(curr_reset)
+                if p and c and (c - p) > timedelta(hours=1) and (prev_pct or 0) > 5:
+                    events.append(reset_id)
+            except Exception:
+                pass
+
+        new_snapshot[scope_key] = {
+            "percentUsed": curr_pct,
+            "resetsAt": curr_reset,
+        }
+
+    return events, new_snapshot
+
+
+def _notify_desktop(title, body, urgency, icon="claude-logo", app_name="Claude Usage"):
+    """Envia notificação visual cross-platform."""
+    import subprocess
+    import platform
+
+    system = platform.system()
+
+    if system == "Linux":
+        if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+            return
+        if not _which("notify-send"):
+            return
+        try:
+            subprocess.run(
+                ["notify-send", "--urgency", urgency,
+                 "--icon", icon, "--app-name", app_name, title, body],
+                check=False, timeout=5,
+            )
+        except Exception as e:
+            print(f"warn: notify-send falhou: {e}", file=sys.stderr)
+        return
+
+    if system == "Windows":
+        # Toast nativo via PowerShell (sem dependências externas)
+        # Escape de aspas simples para PowerShell
+        t = title.replace("'", "''")
+        b = body.replace("'", "''")
+        ps_cmd = (
+            "[reflection.assembly]::loadwithpartialname('System.Windows.Forms') | Out-Null;"
+            "[reflection.assembly]::loadwithpartialname('System.Drawing') | Out-Null;"
+            "$n = New-Object System.Windows.Forms.NotifyIcon;"
+            "$n.Icon = [System.Drawing.SystemIcons]::Information;"
+            "$n.BalloonTipTitle = '" + t + "';"
+            "$n.BalloonTipText  = '" + b + "';"
+            "$n.Visible = $true;"
+            "$n.ShowBalloonTip(8000);"
+            "Start-Sleep -Seconds 9;"
+            "$n.Dispose();"
+        )
+        try:
+            subprocess.Popen(
+                ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_cmd],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as e:
+            print(f"warn: notificação Windows falhou: {e}", file=sys.stderr)
+        return
+
+    if system == "Darwin":
+        try:
+            subprocess.run(
+                ["osascript", "-e",
+                 f'display notification "{body}" with title "{title}"'],
+                check=False, timeout=5,
+            )
+        except Exception as e:
+            print(f"warn: notificação macOS falhou: {e}", file=sys.stderr)
+
+
+def notify_usage_event(event_id, config):
+    """Dispara som + notificação visual para um evento de uso."""
+    defaults = USAGE_EVENT_DEFAULTS.get(event_id)
+    if not defaults:
+        return
+
+    sounds_cfg = (config.get("notifications") or {}).get("sounds") or {}
+    sound = sounds_cfg.get(event_id, defaults["sound"])
+    win_sound = sounds_cfg.get(event_id + "Win", defaults.get("winSound"))
+
+    _play_event_sound(sound, win_sound=win_sound)
+    _notify_desktop(defaults["title"], defaults["body"], defaults["urgency"])
+
+
+def process_usage_events(curr_data, config):
+    """Ponto de entrada chamado pelo main(): detecta transições, dispara,
+    grava novo snapshot. Respeita notifications.enabled (default True)."""
+    notif_cfg = config.get("notifications") or {}
+    if notif_cfg.get("enabled", True) is False:
+        return
+
+    prev_state = _load_events_state()
+    events, new_snapshot = detect_usage_transitions(prev_state, curr_data)
+    for ev in events:
+        notify_usage_event(ev, config)
+    _save_events_state(new_snapshot)
+
+
+def run_test_sounds(config):
+    """Toca os 4 sons em sequência (sem notificação, sem mexer em estado)."""
+    import time
+    sounds_cfg = (config.get("notifications") or {}).get("sounds") or {}
+    order = ["sessionEnded", "sessionReset", "weeklyEnded", "weeklyReset"]
+    for ev in order:
+        sound = sounds_cfg.get(ev, USAGE_EVENT_DEFAULTS[ev]["sound"])
+        win_sound = sounds_cfg.get(ev + "Win", USAGE_EVENT_DEFAULTS[ev].get("winSound"))
+        print(f"▶ {ev} → {sound}")
+        _play_event_sound(sound, win_sound=win_sound)
+        time.sleep(1.5)
+    print("OK: 4 sons testados.")
 
 
 def detect_adaptive_thinking():
@@ -2080,6 +2355,10 @@ def main():
         run_health_check()
         return  # unreachable (run_health_check exits), but explicit
 
+    if "--test-sounds" in sys.argv:
+        run_test_sounds(load_config())
+        return
+
     try:
         data = build_widget_data()
 
@@ -2107,6 +2386,13 @@ def main():
             os.chmod(OUTPUT_FILE, 0o600)
         except OSError:
             pass
+
+        # Notificações + sons em transições de sessão/semanal
+        try:
+            process_usage_events(data, load_config())
+        except Exception as e:
+            print(f"warn: process_usage_events falhou: {e}", file=sys.stderr)
+
         if "--verbose" in sys.argv:
             print(json.dumps(data, indent=2))
         else:
