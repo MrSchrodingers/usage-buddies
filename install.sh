@@ -199,6 +199,14 @@ install_collector() {
     else
         fail "Failed to copy collector to $COLLECTOR" "Check write permissions on ~/.local/bin/"
     fi
+
+    # Helper that persists the panel display mode chosen in the widget popup.
+    local mode_helper="$HOME/.local/bin/claude-set-display-mode.sh"
+    if cp "$REPO_DIR/scripts/set-display-mode.sh" "$mode_helper" && chmod +x "$mode_helper"; then
+        ok "Display-mode helper installed: $mode_helper"
+    else
+        warn "Failed to copy display-mode helper" "Panel mode switcher button will be inert until copied to $mode_helper"
+    fi
 }
 
 install_timer() {

@@ -1853,6 +1853,7 @@ def build_rate_limits():
             "weeklyAll": {
                 "percentUsed": seven_day.get("utilization", 0) or 0,
                 "resetsLabel": weekly_reset_label,
+                "resetsAt": seven_day.get("resets_at", ""),
             },
             "weeklySonnet": {
                 "percentUsed": sonnet_payload.get("utilization", 0) or 0,
@@ -1988,7 +1989,10 @@ def build_widget_data():
     cc_version = get_claude_code_version()
 
     # New signals (all best-effort — degrade to empty when data is missing)
-    settings_summary = read_claude_settings_summary()
+    settings_summary = read_claude_settings_summary() or {}
+    # Inject displayMode from widget-config.json so the QML can read it
+    widget_cfg = load_config()
+    settings_summary["displayMode"] = widget_cfg.get("displayMode", "full")
     mcp_auth_pending = read_mcp_auth_pending()
     tool_use = calculate_tool_use()
     compaction = calculate_compaction_events()
