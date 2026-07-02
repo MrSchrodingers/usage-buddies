@@ -115,7 +115,11 @@ def parse_timestamp(ts):
 def parse_sessions_in_window(cutoff_utc, end_utc=None):
     """Parse JSONL session files for records within a time window.
 
-    Returns: (model_tokens, sessions_list, message_count, sonnet_only_tokens)
+    Returns: (model_tokens, sessions_list, message_count, per_model_tokens)
+
+    per_model_tokens is a dict keyed by family ("sonnet", "opus", "fable"),
+    each value a defaultdict of token counters — so weekly per-model quotas can
+    be estimated locally when the claude.ai API is unavailable.
     """
     if end_utc is None:
         end_utc = datetime.now(timezone.utc)
@@ -123,9 +127,14 @@ def parse_sessions_in_window(cutoff_utc, end_utc=None):
     model_tokens = defaultdict(lambda: {
         "input": 0, "output": 0, "cache_read": 0, "cache_create": 0
     })
-    sonnet_tokens = defaultdict(lambda: {
-        "input": 0, "output": 0, "cache_read": 0, "cache_create": 0
-    })
+    # Per-family buckets. Keys match the family substring matched in the model
+    # id; consumers read per_model_tokens["opus"] etc.
+    per_model_tokens = {
+        family: defaultdict(lambda: {
+            "input": 0, "output": 0, "cache_read": 0, "cache_create": 0
+        })
+        for family in ("sonnet", "opus", "fable")
+    }
     sessions = []
     session_set = set()
     total_messages = 0
@@ -202,12 +211,17 @@ def parse_sessions_in_window(cutoff_utc, end_utc=None):
                         model_tokens[model]["cache_read"] += cr
                         model_tokens[model]["cache_create"] += cc
 
-                        # Track Sonnet-only usage
-                        if "sonnet" in model.lower():
-                            sonnet_tokens[model]["input"] += inp
-                            sonnet_tokens[model]["output"] += out
-                            sonnet_tokens[model]["cache_read"] += cr
-                            sonnet_tokens[model]["cache_create"] += cc
+                        # Track per-family usage (Sonnet/Opus/Fable) so the
+                        # local-estimate path can populate weekly per-model bars.
+                        ml = model.lower()
+                        for family in ("sonnet", "opus", "fable"):
+                            if family in ml:
+                                bucket = per_model_tokens[family][model]
+                                bucket["input"] += inp
+                                bucket["output"] += out
+                                bucket["cache_read"] += cr
+                                bucket["cache_create"] += cc
+                                break
 
                 if session_has_window and not is_subagent:
                     sid = jsonl_file.stem
@@ -223,7 +237,12 @@ def parse_sessions_in_window(cutoff_utc, end_utc=None):
         except (PermissionError, OSError):
             continue
 
-    return dict(model_tokens), sessions, total_messages, dict(sonnet_tokens)
+    return (
+        dict(model_tokens),
+        sessions,
+        total_messages,
+        {family: dict(buckets) for family, buckets in per_model_tokens.items()},
+    )
 
 
 def compute_window_cost(model_tokens):
@@ -1870,6 +1889,9 @@ def build_rate_limits():
         weekly_opus = _weekly_block(api_data.get("seven_day_opus"))
         if weekly_opus:
             result["weeklyOpus"] = weekly_opus
+        weekly_fable = _weekly_block(api_data.get("seven_day_fable"))
+        if weekly_fable:
+            result["weeklyFable"] = weekly_fable
         # "omelette" is Anthropic's internal codename for the Claude Design surface.
         weekly_design = _weekly_block(api_data.get("seven_day_omelette"))
         if weekly_design:
@@ -1881,6 +1903,30 @@ def build_rate_limits():
         weekly_cowork = _weekly_block(api_data.get("seven_day_cowork"))
         if weekly_cowork:
             result["weeklyCowork"] = weekly_cowork
+
+        # New unified `limits` array (2026 schema). The legacy seven_day_* fields
+        # are being deprecated to null; per-model weekly quotas now arrive as
+        # entries with kind "weekly_scoped" and scope.model.display_name. Map each
+        # known model to its rateLimits.weekly<Model> block so the widget shows a
+        # bar whenever the API reports that model — regardless of which schema
+        # populated it. Values here take precedence over the (null) legacy fields.
+        MODEL_FIELD = {"opus": "weeklyOpus", "sonnet": "weeklySonnet",
+                       "fable": "weeklyFable", "haiku": "weeklyHaiku"}
+        for entry in (api_data.get("limits") or []):
+            if entry.get("kind") != "weekly_scoped":
+                continue
+            model = ((entry.get("scope") or {}).get("model") or {})
+            name = (model.get("display_name") or "").strip().lower()
+            # Substring match: display_name may be the bare family ("Fable")
+            # or a full model name ("Claude Fable 5") depending on API version.
+            field = next((f for k, f in MODEL_FIELD.items() if k in name), None)
+            if not field:
+                continue
+            d = parse_timestamp(entry.get("resets_at", ""))
+            result[field] = {
+                "percentUsed": entry.get("percent", 0) or 0,
+                "resetsLabel": d.strftime("%a %I:%M %p") if d else "",
+            }
 
         # Inline extra_usage summary (the `usage` endpoint also carries a quick
         # snapshot; the full shape lives under overage_spend_limit below).
@@ -1921,13 +1967,21 @@ def build_rate_limits():
     five_h_output = compute_window_output_tokens(five_h_tokens)
 
     week_cutoff = now - timedelta(days=7)
-    week_tokens, _, _, week_sonnet = parse_sessions_in_window(week_cutoff, now)
+    week_tokens, _, _, week_per_model = parse_sessions_in_window(week_cutoff, now)
     week_output = compute_window_output_tokens(week_tokens)
-    week_sonnet_output = compute_window_output_tokens(week_sonnet)
+    week_sonnet_output = compute_window_output_tokens(week_per_model.get("sonnet", {}))
+    week_opus_output = compute_window_output_tokens(week_per_model.get("opus", {}))
+    week_fable_output = compute_window_output_tokens(week_per_model.get("fable", {}))
 
     SESSION_LIMIT = 4_000_000
     WEEKLY_ALL_LIMIT = 40_000_000
     WEEKLY_SONNET_LIMIT = 80_000_000
+    # Opus is the scarcest quota on Max plans; Fable shares Sonnet-class limits.
+    WEEKLY_OPUS_LIMIT = 20_000_000
+    WEEKLY_FABLE_LIMIT = 80_000_000
+
+    def _weekly_pct(output_tokens, limit):
+        return round(min(100, output_tokens / limit * 100), 1)
 
     return {
         "session": {
@@ -1936,11 +1990,19 @@ def build_rate_limits():
             "windowHours": 5,
         },
         "weeklyAll": {
-            "percentUsed": round(min(100, week_output / WEEKLY_ALL_LIMIT * 100), 1),
+            "percentUsed": _weekly_pct(week_output, WEEKLY_ALL_LIMIT),
             "resetsLabel": "",
         },
         "weeklySonnet": {
-            "percentUsed": round(min(100, week_sonnet_output / WEEKLY_SONNET_LIMIT * 100), 1),
+            "percentUsed": _weekly_pct(week_sonnet_output, WEEKLY_SONNET_LIMIT),
+            "resetsLabel": "",
+        },
+        "weeklyOpus": {
+            "percentUsed": _weekly_pct(week_opus_output, WEEKLY_OPUS_LIMIT),
+            "resetsLabel": "",
+        },
+        "weeklyFable": {
+            "percentUsed": _weekly_pct(week_fable_output, WEEKLY_FABLE_LIMIT),
             "resetsLabel": "",
         },
         "plan": "Max (20x)",
@@ -1990,9 +2052,6 @@ def build_widget_data():
 
     # New signals (all best-effort — degrade to empty when data is missing)
     settings_summary = read_claude_settings_summary() or {}
-    # Inject displayMode from widget-config.json so the QML can read it
-    widget_cfg = load_config()
-    settings_summary["displayMode"] = widget_cfg.get("displayMode", "full")
     mcp_auth_pending = read_mcp_auth_pending()
     tool_use = calculate_tool_use()
     compaction = calculate_compaction_events()
