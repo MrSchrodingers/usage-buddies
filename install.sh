@@ -199,14 +199,6 @@ install_collector() {
     else
         fail "Failed to copy collector to $COLLECTOR" "Check write permissions on ~/.local/bin/"
     fi
-
-    # Helper that persists the panel display mode chosen in the widget popup.
-    local mode_helper="$HOME/.local/bin/claude-set-display-mode.sh"
-    if cp "$REPO_DIR/scripts/set-display-mode.sh" "$mode_helper" && chmod +x "$mode_helper"; then
-        ok "Display-mode helper installed: $mode_helper"
-    else
-        warn "Failed to copy display-mode helper" "Panel mode switcher button will be inert until copied to $mode_helper"
-    fi
 }
 
 install_timer() {
@@ -253,6 +245,7 @@ install_plasmoid() {
     mkdir -p "$PLASMOID_DIR/contents/"{ui,icons,config}
     cp "$REPO_DIR/plasmoid/metadata.json" "$PLASMOID_DIR/"
     cp "$REPO_DIR/plasmoid/contents/ui/main.qml" "$PLASMOID_DIR/contents/ui/"
+    cp "$REPO_DIR/plasmoid/contents/config/"* "$PLASMOID_DIR/contents/config/"
     if compgen -G "$REPO_DIR/plasmoid/contents/icons/*" > /dev/null 2>&1; then
         cp "$REPO_DIR/plasmoid/contents/icons/"* "$PLASMOID_DIR/contents/icons/"
     fi
