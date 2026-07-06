@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Claude Usage</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <!-- Topo -->
+      <header class="topbar">
+        <div class="brand">
+          <span class="live-dot" title="ao vivo"></span>
+          <span class="brand-name">Claude</span>
+        </div>
+        <div class="top-right">
+          <span class="level-pill" id="level">—</span>
+          <button class="collapse-btn" id="collapseBtn" title="Minimizar" aria-label="Minimizar">
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <path d="M4 8 h8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- Herói: mascote + ring de sessão -->
+      <section class="hero card">
+        <div class="mascot-wrap">
+          <div class="mascot-container" id="mascotContainer">
+            <img class="clawd" id="clawd" src="/sprites/clawd.svg" alt="Clawd" />
+            <img class="mascot-sprite" id="mascot" alt="" />
+          </div>
+          <span class="mascot-label" id="mascotLabel">—</span>
+        </div>
+
+        <div class="ring-wrap">
+          <svg class="ring" viewBox="0 0 120 120" aria-hidden="true">
+            <circle class="ring-bg" cx="60" cy="60" r="52" />
+            <circle class="ring-fg" id="ringFg" cx="60" cy="60" r="52" />
+          </svg>
+          <div class="ring-center">
+            <span class="pct" id="sessionPct">—</span>
+            <span class="ring-sub">sessão 5h</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Countdown -->
+      <div class="countdown-row">
+        <span class="cd" id="countdown">--:--:--</span>
+        <span class="cd-label">até resetar a janela de sessão</span>
+      </div>
+
+      <!-- Limites semanais -->
+      <section class="card">
+        <h2 class="card-title">Limites semanais</h2>
+        <div class="bars" id="weeklyBars"></div>
+      </section>
+
+      <!-- Atividade (tiles) -->
+      <section class="card">
+        <h2 class="card-title">Atividade</h2>
+        <div class="tiles">
+          <div class="tile">
+            <span class="tile-val" id="burn">—</span>
+            <span class="tile-lbl">tokens/h saída</span>
+          </div>
+          <div class="tile">
+            <span class="tile-val" id="errors">—</span>
+            <span class="tile-lbl">erros 2h</span>
+          </div>
+          <div class="tile">
+            <span class="tile-val" id="latency">—</span>
+            <span class="tile-lbl">latência méd.</span>
+          </div>
+          <div class="tile">
+            <span class="tile-val" id="adaptive">—</span>
+            <span class="tile-lbl">adaptive</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Saúde do serviço -->
+      <section class="card">
+        <div class="health-head">
+          <h2 class="card-title">Saúde do serviço</h2>
+          <span class="health-desc"><span class="dot" id="healthDot"></span><span id="healthText">—</span></span>
+        </div>
+        <div class="chips" id="components"></div>
+      </section>
+
+      <!-- Score -->
+      <section class="card score-card" id="scoreCard">
+        <div class="score-top">
+          <span class="score-num" id="scoreNum">—</span>
+          <div class="score-meta">
+            <span class="score-lbl">Intelligence score</span>
+            <span class="score-reason" id="scoreReason">—</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Hoje -->
+      <section class="card">
+        <h2 class="card-title">Hoje</h2>
+        <div class="tiles">
+          <div class="tile"><span class="tile-val" id="tdTokens">—</span><span class="tile-lbl">tokens</span></div>
+          <div class="tile"><span class="tile-val" id="tdCost">—</span><span class="tile-lbl">gasto</span></div>
+          <div class="tile"><span class="tile-val" id="tdMsgs">—</span><span class="tile-lbl">mensagens</span></div>
+          <div class="tile"><span class="tile-val" id="tdCache">—</span><span class="tile-lbl">cache hit</span></div>
+        </div>
+      </section>
+
+      <!-- Créditos & gasto -->
+      <section class="card">
+        <h2 class="card-title">Créditos & gasto</h2>
+        <div class="credits-row">
+          <div class="credits-cell"><span class="credits-val" id="creditBal">—</span><span class="credits-lbl">saldo</span></div>
+          <div class="credits-cell"><span class="credits-val" id="lifetimeCost">—</span><span class="credits-lbl">gasto total (lifetime)</span></div>
+        </div>
+        <div class="extra" id="extraWrap" hidden>
+          <div class="bar-top"><span class="name">Extra usage</span><span class="val" id="extraVal">—</span></div>
+          <div class="bar"><div class="bar-fill" id="extraBar"></div></div>
+        </div>
+        <div class="extra-status" id="extraStatus"></div>
+      </section>
+
+      <!-- Distribuição de modelos -->
+      <section class="card">
+        <h2 class="card-title">Distribuição de modelos (hoje)</h2>
+        <div class="stack" id="modelStack"></div>
+        <div class="legend" id="modelLegend"></div>
+      </section>
+
+      <!-- Últimos 7 dias -->
+      <section class="card">
+        <h2 class="card-title">Últimos 7 dias</h2>
+        <div class="trend" id="trend"></div>
+      </section>
+
+      <!-- Horários de pico -->
+      <section class="card">
+        <h2 class="card-title">Horários de pico</h2>
+        <div class="peak" id="peak"></div>
+        <div class="peak-axis">
+          <span>0h</span><span>6h</span><span>12h</span><span>18h</span><span>23h</span>
+        </div>
+      </section>
+
+      <!-- Rodapé -->
+      <footer class="footer">
+        <span id="streak">—</span>
+        <span id="plan">—</span>
+      </footer>
+
+      <div class="err" id="err" hidden></div>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
