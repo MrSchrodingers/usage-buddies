@@ -61,6 +61,51 @@ header() {
     echo ""
 }
 
+# Detect an install made under the old project name (claude-usage-*) and offer
+# to clear it. Leaving it in place means two collectors on two systemd timers
+# writing the same ~/.claude/widget-data.json, and a stale plasmoid in the panel.
+migrate_legacy_install() {
+    local found=()
+    [ -f "$HOME/.local/bin/claude-usage-collector.py" ] && found+=("~/.local/bin/claude-usage-collector.py")
+    [ -f "$HOME/.local/bin/claude-usage-tray" ] && found+=("~/.local/bin/claude-usage-tray")
+    [ -f "$HOME/.config/systemd/user/claude-usage-collector.timer" ] && found+=("systemd timer claude-usage-collector.timer")
+    [ -d "$HOME/.local/share/plasma/plasmoids/org.kde.plasma.claudeusage" ] && found+=("plasmoid org.kde.plasma.claudeusage")
+    [ -f "$HOME/.config/autostart/claude-usage-tray.desktop" ] && found+=("autostart claude-usage-tray.desktop")
+
+    [ ${#found[@]} -eq 0 ] && return 0
+
+    echo ""
+    echo -e "${AMBER}Previous install found under the old name:${NC}"
+    for f in "${found[@]}"; do echo -e "  ${DIM}- $f${NC}"; done
+    echo ""
+    echo -e "  This project was renamed ${BOLD}claude-usage-widget${NC} -> ${BOLD}usage-buddies${NC}."
+    echo -e "  Keeping both means two collectors on two timers writing the same"
+    echo -e "  ~/.claude/widget-data.json. Your data files are not touched either way."
+    echo ""
+
+    if [ ! -t 0 ]; then
+        warn "Old install left in place (non-interactive shell)" \
+             "Run: bash \"$REPO_DIR/legacy/uninstall.sh\""
+        return 0
+    fi
+
+    read -r -p "  Remove the old install now? [Y/n] " reply
+    case "$reply" in
+        [Nn]*)
+            warn "Old install left in place" \
+                 "Run later: bash \"$REPO_DIR/legacy/uninstall.sh\""
+            ;;
+        *)
+            if [ -x "$REPO_DIR/legacy/uninstall.sh" ]; then
+                bash "$REPO_DIR/legacy/uninstall.sh"
+                ok "Old install removed"
+            else
+                warn "legacy/uninstall.sh not found" "Remove the paths above by hand"
+            fi
+            ;;
+    esac
+}
+
 # Choose Arch package manager: prefer AUR helper if user installed one,
 # fall back to sudo pacman. Side effect: echoes the command to stdout.
 arch_install_cmd() {
@@ -500,6 +545,7 @@ detect_env
 echo -e "  ${BLUE}Detected:${NC} $DISTRO | DE=$DE_NAME | KDE=$HAS_KDE | GNOME=$HAS_GNOME | Rust=$HAS_RUST | Node=$HAS_NODE | systemd=$HAS_SYSTEMD${AUR_HELPER:+ | AUR=$AUR_HELPER}"
 echo ""
 
+migrate_legacy_install
 install_deps
 install_collector
 install_timer
