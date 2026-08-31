@@ -9,7 +9,6 @@ import json
 import os
 import glob
 import sys
-import ctypes
 import urllib.request
 import urllib.error
 import http.cookiejar
@@ -25,21 +24,20 @@ CONFIG_FILE = CLAUDE_DIR / "widget-config.json"
 
 # Defaults para os 4 eventos de uso.
 # - sound: nome freedesktop (Linux/macOS via paplay) ou caminho absoluto.
-# - winSound: System.Media.SystemSounds equivalente no Windows.
 USAGE_EVENT_DEFAULTS = {
-    "sessionEnded": {"sound": "dialog-warning",    "winSound": "Exclamation",
+    "sessionEnded": {"sound": "dialog-warning",
                      "urgency": "normal",
                      "title": "Sessão Claude esgotada",
                      "body": "A janela de 5h atingiu 100%."},
-    "sessionReset": {"sound": "complete",          "winSound": "Asterisk",
+    "sessionReset": {"sound": "complete",
                      "urgency": "low",
                      "title": "Sessão Claude renovada",
                      "body": "A janela de 5h foi resetada."},
-    "weeklyEnded":  {"sound": "phone-outgoing-busy","winSound": "Hand",
+    "weeklyEnded":  {"sound": "phone-outgoing-busy",
                      "urgency": "critical",
                      "title": "Limite semanal Claude esgotado",
                      "body": "A janela de 7 dias atingiu 100%."},
-    "weeklyReset":  {"sound": "service-login",     "winSound": "Asterisk",
+    "weeklyReset":  {"sound": "service-login",
                      "urgency": "normal",
                      "title": "Limite semanal Claude renovado",
                      "body": "A janela de 7 dias foi resetada."},
@@ -96,7 +94,7 @@ def load_stats_cache():
     path = CLAUDE_DIR / "stats-cache.json"
     if not path.exists():
         return None
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -151,7 +149,7 @@ def parse_sessions_in_window(cutoff_utc, end_utc=None):
             project_name = project_name[1:].replace("-", "/")
 
         try:
-            with open(jsonl_file) as f:
+            with open(jsonl_file, encoding="utf-8", errors="replace") as f:
                 session_has_window = False
                 session_messages = 0
                 session_start = None
@@ -237,64 +235,6 @@ def compute_window_cost(model_tokens):
 def compute_window_output_tokens(model_tokens):
     """Sum output tokens across all models (primary rate limit metric)."""
     return sum(t["output"] for t in model_tokens.values())
-
-
-def _get_chrome_key_windows():
-    """Get Chrome cookie decryption key on Windows.
-
-    Chrome 80+ stores AES-256-GCM key in Local State, encrypted with DPAPI.
-    Returns raw key bytes or None.
-    """
-    try:
-        import base64
-        local_state_paths = [
-            Path.home() / "AppData" / "Local" / "Google" / "Chrome" / "User Data" / "Local State",
-            Path.home() / "AppData" / "Local" / "Chromium" / "User Data" / "Local State",
-        ]
-        for ls_path in local_state_paths:
-            if not ls_path.exists():
-                continue
-            with open(ls_path, "r", encoding="utf-8") as f:
-                local_state = json.load(f)
-            encrypted_key = base64.b64decode(local_state["os_crypt"]["encrypted_key"])
-            # Remove "DPAPI" prefix (5 bytes)
-            encrypted_key = encrypted_key[5:]
-            import ctypes
-            import ctypes.wintypes
-
-            class DATA_BLOB(ctypes.Structure):
-                _fields_ = [("cbData", ctypes.wintypes.DWORD),
-                            ("pbData", ctypes.POINTER(ctypes.c_char))]
-
-            blob_in = DATA_BLOB(len(encrypted_key), ctypes.create_string_buffer(encrypted_key, len(encrypted_key)))
-            blob_out = DATA_BLOB()
-            if ctypes.windll.crypt32.CryptUnprotectData(
-                ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
-            ):
-                key = ctypes.string_at(blob_out.pbData, blob_out.cbData)
-                ctypes.windll.kernel32.LocalFree(blob_out.pbData)
-                return key
-        return None
-    except Exception:
-        return None
-
-
-def _decrypt_chrome_value_windows(encrypted_value, key):
-    """Decrypt Chrome cookie on Windows (AES-256-GCM, Chrome 80+)."""
-    if not encrypted_value or len(encrypted_value) < 4:
-        return None
-    prefix = encrypted_value[:3]
-    if prefix not in (b"v10", b"v11"):
-        return None
-    nonce = encrypted_value[3:15]
-    ciphertext_tag = encrypted_value[15:]
-    try:
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-        aes = AESGCM(key)
-        plaintext = aes.decrypt(nonce, ciphertext_tag, None)
-        return plaintext.decode("utf-8")
-    except Exception:
-        return None
 
 
 def _get_chrome_key(chrome_dir, is_mac=False):
@@ -448,7 +388,7 @@ def _get_chrome_cookies():
     """Extract claude.ai cookies from Chrome/Chromium.
 
     Searches multiple browser paths and profiles, decrypts encrypted values.
-    Supports Linux, Windows, and macOS paths.
+    Supports Linux and macOS paths.
     Returns cookie string or empty string.
     """
     import sqlite3
@@ -456,17 +396,9 @@ def _get_chrome_cookies():
     import platform
     import tempfile
 
-    is_win = platform.system() == "Windows"
     is_mac = platform.system() == "Darwin"
 
-    if is_win:
-        local = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-        base_dirs = [
-            local / "Google" / "Chrome" / "User Data",
-            local / "Chromium" / "User Data",
-            local / "BraveSoftware" / "Brave-Browser" / "User Data",
-        ]
-    elif is_mac:
+    if is_mac:
         app_support = Path.home() / "Library" / "Application Support"
         base_dirs = [
             app_support / "Google" / "Chrome",
@@ -483,7 +415,6 @@ def _get_chrome_cookies():
         ]
 
     key = None  # lazily derived
-    win_key = None  # Windows AES-GCM key
 
     verbose = "--verbose" in sys.argv
 
@@ -494,66 +425,6 @@ def _get_chrome_cookies():
             if candidate.exists():
                 return candidate
         return None
-
-    def _copy_locked_win(src: Path, dst: Path):
-        """Copy a file that may be open exclusively by another process (Chrome).
-
-        Uses CreateFileW with FILE_SHARE_READ|WRITE|DELETE so we can open the
-        handle regardless of Chrome's lock, then ReadFile/WriteFile in chunks.
-        """
-        if not is_win:
-            shutil.copy2(src, dst)
-            return
-        GENERIC_READ = 0x80000000
-        FILE_SHARE_READ = 0x00000001
-        FILE_SHARE_WRITE = 0x00000002
-        FILE_SHARE_DELETE = 0x00000004
-        OPEN_EXISTING = 3
-        FILE_ATTRIBUTE_NORMAL = 0x80
-        INVALID_HANDLE_VALUE = (1 << 64) - 1  # 0xFFFFFFFFFFFFFFFF on 64-bit
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        CreateFileW = kernel32.CreateFileW
-        CreateFileW.argtypes = [
-            ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
-            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
-        ]
-        CreateFileW.restype = ctypes.c_uint64
-
-        handle = CreateFileW(
-            str(src),
-            GENERIC_READ,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            None, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, None,
-        )
-        if handle == INVALID_HANDLE_VALUE or handle == 0:
-            err = ctypes.get_last_error()
-            raise OSError(f"CreateFileW failed for {src}: err={err}")
-
-        try:
-            ReadFile = kernel32.ReadFile
-            ReadFile.argtypes = [
-                ctypes.c_uint64, ctypes.c_void_p, ctypes.c_uint32,
-                ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p,
-            ]
-            ReadFile.restype = ctypes.c_int
-
-            buf_size = 65536
-            buf = (ctypes.c_char * buf_size)()
-            bytes_read = ctypes.c_uint32(0)
-            with open(dst, "wb") as out:
-                while True:
-                    ok = ReadFile(handle, buf, buf_size, ctypes.byref(bytes_read), None)
-                    if not ok:
-                        raise OSError(f"ReadFile failed: err={ctypes.get_last_error()}")
-                    if bytes_read.value == 0:
-                        break
-                    out.write(bytes(buf[: bytes_read.value]))
-        finally:
-            CloseHandle = kernel32.CloseHandle
-            CloseHandle.argtypes = [ctypes.c_uint64]
-            CloseHandle.restype = ctypes.c_int
-            CloseHandle(handle)
 
     for base in base_dirs:
         if not base.exists():
@@ -572,13 +443,13 @@ def _get_chrome_cookies():
             tmp_dir = Path(tempfile.gettempdir())
             tmp_db = tmp_dir / f"claude_chrome_{os.getpid()}.sqlite"
             try:
-                # Copy DB + WAL/SHM files (Chrome uses WAL journal mode, file may be locked)
-                _copy_locked_win(cookie_db, tmp_db)
+                # Copy DB + WAL/SHM files (Chrome uses WAL journal mode)
+                shutil.copy2(cookie_db, tmp_db)
                 for suffix in ["-wal", "-shm", "-journal"]:
                     wal_src = Path(str(cookie_db) + suffix)
                     wal_dst = Path(str(tmp_db) + suffix)
                     if wal_src.exists():
-                        _copy_locked_win(wal_src, wal_dst)
+                        shutil.copy2(wal_src, wal_dst)
                         if verbose:
                             print(f"[chrome] Copied {suffix} file")
 
@@ -596,22 +467,13 @@ def _get_chrome_cookies():
                     if value:
                         pairs.append(f"{name}={value}")
                     elif encrypted_value:
-                        if is_win:
-                            if win_key is None:
-                                win_key = _get_chrome_key_windows()
-                            if win_key:
-                                decrypted = _decrypt_chrome_value_windows(encrypted_value, win_key)
-                            else:
-                                decrypted = None
-                        else:
-                            if key is None:
-                                key = _get_chrome_key(base, is_mac=is_mac)
-                            decrypted = _decrypt_chrome_value(encrypted_value, key)
+                        if key is None:
+                            key = _get_chrome_key(base, is_mac=is_mac)
+                        decrypted = _decrypt_chrome_value(encrypted_value, key)
                         if decrypted:
                             pairs.append(f"{name}={decrypted}")
                         else:
-                            if not is_win:
-                                failed.append((name, encrypted_value))
+                            failed.append((name, encrypted_value))
                             if verbose:
                                 print(f"[chrome] FAILED to decrypt cookie: {name} (len={len(encrypted_value)})")
 
@@ -650,7 +512,7 @@ def _get_chrome_cookies():
 def _get_firefox_cookies():
     """Extract claude.ai cookies from Firefox (plain text, no decryption needed).
 
-    Searches native, snap, flatpak, Windows, and macOS Firefox paths.
+    Searches native, snap, flatpak, and macOS Firefox paths.
     Returns cookie string or empty string.
     """
     import sqlite3
@@ -663,10 +525,7 @@ def _get_firefox_cookies():
         Path.home() / "snap" / "firefox" / "common" / ".mozilla" / "firefox",
         Path.home() / ".var" / "app" / "org.mozilla.firefox" / ".mozilla" / "firefox",
     ]
-    if platform.system() == "Windows":
-        appdata = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
-        firefox_dirs.insert(0, appdata / "Mozilla" / "Firefox" / "Profiles")
-    elif platform.system() == "Darwin":
+    if platform.system() == "Darwin":
         firefox_dirs.insert(0, Path.home() / "Library" / "Application Support" / "Firefox" / "Profiles")
 
     import tempfile
@@ -765,7 +624,7 @@ def load_config():
     """Load widget config from ~/.claude/widget-config.json."""
     if CONFIG_FILE.exists():
         try:
-            return json.loads(CONFIG_FILE.read_text())
+            return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
         except Exception:
             pass
     return {}
@@ -932,7 +791,7 @@ def notify_status_change(new_status):
 
     if STATUS_CACHE_FILE.exists():
         try:
-            prev = json.loads(STATUS_CACHE_FILE.read_text())
+            prev = json.loads(STATUS_CACHE_FILE.read_text(encoding="utf-8"))
             prev_indicator = prev.get("indicator", "none")
         except Exception:
             pass
@@ -1007,26 +866,12 @@ def _resolve_sound_path(sound_spec):
     return None
 
 
-def _play_event_sound(sound_spec, win_sound=None):
+def _play_event_sound(sound_spec):
     """Toca som de forma cross-platform. Fire-and-forget."""
     import subprocess
     import platform
 
     system = platform.system()
-
-    if system == "Windows":
-        # PowerShell + System.Media.SystemSounds (sempre disponível)
-        win_name = win_sound or "Asterisk"
-        ps_cmd = f"[System.Media.SystemSounds]::{win_name}.Play(); Start-Sleep -Milliseconds 600"
-        try:
-            subprocess.Popen(
-                ["powershell", "-NoProfile", "-Command", ps_cmd],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-        except Exception as e:
-            print(f"warn: falha ao tocar som Windows '{win_name}': {e}", file=sys.stderr)
-        return
 
     if system == "Darwin":  # macOS
         path = _resolve_sound_path(sound_spec) or f"/System/Library/Sounds/{sound_spec}.aiff"
@@ -1065,7 +910,7 @@ def _load_events_state():
     if not EVENTS_STATE_FILE.exists():
         return None
     try:
-        return json.loads(EVENTS_STATE_FILE.read_text())
+        return json.loads(EVENTS_STATE_FILE.read_text(encoding="utf-8"))
     except Exception:
         return None
 
@@ -1148,33 +993,6 @@ def _notify_desktop(title, body, urgency, icon="claude-logo", app_name="Claude U
             print(f"warn: notify-send falhou: {e}", file=sys.stderr)
         return
 
-    if system == "Windows":
-        # Toast nativo via PowerShell (sem dependências externas)
-        # Escape de aspas simples para PowerShell
-        t = title.replace("'", "''")
-        b = body.replace("'", "''")
-        ps_cmd = (
-            "[reflection.assembly]::loadwithpartialname('System.Windows.Forms') | Out-Null;"
-            "[reflection.assembly]::loadwithpartialname('System.Drawing') | Out-Null;"
-            "$n = New-Object System.Windows.Forms.NotifyIcon;"
-            "$n.Icon = [System.Drawing.SystemIcons]::Information;"
-            "$n.BalloonTipTitle = '" + t + "';"
-            "$n.BalloonTipText  = '" + b + "';"
-            "$n.Visible = $true;"
-            "$n.ShowBalloonTip(8000);"
-            "Start-Sleep -Seconds 9;"
-            "$n.Dispose();"
-        )
-        try:
-            subprocess.Popen(
-                ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_cmd],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-        except Exception as e:
-            print(f"warn: notificação Windows falhou: {e}", file=sys.stderr)
-        return
-
     if system == "Darwin":
         try:
             subprocess.run(
@@ -1194,9 +1012,8 @@ def notify_usage_event(event_id, config):
 
     sounds_cfg = (config.get("notifications") or {}).get("sounds") or {}
     sound = sounds_cfg.get(event_id, defaults["sound"])
-    win_sound = sounds_cfg.get(event_id + "Win", defaults.get("winSound"))
 
-    _play_event_sound(sound, win_sound=win_sound)
+    _play_event_sound(sound)
     _notify_desktop(defaults["title"], defaults["body"], defaults["urgency"])
 
 
@@ -1221,9 +1038,8 @@ def run_test_sounds(config):
     order = ["sessionEnded", "sessionReset", "weeklyEnded", "weeklyReset"]
     for ev in order:
         sound = sounds_cfg.get(ev, USAGE_EVENT_DEFAULTS[ev]["sound"])
-        win_sound = sounds_cfg.get(ev + "Win", USAGE_EVENT_DEFAULTS[ev].get("winSound"))
         print(f"▶ {ev} → {sound}")
-        _play_event_sound(sound, win_sound=win_sound)
+        _play_event_sound(sound)
         time.sleep(1.5)
     print("OK: 4 sons testados.")
 
@@ -1234,7 +1050,7 @@ def detect_adaptive_thinking():
     result = {"adaptive_thinking": True, "context_1m": True}
     if settings_file.exists():
         try:
-            settings = json.loads(settings_file.read_text())
+            settings = json.loads(settings_file.read_text(encoding="utf-8"))
             env = settings.get("env", {})
             result["adaptive_thinking"] = env.get("CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING", "0") != "1"
             result["context_1m"] = env.get("CLAUDE_CODE_DISABLE_1M_CONTEXT", "0") != "1"
@@ -1253,7 +1069,7 @@ def read_claude_settings_summary():
     if not settings_file.exists():
         return None
     try:
-        s = json.loads(settings_file.read_text())
+        s = json.loads(settings_file.read_text(encoding="utf-8"))
     except Exception:
         return None
     env = s.get("env") or {}
@@ -1275,7 +1091,7 @@ def read_mcp_auth_pending():
     if not path.exists():
         return []
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return []
     if isinstance(data, dict):
@@ -1313,7 +1129,7 @@ def calculate_tool_use(days=7, limit=50):
     total = 0
     for jsonl_file in _jsonl_files_newer_than(cutoff):
         try:
-            with open(jsonl_file) as f:
+            with open(jsonl_file, encoding="utf-8", errors="replace") as f:
                 for line in f:
                     if '"tool_use"' not in line:
                         continue
@@ -1357,7 +1173,7 @@ def calculate_compaction_events(days=7):
     last_ts = None
     for jsonl_file in _jsonl_files_newer_than(cutoff):
         try:
-            with open(jsonl_file) as f:
+            with open(jsonl_file, encoding="utf-8", errors="replace") as f:
                 for line in f:
                     if 'compact' not in line.lower():
                         continue
@@ -1406,7 +1222,7 @@ def detect_opus_fallbacks(days=1):
         by_model = {"opus": 0, "sonnet": 0, "haiku": 0, "other": 0}
         for jsonl_file in _jsonl_files_newer_than(start):
             try:
-                with open(jsonl_file) as f:
+                with open(jsonl_file, encoding="utf-8", errors="replace") as f:
                     for line in f:
                         if '"model"' not in line:
                             continue
@@ -1500,7 +1316,7 @@ def calculate_error_rate(hours=2):
         except OSError:
             continue
         try:
-            with open(jsonl_file) as f:
+            with open(jsonl_file, encoding="utf-8", errors="replace") as f:
                 for line in f:
                     if '"api_error"' not in line and '"error"' not in line:
                         continue
@@ -1711,7 +1527,7 @@ def calculate_latency(hours=2):
             continue
         try:
             last_user_ts = None
-            with open(jsonl_file) as f:
+            with open(jsonl_file, encoding="utf-8", errors="replace") as f:
                 for line in f:
                     if not line.strip():
                         continue
@@ -1840,7 +1656,7 @@ def build_rate_limits():
             }
 
         # weeklySonnet is always present for backward compatibility with existing
-        # consumers (QML, Tauri JS, PySide6) that read rateLimits.weeklySonnet
+        # consumers (QML, Tauri JS) that read rateLimits.weeklySonnet
         # directly. It defaults to 0% when the API returned null.
         sonnet_payload = api_data.get("seven_day_sonnet") or {}
         ss_dt = parse_timestamp(sonnet_payload.get("resets_at", ""))
@@ -1880,6 +1696,22 @@ def build_rate_limits():
         weekly_cowork = _weekly_block(api_data.get("seven_day_cowork"))
         if weekly_cowork:
             result["weeklyCowork"] = weekly_cowork
+
+        # Per-model weekly limit, self-labeled by the API (e.g. "Fable").
+        # Lives in the `limits` array under kind == "weekly_scoped"; the model
+        # name comes from scope.model.display_name, so the label follows
+        # whatever model Anthropic currently scopes the weekly cap to.
+        for lim in (api_data.get("limits") or []):
+            if lim.get("kind") == "weekly_scoped":
+                scope = lim.get("scope") or {}
+                scoped_model = scope.get("model") or {}
+                sd = parse_timestamp(lim.get("resets_at", ""))
+                result["weeklyScoped"] = {
+                    "percentUsed": lim.get("percent", 0) or 0,
+                    "modelName": scoped_model.get("display_name") or "",
+                    "resetsLabel": sd.strftime("%a %I:%M %p") if sd else "",
+                }
+                break
 
         # Inline extra_usage summary (the `usage` endpoint also carries a quick
         # snapshot; the full shape lives under overage_spend_limit below).
@@ -1945,6 +1777,66 @@ def build_rate_limits():
         "plan": "Max (20x)",
         "source": "local_estimate",
     }
+
+
+def compute_daily_trend(days=8):
+    """Per-day total tokens + message/session counts for the last `days` days,
+    computed directly from the JSONL logs.
+
+    stats-cache.json's dailyModelTokens can lag several days behind the live
+    logs, which left the 7-day chart flat. Reading JSONL keeps it current.
+    """
+    now_local = datetime.now()
+    start_utc = datetime.now(timezone.utc) - timedelta(days=days)
+    buckets = defaultdict(lambda: {"tokens": 0, "messages": 0, "sessions": set()})
+
+    for jsonl_file in _jsonl_files_newer_than(start_utc):
+        is_sub = "subagents" in str(jsonl_file)
+        sid = jsonl_file.stem
+        try:
+            with open(jsonl_file, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        r = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    ts = r.get("timestamp")
+                    d = parse_timestamp(ts) if ts else None
+                    if not d or d < start_utc:
+                        continue
+                    day = d.astimezone().strftime("%Y-%m-%d")
+                    msg = r.get("message", {})
+                    usage = msg.get("usage", {})
+                    if usage:
+                        buckets[day]["tokens"] += (
+                            usage.get("input_tokens", 0)
+                            + usage.get("output_tokens", 0)
+                            + usage.get("cache_read_input_tokens", 0)
+                            + usage.get("cache_creation_input_tokens", 0)
+                        )
+                    if not is_sub and msg.get("role") == "assistant":
+                        buckets[day]["messages"] += 1
+                    if not is_sub:
+                        buckets[day]["sessions"].add(sid)
+        except (PermissionError, OSError):
+            continue
+
+    trend = []
+    for i in range(days - 1, -1, -1):
+        dt = now_local - timedelta(days=i)
+        key = dt.strftime("%Y-%m-%d")
+        b = buckets.get(key)
+        trend.append({
+            "date": key,
+            "label": dt.strftime("%a"),
+            "tokens": b["tokens"] if b else 0,
+            "messages": b["messages"] if b else 0,
+            "sessions": len(b["sessions"]) if b else 0,
+        })
+    return trend
 
 
 def build_widget_data():
@@ -2033,25 +1925,10 @@ def build_widget_data():
     for m in model_breakdown:
         m["percentage"] = round((m["totalTokens"] / grand_total_tokens * 100) if grand_total_tokens > 0 else 0, 1)
 
-    # 7-day trend from stats-cache
-    trend_7d = []
-    if stats:
-        daily_tokens = {d["date"]: d["tokensByModel"] for d in stats.get("dailyModelTokens", [])}
-        daily_activity = {d["date"]: d for d in stats.get("dailyActivity", [])}
-
-        for i in range(7, -1, -1):
-            day = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
-            day_label = (datetime.now() - timedelta(days=i)).strftime("%a")
-            tokens_by_model = daily_tokens.get(day, {})
-            total = sum(tokens_by_model.values())
-            activity = daily_activity.get(day, {})
-            trend_7d.append({
-                "date": day,
-                "label": day_label,
-                "tokens": total,
-                "messages": activity.get("messageCount", 0),
-                "sessions": activity.get("sessionCount", 0),
-            })
+    # 7-day trend computed from JSONL. stats-cache.json's dailyModelTokens can
+    # lag days behind the live logs (leaving the chart flat), so we read the
+    # JSONL directly to reflect real recent activity.
+    trend_7d = compute_daily_trend()
 
     # Lifetime stats
     lifetime = {}
@@ -2177,9 +2054,7 @@ def run_health_check():
         Path.home() / "snap" / "firefox" / "common" / ".mozilla" / "firefox",
         Path.home() / ".var" / "app" / "org.mozilla.firefox" / ".mozilla" / "firefox",
     ]
-    if platform.system() == "Windows":
-        firefox_dirs.insert(0, Path(os.environ.get("APPDATA", Path.home())) / "Mozilla" / "Firefox" / "Profiles")
-    elif platform.system() == "Darwin":
+    if platform.system() == "Darwin":
         firefox_dirs.insert(0, Path.home() / "Library" / "Application Support" / "Firefox" / "Profiles")
 
     ff_cookies = _get_firefox_cookies()
@@ -2198,13 +2073,7 @@ def run_health_check():
 
     # ── Chrome: parallel path that tracks which key strategy wins ──
     is_mac = platform.system() == "Darwin"
-    is_win = platform.system() == "Windows"
-    if is_win:
-        local = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-        chrome_bases = [local / "Google" / "Chrome" / "User Data",
-                        local / "Chromium" / "User Data",
-                        local / "BraveSoftware" / "Brave-Browser" / "User Data"]
-    elif is_mac:
+    if is_mac:
         asup = Path.home() / "Library" / "Application Support"
         chrome_bases = [asup / "Google" / "Chrome", asup / "Chromium",
                         asup / "BraveSoftware" / "Brave-Browser"]
@@ -2228,7 +2097,7 @@ def run_health_check():
         report["chrome"]["cookies"] = report["chrome"]["decrypted"]
         report["chrome"]["hasSessionKey"] = "sessionKey=" in ch_cookies
         # Detect which key strategy actually worked, for diagnostic output
-        if chrome_base and not is_win:
+        if chrome_base:
             primary = _get_chrome_key(chrome_base, is_mac=is_mac)
             import hashlib as _h
             peanuts = _h.pbkdf2_hmac("sha1", b"peanuts", b"saltysalt", 1003 if is_mac else 1, dklen=16)
@@ -2316,8 +2185,8 @@ def run_health_check():
         print(json.dumps(report, indent=2))
     else:
         # Human-readable summary
-        # Disable ANSI on non-TTY, Windows (pre-PS7), or NO_COLOR per spec
-        use_color = sys.stdout.isatty() and platform.system() != "Windows" and not os.environ.get("NO_COLOR")
+        # Disable ANSI on non-TTY or NO_COLOR per spec
+        use_color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
         if use_color:
             GREEN, RED, AMBER, DIM, NC = "\033[32m", "\033[31m", "\033[33m", "\033[2m", "\033[0m"
         else:
@@ -2379,7 +2248,7 @@ def main():
 
         # Atomic write with restrictive permissions
         tmp_path = str(OUTPUT_FILE) + ".tmp"
-        with open(tmp_path, "w") as f:
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         os.replace(tmp_path, OUTPUT_FILE)
         try:

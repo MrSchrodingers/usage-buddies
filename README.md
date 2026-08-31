@@ -2,13 +2,14 @@
 
 # Claude Usage Monitor
 
-### KDE Plasmoid + Cross-Platform Tauri Tray + Windows AppBar
+### KDE Plasmoid · Cross-Platform Tauri Tray · Windows Widget
 
 **Real-time Claude AI usage limits, service health, intelligence score, and spending tracker directly in your taskbar.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![KDE Plasma 6](https://img.shields.io/badge/KDE_Plasma-6.0+-blue.svg)](https://kde.org/plasma-desktop/)
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-orange.svg)](https://v2.tauri.app)
+[![Windows 10/11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6.svg)](https://www.microsoft.com/windows)
 [![Python 3.8+](https://img.shields.io/badge/Python-3.8+-green.svg)](https://python.org)
 [![Claude API](https://img.shields.io/badge/Claude-API-D97757.svg)](https://claude.ai)
 
@@ -26,16 +27,18 @@
 
 ## Three Interfaces, One Collector
 
-| | KDE Plasmoid | Tauri Tray App | Windows AppBar |
+| | KDE Plasmoid | Tauri Tray App | Windows Widget |
 |---|---|---|---|
-| **Platform** | KDE Plasma 6 (Fedora, Kubuntu, Arch) | Windows, macOS, Ubuntu GNOME, Fedora | Windows 10 22H2 / Windows 11 |
-| **Interface** | Native QML panel widget | System tray popup (frameless) | Docked strip (SHAppBarMessage) + popup |
-| **Stack** | QML + Kirigami | Rust + Vite + vanilla JS | Python + PySide6 |
-| **Install** | `./install.sh` | `./install.sh` or `./install.ps1` | `./install-windows.ps1` (no admin) |
-| **Trigger** | Click panel widget | Click tray icon or `Super+Shift+C` | Click docked strip |
+| **Platform** | KDE Plasma 6 (Fedora, Kubuntu, Arch) | macOS, Ubuntu GNOME, Fedora, other non-KDE Linux | Windows 10 22H2 / Windows 11 |
+| **Interface** | Native QML panel widget | System tray popup (frameless) | Tray icon + frameless popup docked bottom-right |
+| **Stack** | QML + Kirigami | Rust + Vite + vanilla JS | Tauri v2 (Rust + Vite + vanilla JS) |
+| **Install** | `./install.sh` | `./install.sh` | Build + install (see below) |
+| **Trigger** | Click panel widget | Click tray icon or `Super+Shift+C` | Click tray icon |
 | **Data source** | `~/.claude/widget-data.json` | `~/.claude/widget-data.json` | `~/.claude/widget-data.json` |
 
 All three read the same file written by the shared Python collector at `scripts/claude-usage-collector.py`.
+
+> **Windows Widget** (`win-widget/`) is a fresh, Windows-first build in Tauri v2 — not a port of the Linux UI. It docks a frameless popup at the bottom-right corner, opened from a tray icon, with an animated **Clawd** pixel-art mascot, a per-second session countdown, weekly limits (including the API-scoped model, e.g. **Fable**), service health, activity tiles, model distribution, a JSON-derived 7-day chart, and peak hours. It installs as a self-contained `.exe` that auto-starts on login — no vite/dev server, no admin rights.
 
 ---
 
@@ -47,7 +50,7 @@ All three read the same file written by the shared Python collector at `scripts/
 
 ### Usage Monitoring
 - Circular progress ring with live countdown (seconds)
-- Session, weekly all-models, and weekly Sonnet limits
+- Session, weekly all-models, and per-model weekly limits (API-scoped, e.g. Fable)
 - Prepaid credits balance with auto-reload status
 - Extra Usage: enabled/disabled, monthly limit, used/remaining
 
@@ -128,16 +131,16 @@ Genius band is deliberately tight (0-4): any realistic working session lands in 
 - **Claude Code** installed (for local activity data)
 
 ### Tauri Tray App
-- **Windows 10+**, **macOS 12+**, or **Linux** (Ubuntu 22.04+, Fedora 38+)
+- **macOS 12+** or **Linux** (Ubuntu 22.04+, Fedora 38+)
 - **Rust** toolchain + **Node.js 18+**
 - **Python 3.8+** for the data collector (3.11+ recommended for accurate reset timers; 3.10 supported)
 - **Firefox, Chrome, or Chromium** logged in to [claude.ai](https://claude.ai)
 
-### Windows AppBar Widget (alternative to Tauri on Windows)
+### Windows Widget
 - **Windows 10 22H2** or **Windows 11**
-- **Python 3.10+** with `pythonw.exe` (from python.org or Microsoft Store)
-- PySide6, pywin32, cryptography (installed automatically by `install-windows.ps1`)
-- No admin rights, no Rust/Node toolchain needed. See `windows-widget/README.md` for details.
+- **WebView2 Runtime** — preinstalled on Windows 11 and most Windows 10; the tiny Evergreen bootstrapper covers machines without it
+- **Rust** toolchain + **Node.js 18+** to build; **Python 3.10+** for the collector
+- **Firefox** logged in to [claude.ai](https://claude.ai) — on Windows, Chrome/Edge cookies are locked by App-Bound Encryption, so Firefox (plaintext cookies) is the reliable source. A manual cookie file at `~/.claude/widget-cookies.txt` also works.
 
 ---
 
@@ -199,9 +202,9 @@ The installer will:
 3. Search for **"Claude Usage Monitor"**
 4. Drag it to your panel
 
-### Tauri Tray App (Windows, macOS, Ubuntu GNOME)
+### Tauri Tray App (macOS, Ubuntu GNOME, other non-KDE Linux)
 
-On Linux, `install.sh` handles Tauri automatically. On Windows, use `install.ps1` (builds Tauri via Cargo and registers a Scheduled Task for the collector). To build manually:
+On Linux, `install.sh` handles Tauri automatically. To build manually:
 
 ```bash
 git clone https://github.com/MrSchrodingers/claude-usage-widget.git
@@ -210,41 +213,48 @@ npm install
 cargo tauri build
 ```
 
-The built binary is at `src-tauri/target/release/claude-usage-tray`. Bundled packages (.deb, .rpm, .msi, .dmg) are generated in `src-tauri/target/release/bundle/`.
-
-### Windows AppBar Widget (PySide6, no Rust/Node)
-
-```powershell
-.\install-windows.ps1
-```
-
-Self-contained alternative to the Tauri build: Python + PySide6 only, no admin, no WebView2. Docks a compact strip at the top of the screen via the Win32 AppBar API; click the strip to open the full popup. Installer copies the collector to `%LOCALAPPDATA%\ClaudeUsageMonitor\`, registers a Scheduled Task (60s interval), and creates a Startup shortcut.
+The built binary is at `src-tauri/target/release/claude-usage-tray`. Bundled packages (.deb, .rpm, .dmg) are generated in `src-tauri/target/release/bundle/`.
 
 #### Running the collector manually
 
 The collector runs automatically under every installer path above. To run it yourself:
 
 ```bash
-# Linux
 ~/.local/bin/claude-usage-collector.py
-
-# Windows
-python "%LOCALAPPDATA%\ClaudeUsageMonitor\claude-usage-collector.py"
 ```
 
-On platforms not covered by an installer, schedule it with cron, Task Scheduler, or launchd.
+On platforms not covered by an installer, schedule it with cron or launchd.
+
+### Windows Widget (Windows 10 / 11)
+
+Build the standalone widget (no admin required):
+
+```powershell
+cd claude-usage-widget\win-widget
+npm install
+npx tauri build --no-bundle
+```
+
+This produces a self-contained `claude-usage-win.exe` at `win-widget\src-tauri\target\release\`. To install it so it refreshes and auto-starts on login:
+
+1. Copy `claude-usage-win.exe` and `scripts\claude-usage-collector.py` into `%LOCALAPPDATA%\ClaudeUsageWin\`.
+2. Register a per-user **Scheduled Task** that runs the collector every 60 s (no admin):
+   `pythonw.exe -X utf8 "%LOCALAPPDATA%\ClaudeUsageWin\claude-usage-collector.py"`
+3. Add a **Startup** shortcut pointing to `claude-usage-win.exe`.
+
+The widget then lives as a **tray icon** — left-click to toggle the popup (docked at the bottom-right corner), right-click for **Quit**. If the icon hides in the notification-area overflow, pin it via *Taskbar settings → Select which icons appear on the taskbar*.
 
 ---
 
 ## Browser Support
 
-| Browser | Linux path | Windows | macOS |
-|---------|-----------|---------|-------|
-| **Firefox** (native) | `~/.mozilla/firefox/` | Native | Native |
-| **Firefox** (Snap, Ubuntu default) | `~/snap/firefox/common/.mozilla/firefox/` | — | — |
-| **Firefox** (Flatpak) | `~/.var/app/org.mozilla.firefox/.mozilla/firefox/` | — | — |
-| **Chrome** | `~/.config/google-chrome/` (encrypted via GNOME Keyring / KWallet) | Native (DPAPI) | Plaintext only |
-| **Chromium** | `~/.config/chromium/`, Snap, Flatpak (encrypted via GNOME Keyring / KWallet) | Native | Plaintext only |
+| Browser | Linux path | macOS |
+|---------|-----------|-------|
+| **Firefox** (native) | `~/.mozilla/firefox/` | Native |
+| **Firefox** (Snap, Ubuntu default) | `~/snap/firefox/common/.mozilla/firefox/` | — |
+| **Firefox** (Flatpak) | `~/.var/app/org.mozilla.firefox/.mozilla/firefox/` | — |
+| **Chrome** | `~/.config/google-chrome/` (encrypted via GNOME Keyring / KWallet) | Plaintext only |
+| **Chromium** | `~/.config/chromium/`, Snap, Flatpak (encrypted via GNOME Keyring / KWallet) | Plaintext only |
 
 Priority: Firefox first (plaintext cookies, fastest), then Chrome/Chromium as fallback. On KDE/Wayland, if the XDG portal fails to unlock the KWallet entry, Chrome falls back to its "peanuts" (v10) encryption — the collector handles both paths automatically.
 
@@ -284,6 +294,7 @@ claude-usage-collector.py (every 30s)
         |
         +---> KDE Plasmoid (QML)
         +---> Tauri Tray App (HTML/CSS/JS)
+        +---> Windows Widget (Tauri v2)
 ```
 
 ### Authentication
@@ -319,11 +330,11 @@ The widget reads session cookies from your browser. No API keys or passwords sto
 
 ### 13 UI Sections
 
-All three interfaces (plasmoid, Tauri tray, Windows AppBar) render the same sections:
+All three interfaces (plasmoid, Tauri tray, Windows widget) render the same sections:
 
 1. **Header** - "Claude" title + level pill badge + animated Clawd mascot
 2. **Session Card** - Circular progress ring with colored border + live countdown
-3. **Weekly Limits** - All models (blue) + Sonnet (green) progress bars
+3. **Weekly Limits** - All models + per-model (API-scoped, e.g. Fable) progress bars
 4. **Credits & Spending** - Balance, auto-reload, extra usage with progress bar
 5. **Service Health** - Pulsing dot, status pill, component grid, DownDetector link
 6. **Intelligence Score** - Emoji label, score pill badge, color-coded background
@@ -339,8 +350,6 @@ All three interfaces (plasmoid, Tauri tray, Windows AppBar) render the same sect
 
 | Platform / DE | Tray Click | Keyboard Shortcut | Setup |
 |---|---|---|---|
-| **Windows** (Tauri) | Left-click toggles popup | `Super+Shift+C` | `install.ps1` — needs Rust + Node |
-| **Windows** (AppBar) | Click docked strip | — | `install-windows.ps1` — Python + PySide6 only |
 | **macOS** | Left-click toggles popup | `Super+Shift+C` | — |
 | **KDE Plasma** (Kubuntu, Arch, Fedora KDE) | Use the plasmoid | `Super+Shift+C` | — |
 | **Ubuntu GNOME / Arch GNOME** | Left-click toggles popup | `Super+Shift+C` | Installer auto-installs AppIndicator extension; relogin required |
@@ -404,19 +413,16 @@ cd claude-usage-widget
 
 Removes: collector binary, plasmoid, systemd timer, tray binary, autostart entry, and only the widget-owned files in `~/.claude/` (`widget-data.json`, `widget-config.json`, `widget-status-prev.json`). `stats-cache.json` belongs to Claude Code itself and is never touched.
 
-### Windows Tauri tray (installed via `install.ps1`)
+### Windows Widget
 
 ```powershell
-.\uninstall.ps1
+Get-Process claude-usage-win -ErrorAction SilentlyContinue | Stop-Process -Force
+Unregister-ScheduledTask -TaskName ClaudeUsageCollector -Confirm:$false
+Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Claude Usage Widget.lnk" -Force -ErrorAction SilentlyContinue
+Remove-Item "$env:LOCALAPPDATA\ClaudeUsageWin" -Recurse -Force
 ```
 
-### Windows AppBar widget (installed via `install-windows.ps1`)
-
-```powershell
-.\uninstall-windows.ps1
-```
-
-Each Windows uninstaller targets only the artifacts its matching installer created.
+Removes the widget, its scheduled collector task, the Startup shortcut, and the install folder. Delete the widget-owned files in `~/.claude/` too if you want a full cleanup.
 
 ---
 
@@ -481,7 +487,7 @@ systemctl --user enable --now claude-usage-collector.timer
 
 - **KDE Plasmoid**: QML (Qt 6) + Kirigami + PlasmaComponents3
 - **Tauri Tray App**: Tauri v2 (Rust) + Vanilla JS + Vite + Canvas
-- **Windows AppBar Widget**: Python 3.10+ + PySide6 + pywin32 (SHAppBarMessage)
+- **Windows Widget**: Tauri v2 (Rust) + Vite + vanilla JS — frameless corner popup, animated pixel-art mascot, hover-reactive cards & charts
 - **Data collector**: Python 3.8+ (stdlib + `cryptography` for Chrome AES/peanuts decryption)
 - **Sprite generator**: Python 3 + Pillow
 - **Scheduling**: systemd user timer (Linux, 30s) or Scheduled Task (Windows, 60s)
