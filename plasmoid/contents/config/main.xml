@@ -11,7 +11,7 @@
       <default>claude</default>
     </entry>
     <!-- Panel representation: full | weeklyBarOnly | sessionCountdown |
-         weeklyCountdown | fableBarOnly. Cycled from the popup header. -->
+         weeklyCountdown | fableBarOnly | sparkline. Cycled from the popup header. -->
     <entry name="displayMode" type="String">
       <default>full</default>
     </entry>

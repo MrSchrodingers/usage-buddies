@@ -285,6 +285,23 @@ PlasmoidItem {
         return calmFill;
     }
 
+    // How many quotas are simultaneously in the alert zone. One is a problem;
+    // two or more is a different kind of day, and the widget says so.
+    readonly property int quotasInAlert: {
+        var limits = usageData.rateLimits;
+        if (!limits) return 0;
+        var n = 0;
+        var scopes = ["session", "weeklyAll", "weeklyOpus", "weeklySonnet",
+                      "weeklyFable", "weeklyHaiku", "weeklyScoped"];
+        for (var i = 0; i < scopes.length; i++) {
+            var b = limits[scopes[i]];
+            if (!b) continue;
+            var hours = scopes[i] === "session" ? (b.windowHours ?? 5) : 168;
+            if (usageZone(b.percentUsed ?? 0, windowPace(b.resetsAt ?? "", hours)) === "alert") n++;
+        }
+        return n;
+    }
+
     // Worst zone across every quota on screen, so the widget has one answer to
     // "how am I doing" that the mascot and the gauges can both react to.
     readonly property string worstZone: {
@@ -326,6 +343,74 @@ PlasmoidItem {
     // per-model entry: it is rendered under its own display_name only when no
     // named row already covers that model, so a scoped Fable cap shows up once,
     // not twice.
+    // Three tiles: what today, this week and the whole history are worth at
+    // public per-token prices. Built here so the card stays declarative.
+    function _usd(v) {
+        if (v >= 1000) return "$" + (v / 1000).toFixed(1) + "k";
+        return "$" + v.toFixed(2);
+    }
+
+    readonly property var valueTiles: {
+        var t = usageData.today ?? {};
+        var proj = usageData.costProjection ?? {};
+        var life = usageData.lifetime ?? {};
+        return [
+            { label: "Today",
+              value: formatTokens(t.totalTokens ?? 0),
+              sub: _usd(proj.todayUSD ?? 0),
+              accent: Kirigami.Theme.textColor },
+            { label: "Per hour",
+              value: _usd(proj.usdPerHour ?? 0),
+              sub: formatTokens(usageData.burnRate?.total_per_hour ?? 0) + " tok",
+              accent: Kirigami.Theme.textColor },
+            { label: "Lifetime",
+              value: _usd(life.totalCostUSD ?? 0),
+              sub: (life.totalSessions ?? 0) + " sessions",
+              accent: greenAccent }
+        ];
+    }
+
+    // Badges derived from data already collected. Nothing here triggers a
+    // request or a new field — it is arithmetic over what the popup already
+    // shows, surfaced because "1.7B tokens today" is a fact worth a reaction.
+    readonly property var quirkBadges: {
+        var out = [];
+        var t = usageData.today ?? {};
+        var tools = usageData.toolUse?.byTool ?? {};
+        var hours = usageData.lifetime?.peakHours ?? {};
+
+        var tok = t.totalTokens ?? 0;
+        if (tok >= 1e9) out.push({ icon: "⚡", text: formatTokens(tok) + " today" });
+
+        // Tool dominance: the share of the busiest tool. Above ~70% it says
+        // something real about how the session is being driven.
+        var total = 0, topName = "", topCount = 0;
+        for (var k in tools) {
+            total += tools[k];
+            if (tools[k] > topCount) { topCount = tools[k]; topName = k; }
+        }
+        if (total > 200 && topCount / total > 0.7)
+            out.push({ icon: "🔨", text: Math.round(100 * topCount / total) + "% " + topName });
+
+        var streak = usageData.streak?.days ?? 0;
+        if (streak >= 3) out.push({ icon: "🔥", text: streak + "-day streak" });
+
+        // Night owl: meaningful share of lifetime activity between 00h and 05h.
+        var night = 0, all = 0;
+        for (var h = 0; h < 24; h++) {
+            var v = hours[String(h)] || 0;
+            all += v;
+            if (h < 6) night += v;
+        }
+        if (all > 50 && night / all > 0.15)
+            out.push({ icon: "🌙", text: Math.round(100 * night / all) + "% after midnight" });
+
+        var comp = usageData.compaction?.count ?? 0;
+        if (comp >= 5) out.push({ icon: "🧠", text: comp + " compactions" });
+
+        return out;
+    }
+
     readonly property var weeklyScopeOrder: [
         // The two generic scopes are named by the provider: "All models" reads
         // wrong for a single-model API, and Codex has no Sonnet. The rest are
@@ -412,6 +497,7 @@ PlasmoidItem {
             id: compactLoader
             anchors.fill: parent
             sourceComponent: {
+                if (root.displayMode === "sparkline")        return compSparkline;
                 if (root.displayMode === "weeklyBarOnly")     return compWeeklyBar;
                 if (root.displayMode === "fableBarOnly")      return compFableBar;
                 if (root.displayMode === "sessionCountdown")  return compSessionCountdown;
@@ -486,6 +572,81 @@ PlasmoidItem {
                         font.weight: Font.DemiBold
                         color: statusColor(statusCompact.indicator)
                     }
+                }
+            }
+        }
+
+        // ── Mode: sparkline ───────────────────────────────────────
+        // Seven days of trend in the panel. The data was already collected and
+        // only ever shown inside the popup, so the shape of the week cost a
+        // click to see.
+        Component {
+            id: compSparkline
+            RowLayout {
+                spacing: Kirigami.Units.smallSpacing
+
+                Image {
+                    source: Qt.resolvedUrl("../icons/" + root.brand.logo)
+                    Layout.preferredWidth: Kirigami.Units.iconSizes.small
+                    Layout.preferredHeight: Kirigami.Units.iconSizes.small
+                    sourceSize: Qt.size(Kirigami.Units.iconSizes.small, Kirigami.Units.iconSizes.small)
+                    fillMode: Image.PreserveAspectFit
+                    Layout.alignment: Qt.AlignVCenter
+                }
+
+                RowLayout {
+                    id: spark
+                    spacing: 2
+                    Layout.alignment: Qt.AlignVCenter
+                    // Scale to the busiest day, so the shape is readable even
+                    // when the week is uniformly heavy or uniformly light.
+                    property real peak: {
+                        var t = root.usageData.trend7d ?? [];
+                        var m = 0;
+                        for (var i = 0; i < t.length; i++) m = Math.max(m, t[i].tokens ?? 0);
+                        return m;
+                    }
+
+                    Repeater {
+                        model: root.usageData.trend7d ?? []
+                        delegate: Rectangle {
+                            required property var modelData
+                            required property int index
+                            width: 4
+                            height: 18
+                            radius: 1
+                            color: root.subtleBorder
+                            Layout.alignment: Qt.AlignVCenter
+
+                            Rectangle {
+                                anchors.bottom: parent.bottom
+                                width: parent.width
+                                radius: 1
+                                // Minimum 2px so a day with any activity is
+                                // visibly different from a day with none.
+                                height: {
+                                    var v = modelData.tokens ?? 0;
+                                    if (v <= 0 || spark.peak <= 0) return 0;
+                                    return Math.max(2, parent.height * (v / spark.peak));
+                                }
+                                color: index === (root.usageData.trend7d ?? []).length - 1
+                                       ? root.claudeAmberLight : root.calmFill
+                                Behavior on height { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
+                            }
+                        }
+                    }
+                }
+
+                PlasmaComponents3.Label {
+                    property real pct: root.usageData.rateLimits?.session?.percentUsed ?? 0
+                    text: root.hasData ? Math.round(pct) + "%" : "--"
+                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.95
+                    font.weight: Font.Bold
+                    font.features: ({ "tnum": 1 })
+                    color: root.paceTextColor(pct, root.windowPace(
+                        root.usageData.rateLimits?.session?.resetsAt ?? "",
+                        root.usageData.rateLimits?.session?.windowHours ?? 5))
+                    Layout.alignment: Qt.AlignVCenter
                 }
             }
         }
@@ -736,7 +897,7 @@ PlasmoidItem {
                     // limit, so glancing at it is already an answer.
                     Image {
                         id: mascotImage
-                        visible: !root.isBraindead
+                        visible: !root.isBraindead && root.quotasInAlert < 2
                         anchors.centerIn: parent
                         anchors.verticalCenterOffset: 6
                         width: parent.width * 0.7
@@ -773,6 +934,32 @@ PlasmoidItem {
                         }
                         onAgitatedChanged: if (!agitated) jitter = 0
                     }
+                    // Two or more quotas red at once. The asset shipped with the
+                    // repo and was never wired to anything; this is the one
+                    // state it was drawn for.
+                    Image {
+                        id: fineDog
+                        visible: root.quotasInAlert >= 2
+                        anchors.fill: parent
+                        source: Qt.resolvedUrl("../icons/this-is-fine.png")
+                        sourceSize: Qt.size(parent.width * 2, parent.height * 2)
+                        fillMode: Image.PreserveAspectFit
+                        opacity: 0
+
+                        states: State {
+                            when: fineDog.visible
+                            PropertyChanges { target: fineDog; opacity: 1 }
+                        }
+                        transitions: Transition {
+                            NumberAnimation { property: "opacity"; duration: 700
+                                              easing.type: Easing.OutCubic }
+                        }
+
+                        PlasmaComponents3.ToolTip {
+                            text: root.quotasInAlert + " quotas in the red at once"
+                        }
+                    }
+
                     // === ALL OVERLAYS ON TOP OF CLAWD ===
                     // DUMB: Fire
                     Image {
@@ -931,23 +1118,25 @@ PlasmoidItem {
                     PlasmaComponents3.ToolTip { text: "Refresh" }
                 }
 
-                // Display mode switcher — cycles through the 4 panel modes
+                // Display mode switcher — cycles through the panel modes
                 PlasmaComponents3.ToolButton {
                     id: modeBtn
-                    readonly property var modes: ["full", "weeklyBarOnly", "fableBarOnly", "sessionCountdown", "weeklyCountdown"]
+                    readonly property var modes: ["full", "weeklyBarOnly", "fableBarOnly", "sessionCountdown", "weeklyCountdown", "sparkline"]
                     readonly property var modeIcons: ({
                         "full":             "view-split-left-right",
                         "weeklyBarOnly":    "office-chart-bar",
                         "fableBarOnly":     "office-chart-bar-stacked",
                         "sessionCountdown": "chronometer",
-                        "weeklyCountdown":  "view-calendar-week"
+                        "weeklyCountdown":  "view-calendar-week",
+                        "sparkline":        "office-chart-bar"
                     })
                     readonly property var modeLabels: ({
                         "full":             "Full (default)",
                         "weeklyBarOnly":    "Weekly bar only",
                         "fableBarOnly":     "Fable bar only",
                         "sessionCountdown": "Session countdown",
-                        "weeklyCountdown":  "Weekly countdown"
+                        "weeklyCountdown":  "Weekly countdown",
+                        "sparkline":        "7-day sparkline"
                     })
                     icon.name: modeIcons[root.displayMode] ?? "configure"
                     onClicked: {
@@ -1040,9 +1229,22 @@ PlasmoidItem {
                         Canvas {
                             id: progressRing
                             anchors.fill: parent
+                            // `drawn` is what gets painted. It sweeps from 0 on
+                            // first data so the ring draws itself in, then trails
+                            // pct on every update.
                             property real pct: root.usageData.rateLimits?.session?.percentUsed ?? 0
-                            Behavior on pct { NumberAnimation { duration: 800; easing.type: Easing.OutCubic } }
-                            onPctChanged: requestPaint()
+                            property real drawn: 0
+                            Behavior on drawn {
+                                NumberAnimation { duration: sweptIn ? 800 : 1100
+                                                  easing.type: sweptIn ? Easing.OutCubic : Easing.OutQuart }
+                            }
+                            property bool sweptIn: false
+                            onPctChanged: {
+                                drawn = pct;
+                                if (!sweptIn && pct > 0) sweepDone.restart();
+                            }
+                            Timer { id: sweepDone; interval: 1200; onTriggered: progressRing.sweptIn = true }
+                            onDrawnChanged: requestPaint()
                             onWidthChanged: requestPaint()
 
                             property real pace: root.windowPace(
@@ -1085,8 +1287,8 @@ PlasmoidItem {
                                 // Usage arc
                                 ctx.beginPath();
                                 ctx.arc(cx, cy, r, start,
-                                        start + 2 * Math.PI * Math.min(1, pct / 100));
-                                ctx.strokeStyle = root.paceFill(pct, pace).toString();
+                                        start + 2 * Math.PI * Math.min(1, drawn / 100));
+                                ctx.strokeStyle = root.paceFill(drawn, pace).toString();
                                 ctx.lineWidth = lw;
                                 ctx.lineCap = "round";
                                 ctx.stroke();
@@ -1117,14 +1319,21 @@ PlasmoidItem {
 
                             PlasmaComponents3.Label {
                                 Layout.alignment: Qt.AlignHCenter
+                                // `shown` trails `pct`, so the number rolls to
+                                // its new value instead of jumping. The ring arc
+                                // already animated; the figure at its centre
+                                // snapping made the two disagree mid-flight.
                                 property real pct: root.usageData.rateLimits?.session?.percentUsed ?? 0
+                                property real shown: 0
                                 property real pace: progressRing.pace
-                                Behavior on pct { NumberAnimation { duration: 800; easing.type: Easing.OutCubic } }
-                                text: Math.round(pct) + "%"
+                                Behavior on shown { NumberAnimation { duration: 800; easing.type: Easing.OutCubic } }
+                                onPctChanged: shown = pct
+                                Component.onCompleted: shown = pct
+                                text: Math.round(shown) + "%"
                                 font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 2.4
                                 font.weight: Font.Bold
                                 font.features: ({ "tnum": 1 })
-                                color: root.paceTextColor(pct, pace)
+                                color: root.paceTextColor(shown, pace)
                             }
                             PlasmaComponents3.Label {
                                 Layout.alignment: Qt.AlignHCenter
@@ -1793,6 +2002,125 @@ PlasmoidItem {
             }
 
             // ══════════════════════════════════
+            // ── Value Extracted Card ──
+            // ══════════════════════════════════
+            //
+            // The collector computed all of this and the UI threw it away: the
+            // only consumer of costProjection was a row gated on costUSD > 0,
+            // which is always 0 on a subscription. So a plan running 1.7B
+            // tokens a day showed nothing about what that is worth.
+            //
+            // These are notional API-equivalent figures — what the same traffic
+            // would cost at public per-token prices — not money spent. The card
+            // says so, because "$20,281" with no qualifier is a lie.
+            Rectangle {
+                Layout.fillWidth: true
+                visible: (root.usageData.today?.totalTokens ?? 0) > 0
+                implicitHeight: valueCol.implicitHeight + Kirigami.Units.mediumSpacing * 2
+                radius: 10
+                color: root.cardBg
+
+                ColumnLayout {
+                    id: valueCol
+                    anchors.fill: parent
+                    anchors.margins: Kirigami.Units.mediumSpacing
+                    spacing: 6
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Kirigami.Units.smallSpacing
+                        Kirigami.Icon {
+                            source: "office-chart-area"
+                            Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
+                            Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
+                            color: root.greenAccent; opacity: 0.6
+                        }
+                        PlasmaComponents3.Label {
+                            text: "Value extracted"
+                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.9
+                            font.weight: Font.DemiBold; opacity: 0.55
+                        }
+                        Item { Layout.fillWidth: true }
+                        PlasmaComponents3.Label {
+                            text: "API-equivalent"
+                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.72
+                            opacity: 0.35
+                        }
+                    }
+
+                    GridLayout {
+                        Layout.fillWidth: true
+                        columns: 3
+                        columnSpacing: Kirigami.Units.largeSpacing
+                        rowSpacing: 2
+
+                        Repeater {
+                            model: root.valueTiles
+                            delegate: ColumnLayout {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                spacing: 0
+                                PlasmaComponents3.Label {
+                                    text: modelData.label
+                                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.72
+                                    opacity: 0.45
+                                }
+                                PlasmaComponents3.Label {
+                                    text: modelData.value
+                                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 1.15
+                                    font.weight: Font.Bold
+                                    font.features: ({ "tnum": 1 })
+                                    color: modelData.accent
+                                }
+                                PlasmaComponents3.Label {
+                                    text: modelData.sub
+                                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.72
+                                    font.features: ({ "tnum": 1 })
+                                    opacity: 0.45
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Quirks strip — the numbers that are fun rather than actionable.
+            // Deliberately a single wrapping row, not a card: it must never
+            // compete with a quota for attention.
+            Flow {
+                Layout.fillWidth: true
+                visible: root.quirkBadges.length > 0
+                spacing: Kirigami.Units.smallSpacing
+
+                Repeater {
+                    model: root.quirkBadges
+                    delegate: Rectangle {
+                        required property var modelData
+                        radius: height / 2
+                        color: root.subtleBorder
+                        implicitWidth: badgeRow.implicitWidth + 14
+                        implicitHeight: badgeRow.implicitHeight + 6
+
+                        RowLayout {
+                            id: badgeRow
+                            anchors.centerIn: parent
+                            spacing: 4
+                            PlasmaComponents3.Label {
+                                text: modelData.icon
+                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.8
+                            }
+                            PlasmaComponents3.Label {
+                                text: modelData.text
+                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.78
+                                font.features: ({ "tnum": 1 })
+                                opacity: 0.7
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ══════════════════════════════════
             // ── Burn Rate & Errors Card ──
             // ══════════════════════════════════
             Rectangle {
@@ -1953,24 +2281,24 @@ PlasmoidItem {
                         }
                     }
 
-                    // Today's cost + runway — only when we have credits info to project against
+                    // Runway, only when there is credit actually draining. On a
+                    // subscription runwayDays comes back 0.0 rather than null,
+                    // and the old `!== null` test rendered a red "0.0d left" —
+                    // an alarm about prepaid credit that is not being spent.
                     RowLayout {
                         Layout.fillWidth: true; spacing: 4
-                        visible: (root.usageData.today?.costUSD ?? 0) > 0 || (root.usageData.costProjection?.runwayDays ?? null) !== null
+                        property real runway: root.usageData.costProjection?.runwayDays ?? 0
+                        visible: runway > 0
                         Kirigami.Icon { source: "office-chart-bar"; Layout.preferredWidth: 14; Layout.preferredHeight: 14; opacity: 0.5 }
-                        PlasmaComponents3.Label { text: "Cost today"; font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82; opacity: 0.6 }
+                        PlasmaComponents3.Label { text: "Credit runway"; font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82; opacity: 0.6 }
                         Item { Layout.fillWidth: true }
                         PlasmaComponents3.Label {
-                            property real usd: root.usageData.today?.costUSD ?? 0
-                            property var runway: root.usageData.costProjection?.runwayDays ?? null
-                            text: {
-                                var base = "$" + usd.toFixed(2);
-                                if (runway !== null && runway < 14) base += " · " + runway.toFixed(1) + "d left";
-                                return base;
-                            }
-                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.85; font.weight: Font.Bold
-                            color: (runway !== null && runway < 2) ? root.redAlert
-                                 : (runway !== null && runway < 7) ? root.claudeAmberLight
+                            text: parent.runway.toFixed(1) + "d left"
+                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.85
+                            font.weight: Font.Bold
+                            font.features: ({ "tnum": 1 })
+                            color: parent.runway < 2 ? root.redAlert
+                                 : parent.runway < 7 ? root.claudeAmberLight
                                  : Kirigami.Theme.textColor
                         }
                     }

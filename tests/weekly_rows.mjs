@@ -131,5 +131,38 @@ for (const [pct, pace, want, why] of zcases) {
         got === want, `recebeu ${got}`);
 }
 
+
+// ── quirkBadges: conquistas derivadas do que ja e medido ──
+const qm = src.match(/readonly property var quirkBadges: \{\n([\s\S]*?)\n    \}\n/);
+if (!qm) { console.error("FALHA: nao achei quirkBadges no QML"); process.exit(2); }
+const fm = src.match(/function formatTokens\(n\) \{\n([\s\S]*?)\n    \}\n/);
+if (!fm) { console.error("FALHA: nao achei formatTokens"); process.exit(2); }
+const quirks = new Function("usageData",
+  "function formatTokens(n){" + fm[1] + "}\n" + qm[1]);
+
+console.log("\n=== quirkBadges ===");
+const full = JSON.parse(fs.readFileSync(process.argv[4], "utf8"));
+const badges = quirks(full);
+badges.forEach(b => console.log(`  ${b.icon} ${b.text}`));
+check("produz badges com o payload real", badges.length > 0, JSON.stringify(badges));
+check("todo badge tem icone e texto",
+      badges.every(b => b.icon && typeof b.text === "string" && b.text.length),
+      JSON.stringify(badges));
+
+check("payload vazio -> nenhum badge", quirks({}).length === 0);
+check("conta pequena nao ganha badge de ferramenta",
+      quirks({ toolUse: { byTool: { Bash: 100 } } }).every(b => !b.text.includes("Bash")),
+      JSON.stringify(quirks({ toolUse: { byTool: { Bash: 100 } } })));
+check("dominancia de ferramenta acima de 70% vira badge",
+      quirks({ toolUse: { byTool: { Bash: 900, Read: 100 } } }).some(b => b.text === "90% Bash"),
+      JSON.stringify(quirks({ toolUse: { byTool: { Bash: 900, Read: 100 } } })));
+check("ferramenta equilibrada nao vira badge",
+      quirks({ toolUse: { byTool: { Bash: 300, Read: 300, Edit: 300 } } }).length === 0);
+check("streak curta nao vira badge", quirks({ streak: { days: 2 } }).length === 0);
+check("streak de 3 dias vira badge",
+      quirks({ streak: { days: 3 } }).some(b => b.text === "3-day streak"));
+check("madrugada so conta com volume",
+      quirks({ lifetime: { peakHours: { "1": 5, "14": 5 } } }).length === 0);
+
 console.log(fail ? `\n${fail} FALHA(S)` : "\nTODAS PASSARAM");
 process.exit(fail ? 1 : 0);

@@ -32,11 +32,27 @@ LIVE_RATE_LIMITS = {
 }
 
 
+# A trimmed payload with the fields quirkBadges reads, so the badge logic is
+# exercised without depending on whatever this machine happens to have done.
+LIVE_PAYLOAD = {
+    "rateLimits": LIVE_RATE_LIMITS,
+    "today": {"totalTokens": 1_781_115_342},
+    "toolUse": {"byTool": {"Bash": 30268, "Read": 2862, "Edit": 1152,
+                           "Write": 270, "Agent": 223, "Grep": 167}},
+    "compaction": {"count": 11},
+    "streak": {"days": 1},
+    "lifetime": {"peakHours": {"0": 7, "1": 3, "2": 2, "14": 76, "16": 60}},
+    "burnRate": {"total_per_hour": 372436672},
+}
+
+
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 def test_weekly_rows_against_live_payload(tmp_path):
     payload = tmp_path / "rate_limits.json"
     payload.write_text(json.dumps(LIVE_RATE_LIMITS))
-    r = subprocess.run(["node", str(RUNNER), str(payload), str(QML)],
+    full = tmp_path / "widget-data.json"
+    full.write_text(json.dumps(LIVE_PAYLOAD))
+    r = subprocess.run(["node", str(RUNNER), str(payload), str(QML), str(full)],
                        capture_output=True, text=True)
     assert r.returncode == 0, f"{r.stdout}\n{r.stderr}"
     assert "TODAS PASSARAM" in r.stdout, r.stdout
