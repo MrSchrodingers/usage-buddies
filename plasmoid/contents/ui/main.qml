@@ -163,6 +163,58 @@ PlasmoidItem {
         return Kirigami.Theme.textColor;
     }
 
+    // Weekly rows, derived from whatever rateLimits actually carries.
+    //
+    // Order is fixed so the list does not reshuffle between refreshes; a scope
+    // the API did not report is simply absent. `weeklyScoped` is the API's own
+    // per-model entry: it is rendered under its own display_name only when no
+    // named row already covers that model, so a scoped Fable cap shows up once,
+    // not twice.
+    readonly property var weeklyScopeOrder: [
+        { key: "weeklyAll",       label: "All models",    accent: blueAccent },
+        { key: "weeklyOpus",      label: "Opus only",     accent: purpleAccent },
+        { key: "weeklySonnet",    label: "Sonnet only",   accent: greenAccent },
+        { key: "weeklyFable",     label: "Fable only",    accent: blueAccent },
+        { key: "weeklyHaiku",     label: "Haiku only",    accent: cyanAccent },
+        { key: "weeklyDesign",    label: "Claude Design", accent: pinkAccent },
+        { key: "weeklyOauthApps", label: "OAuth apps",    accent: cyanAccent },
+        { key: "weeklyCowork",    label: "Cowork",        accent: claudeAmberLight }
+    ]
+
+    readonly property var weeklyRows: {
+        var limits = usageData.rateLimits;
+        if (!limits) return [];
+
+        var rows = [];
+        var covered = {};
+        for (var i = 0; i < weeklyScopeOrder.length; i++) {
+            var spec = weeklyScopeOrder[i];
+            var block = limits[spec.key];
+            if (block === undefined || block === null) continue;
+            if (block.modelName) covered[String(block.modelName).toLowerCase()] = true;
+            rows.push({
+                label: spec.label,
+                accent: spec.accent,
+                pct: block.percentUsed ?? 0,
+                resetsLabel: block.resetsLabel ?? ""
+            });
+        }
+
+        // A model the API scopes that has no row above — a new or renamed model
+        // — would otherwise be invisible. Show it under the name the API gives.
+        var scoped = limits.weeklyScoped;
+        if (scoped && scoped.modelName
+                && !covered[String(scoped.modelName).toLowerCase()]) {
+            rows.push({
+                label: scoped.modelName,
+                accent: claudeAmberLight,
+                pct: scoped.percentUsed ?? 0,
+                resetsLabel: scoped.resetsLabel ?? ""
+            });
+        }
+        return rows;
+    }
+
     function barFill(pct, base) {
         if (pct > 80) return redAlert;
         if (pct > 50) return claudeAmberLight;
@@ -843,299 +895,58 @@ PlasmoidItem {
                         opacity: 0.5
                     }
 
-                    // All models row
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 4
+                    // One row per weekly scope the API actually reported.
+                    // These were seven near-identical 43-line blocks, hand
+                    // written per model. That is how the Sonnet row ended up
+                    // without the visibility guard the others had: the API
+                    // deprecated seven_day_sonnet to null and the widget kept
+                    // drawing a permanent "Sonnet only 0%" bar. Driving the
+                    // rows from data removes the whole class of defect — a
+                    // scope with no data has no row — and a model the API
+                    // starts scoping shows up without touching this file.
+                    Repeater {
+                        model: root.weeklyRows
 
-                        RowLayout {
+                        delegate: ColumnLayout {
+                            required property var modelData
                             Layout.fillWidth: true
-                            Rectangle { width: 8; height: 8; radius: 4; color: root.blueAccent }
-                            PlasmaComponents3.Label {
-                                text: "All models"
-                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.9
-                            }
-                            Item { Layout.fillWidth: true }
-                            PlasmaComponents3.Label {
-                                visible: (root.usageData.rateLimits?.weeklyAll?.resetsLabel ?? "") !== ""
-                                text: "Resets " + (root.usageData.rateLimits?.weeklyAll?.resetsLabel ?? "")
-                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
-                                opacity: 0.35
-                            }
-                            PlasmaComponents3.Label {
-                                property real pct: root.usageData.rateLimits?.weeklyAll?.percentUsed ?? 0
-                                text: Math.round(pct) + "%"
-                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 1.1
-                                font.weight: Font.Bold
-                                color: limitColor(pct)
-                            }
-                        }
+                            spacing: 4
 
-                        Rectangle {
-                            Layout.fillWidth: true; height: 6; radius: 3
-                            color: root.subtleBorder
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Kirigami.Units.smallSpacing
+                                Rectangle {
+                                    width: 8; height: 8; radius: 4
+                                    color: modelData.accent
+                                }
+                                PlasmaComponents3.Label {
+                                    text: modelData.label
+                                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.9
+                                }
+                                Item { Layout.fillWidth: true }
+                                PlasmaComponents3.Label {
+                                    visible: modelData.resetsLabel !== ""
+                                    text: "Resets " + modelData.resetsLabel
+                                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
+                                    opacity: 0.35
+                                }
+                                PlasmaComponents3.Label {
+                                    text: Math.round(modelData.pct) + "%"
+                                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 1.1
+                                    font.weight: Font.Bold
+                                    color: root.limitColor(modelData.pct)
+                                }
+                            }
+
                             Rectangle {
-                                property real pct: root.usageData.rateLimits?.weeklyAll?.percentUsed ?? 0
-                                width: parent.width * Math.min(1, pct / 100)
-                                height: parent.height; radius: 3
-                                color: barFill(pct, root.blueAccent)
-                                Behavior on width { NumberAnimation { duration: 600; easing.type: Easing.OutCubic } }
-                            }
-                        }
-                    }
-
-                    // Sonnet only row
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 4
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Rectangle { width: 8; height: 8; radius: 4; color: root.greenAccent }
-                            PlasmaComponents3.Label {
-                                text: "Sonnet only"
-                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.9
-                            }
-                            Item { Layout.fillWidth: true }
-                            PlasmaComponents3.Label {
-                                visible: (root.usageData.rateLimits?.weeklySonnet?.resetsLabel ?? "") !== ""
-                                text: "Resets " + (root.usageData.rateLimits?.weeklySonnet?.resetsLabel ?? "")
-                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
-                                opacity: 0.35
-                            }
-                            PlasmaComponents3.Label {
-                                property real pct: root.usageData.rateLimits?.weeklySonnet?.percentUsed ?? 0
-                                text: Math.round(pct) + "%"
-                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 1.1
-                                font.weight: Font.Bold
-                                color: limitColor(pct)
-                            }
-                        }
-
-                        Rectangle {
-                            Layout.fillWidth: true; height: 6; radius: 3
-                            color: root.subtleBorder
-                            Rectangle {
-                                property real pct: root.usageData.rateLimits?.weeklySonnet?.percentUsed ?? 0
-                                width: parent.width * Math.min(1, pct / 100)
-                                height: parent.height; radius: 3
-                                color: barFill(pct, root.greenAccent)
-                                Behavior on width { NumberAnimation { duration: 600; easing.type: Easing.OutCubic } }
-                            }
-                        }
-                    }
-
-                    // Opus only row (visible only when API populated the field)
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 4
-                        visible: root.usageData.rateLimits?.weeklyOpus !== undefined &&
-                                 root.usageData.rateLimits?.weeklyOpus !== null
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Rectangle { width: 8; height: 8; radius: 4; color: root.purpleAccent }
-                            PlasmaComponents3.Label {
-                                text: "Opus only"
-                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.9
-                            }
-                            Item { Layout.fillWidth: true }
-                            PlasmaComponents3.Label {
-                                visible: (root.usageData.rateLimits?.weeklyOpus?.resetsLabel ?? "") !== ""
-                                text: "Resets " + (root.usageData.rateLimits?.weeklyOpus?.resetsLabel ?? "")
-                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
-                                opacity: 0.35
-                            }
-                            PlasmaComponents3.Label {
-                                property real pct: root.usageData.rateLimits?.weeklyOpus?.percentUsed ?? 0
-                                text: Math.round(pct) + "%"
-                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 1.1
-                                font.weight: Font.Bold
-                                color: limitColor(pct)
-                            }
-                        }
-
-                        Rectangle {
-                            Layout.fillWidth: true; height: 6; radius: 3
-                            color: root.subtleBorder
-                            Rectangle {
-                                property real pct: root.usageData.rateLimits?.weeklyOpus?.percentUsed ?? 0
-                                width: parent.width * Math.min(1, pct / 100)
-                                height: parent.height; radius: 3
-                                color: barFill(pct, root.purpleAccent)
-                                Behavior on width { NumberAnimation { duration: 600; easing.type: Easing.OutCubic } }
-                            }
-                        }
-                    }
-
-                    // Fable only row (visible only when the field is populated)
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 4
-                        visible: root.usageData.rateLimits?.weeklyFable !== undefined &&
-                                 root.usageData.rateLimits?.weeklyFable !== null
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Rectangle { width: 8; height: 8; radius: 4; color: root.blueAccent }
-                            PlasmaComponents3.Label {
-                                text: "Fable only"
-                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.9
-                            }
-                            Item { Layout.fillWidth: true }
-                            PlasmaComponents3.Label {
-                                visible: (root.usageData.rateLimits?.weeklyFable?.resetsLabel ?? "") !== ""
-                                text: "Resets " + (root.usageData.rateLimits?.weeklyFable?.resetsLabel ?? "")
-                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
-                                opacity: 0.35
-                            }
-                            PlasmaComponents3.Label {
-                                property real pct: root.usageData.rateLimits?.weeklyFable?.percentUsed ?? 0
-                                text: Math.round(pct) + "%"
-                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 1.1
-                                font.weight: Font.Bold
-                                color: limitColor(pct)
-                            }
-                        }
-
-                        Rectangle {
-                            Layout.fillWidth: true; height: 6; radius: 3
-                            color: root.subtleBorder
-                            Rectangle {
-                                property real pct: root.usageData.rateLimits?.weeklyFable?.percentUsed ?? 0
-                                width: parent.width * Math.min(1, pct / 100)
-                                height: parent.height; radius: 3
-                                color: barFill(pct, root.blueAccent)
-                                Behavior on width { NumberAnimation { duration: 600; easing.type: Easing.OutCubic } }
-                            }
-                        }
-                    }
-
-                    // Claude Design row (API codename: omelette)
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 4
-                        visible: root.usageData.rateLimits?.weeklyDesign !== undefined &&
-                                 root.usageData.rateLimits?.weeklyDesign !== null
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Rectangle { width: 8; height: 8; radius: 4; color: root.pinkAccent }
-                            PlasmaComponents3.Label {
-                                text: "Claude Design"
-                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.9
-                            }
-                            Item { Layout.fillWidth: true }
-                            PlasmaComponents3.Label {
-                                visible: (root.usageData.rateLimits?.weeklyDesign?.resetsLabel ?? "") !== ""
-                                text: "Resets " + (root.usageData.rateLimits?.weeklyDesign?.resetsLabel ?? "")
-                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
-                                opacity: 0.35
-                            }
-                            PlasmaComponents3.Label {
-                                property real pct: root.usageData.rateLimits?.weeklyDesign?.percentUsed ?? 0
-                                text: Math.round(pct) + "%"
-                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 1.1
-                                font.weight: Font.Bold
-                                color: limitColor(pct)
-                            }
-                        }
-
-                        Rectangle {
-                            Layout.fillWidth: true; height: 6; radius: 3
-                            color: root.subtleBorder
-                            Rectangle {
-                                property real pct: root.usageData.rateLimits?.weeklyDesign?.percentUsed ?? 0
-                                width: parent.width * Math.min(1, pct / 100)
-                                height: parent.height; radius: 3
-                                color: barFill(pct, root.pinkAccent)
-                                Behavior on width { NumberAnimation { duration: 600; easing.type: Easing.OutCubic } }
-                            }
-                        }
-                    }
-
-                    // OAuth apps row
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 4
-                        visible: root.usageData.rateLimits?.weeklyOauthApps !== undefined &&
-                                 root.usageData.rateLimits?.weeklyOauthApps !== null
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Rectangle { width: 8; height: 8; radius: 4; color: root.cyanAccent }
-                            PlasmaComponents3.Label {
-                                text: "OAuth apps"
-                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.9
-                            }
-                            Item { Layout.fillWidth: true }
-                            PlasmaComponents3.Label {
-                                visible: (root.usageData.rateLimits?.weeklyOauthApps?.resetsLabel ?? "") !== ""
-                                text: "Resets " + (root.usageData.rateLimits?.weeklyOauthApps?.resetsLabel ?? "")
-                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
-                                opacity: 0.35
-                            }
-                            PlasmaComponents3.Label {
-                                property real pct: root.usageData.rateLimits?.weeklyOauthApps?.percentUsed ?? 0
-                                text: Math.round(pct) + "%"
-                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 1.1
-                                font.weight: Font.Bold
-                                color: limitColor(pct)
-                            }
-                        }
-
-                        Rectangle {
-                            Layout.fillWidth: true; height: 6; radius: 3
-                            color: root.subtleBorder
-                            Rectangle {
-                                property real pct: root.usageData.rateLimits?.weeklyOauthApps?.percentUsed ?? 0
-                                width: parent.width * Math.min(1, pct / 100)
-                                height: parent.height; radius: 3
-                                color: barFill(pct, root.cyanAccent)
-                                Behavior on width { NumberAnimation { duration: 600; easing.type: Easing.OutCubic } }
-                            }
-                        }
-                    }
-
-                    // Cowork (Claude Code teams) row
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 4
-                        visible: root.usageData.rateLimits?.weeklyCowork !== undefined &&
-                                 root.usageData.rateLimits?.weeklyCowork !== null
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Rectangle { width: 8; height: 8; radius: 4; color: root.claudeAmberLight }
-                            PlasmaComponents3.Label {
-                                text: "Cowork"
-                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.9
-                            }
-                            Item { Layout.fillWidth: true }
-                            PlasmaComponents3.Label {
-                                visible: (root.usageData.rateLimits?.weeklyCowork?.resetsLabel ?? "") !== ""
-                                text: "Resets " + (root.usageData.rateLimits?.weeklyCowork?.resetsLabel ?? "")
-                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
-                                opacity: 0.35
-                            }
-                            PlasmaComponents3.Label {
-                                property real pct: root.usageData.rateLimits?.weeklyCowork?.percentUsed ?? 0
-                                text: Math.round(pct) + "%"
-                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 1.1
-                                font.weight: Font.Bold
-                                color: limitColor(pct)
-                            }
-                        }
-
-                        Rectangle {
-                            Layout.fillWidth: true; height: 6; radius: 3
-                            color: root.subtleBorder
-                            Rectangle {
-                                property real pct: root.usageData.rateLimits?.weeklyCowork?.percentUsed ?? 0
-                                width: parent.width * Math.min(1, pct / 100)
-                                height: parent.height; radius: 3
-                                color: barFill(pct, root.claudeAmberLight)
-                                Behavior on width { NumberAnimation { duration: 600; easing.type: Easing.OutCubic } }
+                                Layout.fillWidth: true; height: 6; radius: 3
+                                color: root.subtleBorder
+                                Rectangle {
+                                    width: parent.width * Math.min(1, modelData.pct / 100)
+                                    height: parent.height; radius: 3
+                                    color: root.barFill(modelData.pct, modelData.accent)
+                                    Behavior on width { NumberAnimation { duration: 600; easing.type: Easing.OutCubic } }
+                                }
                             }
                         }
                     }

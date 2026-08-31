@@ -11,6 +11,8 @@ in the same spot, and each dropped what the other kept:
 Both consumers are live: the QML plasmoid binds weeklyFable (fableBarOnly mode),
 win-widget/src/main.js binds weeklyScoped. These tests pin both.
 """
+from pathlib import Path
+
 import pytest
 
 
@@ -56,10 +58,9 @@ def test_every_known_model_gets_its_own_field(limits_of):
     assert r["weeklyFable"]["percentUsed"] == 71
 
 
-def test_scoped_holds_first_entry(limits_of):
+def test_scoped_present_when_every_model_is_known(limits_of):
     r = limits_of([_scoped(55, "Claude Opus 5"), _scoped(71, "Fable")])
-    assert r["weeklyScoped"]["percentUsed"] == 55
-    assert r["weeklyScoped"]["modelName"] == "Claude Opus 5"
+    assert r["weeklyScoped"]["modelName"] in ("Claude Opus 5", "Fable")
 
 
 def test_no_scoped_entry_invents_nothing(limits_of):
@@ -122,9 +123,19 @@ def test_unknown_model_wins_scoped_over_a_known_one(limits_of):
     )
 
 
-def test_scoped_mirrors_first_when_all_known(limits_of):
-    r = limits_of([_scoped(55, "Claude Opus 5"), _scoped(71, "Fable")])
-    assert r["weeklyScoped"]["modelName"] == "Claude Opus 5"
+def test_scoped_is_stable_under_reordering(limits_of):
+    """limits[] carries no ordering guarantee. Picking by array position made
+    the bar swap model and value between refreshes with nothing to explain it."""
+    a = limits_of([_scoped(55, "Claude Opus 5"), _scoped(71, "Fable")])
+    b = limits_of([_scoped(71, "Fable"), _scoped(55, "Claude Opus 5")])
+    assert a["weeklyScoped"] == b["weeklyScoped"]
+
+
+def test_scoped_shows_the_most_used_unknown_model(limits_of):
+    a = limits_of([_scoped(11, "Quasar"), _scoped(99, "Nebula")])
+    b = limits_of([_scoped(99, "Nebula"), _scoped(11, "Quasar")])
+    assert a["weeklyScoped"]["modelName"] == "Nebula"
+    assert b["weeklyScoped"]["modelName"] == "Nebula"
 
 
 @pytest.mark.parametrize("display,expected", [
@@ -195,3 +206,16 @@ def test_percent_scale_matches_utilization(limits_of):
     r = limits_of([_scoped(32, "Fable")],
                   seven_day={"utilization": 32, "resets_at": "2026-09-04T04:59:59+00:00"})
     assert r["weeklyFable"]["percentUsed"] == r["weeklyAll"]["percentUsed"] == 32
+
+
+
+def test_haiku_cap_is_not_invisible(limits_of):
+    """A named field with no UI consumer used to swallow the entry and switch
+    off the weeklyScoped rescue, so a Haiku cap at 95% appeared nowhere."""
+    r = limits_of([_scoped(95, "Claude Haiku 5")])
+    assert r["weeklyHaiku"]["percentUsed"] == 95
+    # the plasmoid renders weeklyHaiku via weeklyScopeOrder; assert the key the
+    # QML looks up actually exists
+    qml = (Path(__file__).resolve().parents[1] /
+           "plasmoid" / "contents" / "ui" / "main.qml").read_text()
+    assert "weeklyHaiku" in qml, "weeklyHaiku has no UI consumer; the cap is invisible"

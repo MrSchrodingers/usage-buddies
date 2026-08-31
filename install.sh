@@ -123,7 +123,16 @@ migrate_legacy_install() {
         fi
     done
 
-    bash "$REPO_DIR/legacy/uninstall.sh"
+    # `if !` so `set -e` cannot abort between the uninstaller and the restore.
+    # A uninstaller that dies halfway has already deleted the config files, so
+    # skipping the restore is precisely the case that loses them.
+    # `|| rc=$?`, not `if ! ...; then rc=$?`: inside the then-branch $? is the
+    # status of the negation, which is always 0. `||` also keeps `set -e` from
+    # aborting between the uninstaller and the restore below — an uninstaller
+    # that dies halfway has already deleted the config files, so skipping the
+    # restore is exactly the case that loses them.
+    local rc=0
+    bash "$REPO_DIR/legacy/uninstall.sh" || rc=$?
 
     for f in "${preserved[@]+"${preserved[@]}"}"; do
         if [ ! -f "$HOME/.claude/$f" ] && [ -f "$keep/$f" ]; then
@@ -133,6 +142,12 @@ migrate_legacy_install() {
         fi
     done
     rm -rf "$keep"
+
+    if [ "$rc" -ne 0 ]; then
+        warn "Old uninstaller exited $rc — removal may be incomplete" \
+             "Your ~/.claude data files were restored; check the paths listed above"
+        return 0
+    fi
 
     ok "Old install removed"
 }

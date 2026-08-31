@@ -1309,38 +1309,63 @@ def detect_opus_fallbacks(days=1):
     day_cutoff = now - timedelta(days=days)
     week_cutoff = now - timedelta(days=7)
 
-    def _count_models(start):
-        by_model = {"opus": 0, "sonnet": 0, "haiku": 0, "other": 0}
-        for jsonl_file in _jsonl_files_newer_than(start):
-            try:
-                with open(jsonl_file, encoding="utf-8", errors="replace") as f:
-                    for line in f:
-                        if '"model"' not in line:
-                            continue
-                        try:
-                            r = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        ts = r.get("timestamp")
-                        d = parse_timestamp(ts) if ts else None
-                        if not d or d < start:
-                            continue
-                        m = (r.get("message") or {}).get("model") or ""
-                        ml = m.lower()
-                        if "opus" in ml:
-                            by_model["opus"] += 1
-                        elif "sonnet" in ml:
-                            by_model["sonnet"] += 1
-                        elif "haiku" in ml:
-                            by_model["haiku"] += 1
-                        elif m:
-                            by_model["other"] += 1
-            except (PermissionError, OSError):
-                continue
-        return by_model
+    def _scan_models(jsonl_file):
+        """Model counts for one file, bucketed by ISO day so any window can be
+        summed from the same cached scan."""
+        per_day = {}
+        try:
+            with open(jsonl_file, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if '"model"' not in line:
+                        continue
+                    try:
+                        r = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    ts = r.get("timestamp")
+                    d = parse_timestamp(ts) if ts else None
+                    if not d:
+                        continue
+                    m = (r.get("message") or {}).get("model") or ""
+                    if not m:
+                        continue
+                    ml = m.lower()
+                    family = ("opus" if "opus" in ml else
+                              "sonnet" if "sonnet" in ml else
+                              "haiku" if "haiku" in ml else "other")
+                    slot = per_day.setdefault(d.strftime("%Y-%m-%dT%H:%M"), {})
+                    slot[family] = slot.get(family, 0) + 1
+        except (PermissionError, OSError):
+            return {}
+        return per_day
 
-    today = _count_models(day_cutoff)
-    week = _count_models(week_cutoff)
+    # One pass over the week window feeds both counters: the day window is a
+    # subset of it, and this used to scan the same seven days twice. Per-file
+    # results are cached under (mtime, size), so a run reads only what moved.
+    cache, cached = _load_scan_cache("models")
+    fresh = {}
+    today = {"opus": 0, "sonnet": 0, "haiku": 0, "other": 0}
+    week = {"opus": 0, "sonnet": 0, "haiku": 0, "other": 0}
+    day_key = day_cutoff.strftime("%Y-%m-%dT%H:%M")
+    week_key = week_cutoff.strftime("%Y-%m-%dT%H:%M")
+
+    for jsonl_file in _jsonl_files_newer_than(week_cutoff):
+        key = str(jsonl_file)
+        stamp = _file_stamp(jsonl_file)
+        if stamp is None:
+            continue
+        entry = cached.get(key)
+        per_day = entry["days"] if entry and entry.get("stamp") == stamp else _scan_models(jsonl_file)
+        fresh[key] = {"stamp": stamp, "days": per_day}
+        for hour, counts in per_day.items():
+            if hour < week_key:
+                continue
+            for family, n in counts.items():
+                week[family] += n
+                if hour >= day_key:
+                    today[family] += n
+
+    _save_scan_cache(cache, "models", fresh)
     today_total = sum(today.values()) or 0
     week_total = sum(week.values()) or 0
     today_opus_ratio = (today["opus"] / today_total) if today_total >= 10 else None
@@ -1768,7 +1793,6 @@ def build_rate_limits():
         # consumers (QML, Tauri JS) that read rateLimits.weeklySonnet
         # directly. It defaults to 0% when the API returned null.
         sonnet_payload = api_data.get("seven_day_sonnet") or {}
-        ss_dt = parse_timestamp(sonnet_payload.get("resets_at", ""))
         result = {
             "session": {
                 "percentUsed": five_hour.get("utilization", 0) or 0,
@@ -1782,10 +1806,6 @@ def build_rate_limits():
                 "percentUsed": seven_day.get("utilization", 0) or 0,
                 "resetsLabel": weekly_reset_label,
                 "resetsAt": seven_day.get("resets_at", ""),
-            },
-            "weeklySonnet": {
-                "percentUsed": sonnet_payload.get("utilization", 0) or 0,
-                "resetsLabel": ss_dt.strftime("%a %I:%M %p") if ss_dt else "",
             },
             "plan": "Max (20x)",
             "source": "api",
@@ -1805,6 +1825,14 @@ def build_rate_limits():
         weekly_design = _weekly_block(api_data.get("seven_day_omelette"))
         if weekly_design:
             result["weeklyDesign"] = weekly_design
+        # seven_day_sonnet is deprecating to null like the other legacy per-model
+        # fields (observed null on the live endpoint 2026-08-31, while the real
+        # per-model cap arrived as a limits[] weekly_scoped entry for Fable).
+        # Emitting it unconditionally left every UI drawing a permanent
+        # "Sonnet only 0%" bar for a quota the API no longer reports.
+        weekly_sonnet = _weekly_block(sonnet_payload)
+        if weekly_sonnet:
+            result["weeklySonnet"] = weekly_sonnet
         weekly_oauth_apps = _weekly_block(api_data.get("seven_day_oauth_apps"))
         if weekly_oauth_apps:
             result["weeklyOauthApps"] = weekly_oauth_apps
@@ -1827,7 +1855,7 @@ def build_rate_limits():
         MODEL_FIELD = {"opus": "weeklyOpus", "sonnet": "weeklySonnet",
                        "fable": "weeklyFable", "haiku": "weeklyHaiku"}
         unmatched = []
-        first_scoped = None
+        scoped_blocks = []
         for entry in (api_data.get("limits") or []):
             if entry.get("kind") != "weekly_scoped":
                 continue
@@ -1851,16 +1879,22 @@ def build_rate_limits():
                 result[field] = block
             else:
                 unmatched.append(block)
-            if first_scoped is None:
-                first_scoped = block
+            scoped_blocks.append(block)
 
         # weeklyScoped exists to rescue what no named field can hold, so an
-        # unrecognised model wins it. With everything recognised it just
-        # mirrors the first entry, which is what win-widget expects to show.
+        # unrecognised model wins it. With everything recognised it mirrors the
+        # highest-used entry, which is the one worth a glance.
+        #
+        # Ties break on modelName, never on array position: the API does not
+        # promise an order for limits[], and picking by position made the bar
+        # swap model and value between two refreshes with no visible cause.
+        def _pick(blocks):
+            return sorted(blocks, key=lambda b: (-b["percentUsed"], b["modelName"]))[0]
+
         if unmatched:
-            result["weeklyScoped"] = unmatched[0]
-        elif first_scoped is not None:
-            result["weeklyScoped"] = first_scoped
+            result["weeklyScoped"] = _pick(unmatched)
+        elif scoped_blocks:
+            result["weeklyScoped"] = _pick(scoped_blocks)
 
         # Inline extra_usage summary (the `usage` endpoint also carries a quick
         # snapshot; the full shape lives under overage_spend_limit below).
@@ -1950,50 +1984,133 @@ def build_rate_limits():
     }
 
 
+SCAN_CACHE_FILE = CLAUDE_DIR / "widget-scan-cache.json"
+SCAN_CACHE_VERSION = 2
+
+
+def _file_stamp(path):
+    """Cheap identity for a JSONL file: mtime plus size. Both change on append,
+    so a stale entry cannot survive a write."""
+    try:
+        st = path.stat()
+        return [int(st.st_mtime), st.st_size]
+    except OSError:
+        return None
+
+
+def _load_scan_cache(section):
+    try:
+        with open(SCAN_CACHE_FILE, encoding="utf-8") as f:
+            cache = json.load(f)
+        if cache.get("version") == SCAN_CACHE_VERSION:
+            got = cache.get(section)
+            if isinstance(got, dict):
+                return cache, got
+        return {"version": SCAN_CACHE_VERSION}, {}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {"version": SCAN_CACHE_VERSION}, {}
+
+
+def _save_scan_cache(cache, section, entries):
+    cache["version"] = SCAN_CACHE_VERSION
+    cache[section] = entries
+    try:
+        tmp = SCAN_CACHE_FILE.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cache, f)
+        os.replace(tmp, SCAN_CACHE_FILE)
+    except OSError as e:
+        print(f"warn: could not write scan cache: {e}", file=sys.stderr)
+
+
+def _scan_jsonl_for_trend(jsonl_file, start_utc):
+    """Per-day contribution of one JSONL file: tokens, assistant messages, and
+    whether the file counts as a session that day.
+
+    Returned per file rather than accumulated globally so the result can be
+    cached: re-reading an appended file would otherwise double-count its
+    earlier lines.
+    """
+    is_sub = "subagents" in str(jsonl_file)
+    days = {}
+    try:
+        with open(jsonl_file, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ts = r.get("timestamp")
+                d = parse_timestamp(ts) if ts else None
+                if not d or d < start_utc:
+                    continue
+                day = d.astimezone().strftime("%Y-%m-%d")
+                slot = days.setdefault(day, {"tokens": 0, "messages": 0, "active": False})
+                msg = r.get("message", {})
+                usage = msg.get("usage", {})
+                if usage:
+                    slot["tokens"] += (
+                        usage.get("input_tokens", 0)
+                        + usage.get("output_tokens", 0)
+                        + usage.get("cache_read_input_tokens", 0)
+                        + usage.get("cache_creation_input_tokens", 0)
+                    )
+                if not is_sub and msg.get("role") == "assistant":
+                    slot["messages"] += 1
+                if not is_sub:
+                    slot["active"] = True
+    except (PermissionError, OSError):
+        return {}
+    return days
+
+
 def compute_daily_trend(days=8):
     """Per-day total tokens + message/session counts for the last `days` days,
     computed directly from the JSONL logs.
 
     stats-cache.json's dailyModelTokens can lag several days behind the live
     logs, which left the 7-day chart flat. Reading JSONL keeps it current.
+
+    Scanning every file in the window took ~8s per run on a 1000-file history,
+    against a 30s timer — most of it re-reading days that can no longer change.
+    Each file's contribution is cached under its (mtime, size), so a run only
+    reads what actually moved.
     """
     now_local = datetime.now()
     start_utc = datetime.now(timezone.utc) - timedelta(days=days)
+
+    cache, cached = _load_scan_cache("trend")
+    fresh = {}
     buckets = defaultdict(lambda: {"tokens": 0, "messages": 0, "sessions": set()})
 
     for jsonl_file in _jsonl_files_newer_than(start_utc):
-        is_sub = "subagents" in str(jsonl_file)
-        sid = jsonl_file.stem
-        try:
-            with open(jsonl_file, encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        r = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    ts = r.get("timestamp")
-                    d = parse_timestamp(ts) if ts else None
-                    if not d or d < start_utc:
-                        continue
-                    day = d.astimezone().strftime("%Y-%m-%d")
-                    msg = r.get("message", {})
-                    usage = msg.get("usage", {})
-                    if usage:
-                        buckets[day]["tokens"] += (
-                            usage.get("input_tokens", 0)
-                            + usage.get("output_tokens", 0)
-                            + usage.get("cache_read_input_tokens", 0)
-                            + usage.get("cache_creation_input_tokens", 0)
-                        )
-                    if not is_sub and msg.get("role") == "assistant":
-                        buckets[day]["messages"] += 1
-                    if not is_sub:
-                        buckets[day]["sessions"].add(sid)
-        except (PermissionError, OSError):
+        key = str(jsonl_file)
+        stamp = _file_stamp(jsonl_file)
+        if stamp is None:
             continue
+
+        entry = cached.get(key)
+        if entry and entry.get("stamp") == stamp:
+            per_day = entry["days"]
+        else:
+            per_day = _scan_jsonl_for_trend(jsonl_file, start_utc)
+        fresh[key] = {"stamp": stamp, "days": per_day}
+
+        # Session ids, not a per-file counter: two projects can hold files with
+        # the same stem, and the pre-cache implementation deduplicated by id.
+        sid = jsonl_file.stem
+        for day, slot in per_day.items():
+            b = buckets[day]
+            b["tokens"] += slot.get("tokens", 0)
+            b["messages"] += slot.get("messages", 0)
+            if slot.get("active"):
+                b["sessions"].add(sid)
+
+    # fresh only holds files still inside the window, so the cache self-prunes.
+    _save_scan_cache(cache, "trend", fresh)
 
     trend = []
     for i in range(days - 1, -1, -1):

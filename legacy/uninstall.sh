@@ -17,8 +17,11 @@ echo ""
 REMOVED=0
 
 # ── Kill running tray app (only our specific binary) ──
-if command -v pgrep &>/dev/null && pgrep -x "claude-usage-tray" &>/dev/null; then
-    pkill -x "claude-usage-tray" 2>/dev/null
+# -f, not -x: /proc/PID/comm truncates at 15 chars, so `pgrep -x` never
+# matches a name this long and the process was silently left running.
+# The full path keeps the match precise.
+if command -v pgrep &>/dev/null && pgrep -f "$HOME/.local/bin/claude-usage-tray" &>/dev/null; then
+    pkill -f "$HOME/.local/bin/claude-usage-tray" 2>/dev/null
     echo -e "  ${GREEN}✓${NC} Stopped running tray app"
     ((REMOVED++))
 fi

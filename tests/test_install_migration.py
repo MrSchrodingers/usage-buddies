@@ -7,6 +7,7 @@ uninstaller against a fresh install. These tests pin both directions.
 """
 import os
 import subprocess
+import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -28,15 +29,55 @@ NEW = {
     ".config/autostart/usage-buddies-tray.desktop": "f",
 }
 
-HARNESS = r'''
+# The harness sources only migrate_legacy_install out of install.sh and points
+# REPO_DIR at a throwaway directory holding a STUB legacy/uninstall.sh.
+#
+# The real uninstaller runs `systemctl --user disable --now` and
+# `rm -f /tmp/claude_*.sqlite*`. `systemctl --user` talks to the caller's own
+# session manager and ignores HOME, so running it from a test would disable the
+# operator's timer and delete files outside tmp_path. A test must not be able to
+# do that, however isolated its HOME looks.
+HARNESS = r"""
 set -uo pipefail
 RED=''; GREEN=''; AMBER=''; BLUE=''; BOLD=''; DIM=''; NC=''
 REPO_DIR="{repo}"
-ok(){{ echo "OK:$1"; }}; warn(){{ echo "WARN:$1"; }}; step_desc(){{ echo "STEP:$1"; }}
-eval "$(sed -n '/^migrate_legacy_install() {{/,/^}}/p' "$REPO_DIR/install.sh")"
+ok(){{ echo "OK:$1"; }}; warn(){{ echo "WARN:$1|${{2:-}}"; }}; step_desc(){{ echo "STEP:$1"; }}
+eval "$(sed -n '/^migrate_legacy_install() {{/,/^}}/p' "{install_sh}")"
 migrate_legacy_install
 echo "RC=$?"
-'''
+"""
+
+# Stands in for legacy/uninstall.sh: deletes the same ~/.claude files and the
+# same install artifacts, with no systemd or /tmp contact.
+STUB_UNINSTALLER = """#!/bin/bash
+set -uo pipefail
+rm -f "$HOME/.local/bin/claude-usage-collector.py" "$HOME/.local/bin/claude-usage-tray"
+rm -f "$HOME/.config/autostart/claude-usage-tray.desktop"
+rm -rf "$HOME/.local/share/plasma/plasmoids/org.kde.plasma.claudeusage"
+rm -f "$HOME/.config/systemd/user/claude-usage-collector."{timer,service}
+for f in widget-data.json widget-config.json widget-status-prev.json; do
+    rm -f "$HOME/.claude/$f"
+done
+echo "stub-uninstaller: done"
+STUB_EXIT
+"""
+
+
+def _fake_repo(tmp_path, exit_code=0, die_midway=False):
+    """A REPO_DIR whose legacy/uninstall.sh is the stub above."""
+    repo = tmp_path / "fake-repo"
+    (repo / "legacy").mkdir(parents=True)
+    body = STUB_UNINSTALLER
+    if die_midway:
+        # Delete the config, then fail — the case that loses data if the
+        # restore is skipped.
+        body = body.replace('echo "stub-uninstaller: done"',
+                            'echo "stub-uninstaller: dying after deleting config" >&2')
+    body = body.replace("STUB_EXIT", f"exit {exit_code}")
+    u = repo / "legacy" / "uninstall.sh"
+    u.write_text(body)
+    u.chmod(0o755)
+    return repo
 
 
 def _make(home: Path, layout):
@@ -49,13 +90,48 @@ def _make(home: Path, layout):
             p.write_text("x")
 
 
-def _run(home: Path):
-    script = HARNESS.format(repo=REPO)
-    env = dict(os.environ, HOME=str(home))
-    # stdin closed: the function must take the non-interactive branch and never
-    # invoke the uninstaller from a test.
-    return subprocess.run(["bash", "-c", script], capture_output=True, text=True,
-                          env=env, stdin=subprocess.DEVNULL)
+def _script(repo):
+    return HARNESS.format(repo=repo, install_sh=INSTALL_SH)
+
+
+def _run(home: Path, repo=None):
+    """Non-interactive: stdin closed, so the function must warn and return
+    without invoking any uninstaller."""
+    return subprocess.run(["bash", "-c", _script(repo or REPO)],
+                          capture_output=True, text=True,
+                          env=dict(os.environ, HOME=str(home)),
+                          stdin=subprocess.DEVNULL, timeout=30)
+
+
+def _run_interactive(home: Path, repo, answer: str = "y\n"):
+    """Drive it through a real pty so `[ -t 0 ]` is true and the migration path
+    actually executes. Over a pipe it takes the non-interactive branch and the
+    uninstaller never runs, which would make these tests pass vacuously."""
+    import pty
+    import select
+
+    pid, fd = pty.fork()
+    if pid == 0:                                    # child
+        os.environ["HOME"] = str(home)
+        os.execvp("bash", ["bash", "-c", _script(repo)])
+    os.write(fd, answer.encode())
+    out, deadline = b"", time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if not select.select([fd], [], [], 1.0)[0]:
+            continue
+        try:
+            chunk = os.read(fd, 4096)
+        except OSError:
+            break
+        if not chunk:
+            break
+        out += chunk
+    else:                                           # pragma: no cover
+        os.kill(pid, 9)
+        os.waitpid(pid, 0)
+        raise AssertionError(f"migrate_legacy_install did not finish in 30s:\n{out.decode(errors='replace')}")
+    os.waitpid(pid, 0)
+    return out.decode(errors="replace")
 
 
 def test_detects_an_old_install(tmp_path):
@@ -96,40 +172,15 @@ def test_install_sh_still_spells_the_old_names(tmp_path):
         assert name in fn, f"migrate_legacy_install lost the old name {name!r}"
 
 
-def _run_interactive(home: Path, answer: str = "y\n"):
-    """Run the function with a real pty so `[ -t 0 ]` is true and the migration
-    path actually executes. With a pipe it takes the non-interactive branch and
-    the uninstaller never runs — the test would pass without testing anything."""
-    import pty
-
-    script = HARNESS.format(repo=REPO)
-    pid, fd = pty.fork()
-    if pid == 0:                                    # child
-        os.environ["HOME"] = str(home)
-        os.execvp("bash", ["bash", "-c", script])
-    os.write(fd, answer.encode())
-    out = b""
-    while True:
-        try:
-            chunk = os.read(fd, 4096)
-        except OSError:
-            break
-        if not chunk:
-            break
-        out += chunk
-    os.waitpid(pid, 0)
-    return out.decode(errors="replace")
-
-
 def test_migration_actually_runs_the_uninstaller(tmp_path):
-    """Guard for the test below: if the uninstaller never runs, preserving the
-    config proves nothing."""
+    """Guard for the tests below: if the uninstaller never runs, preserving the
+    config across it proves nothing."""
     _make(tmp_path, OLD)
-    out = _run_interactive(tmp_path)
+    repo = _fake_repo(tmp_path)
+    out = _run_interactive(tmp_path, repo)
     assert "non-interactive" not in out, f"took the non-interactive branch:\n{out}"
-    assert not (tmp_path / ".local/bin/claude-usage-collector.py").exists(), (
-        f"old collector still present, uninstaller did not run:\n{out}"
-    )
+    assert "stub-uninstaller: done" in out, f"uninstaller did not run:\n{out}"
+    assert not (tmp_path / ".local/bin/claude-usage-collector.py").exists(), out
 
 
 def test_migration_preserves_widget_config(tmp_path):
@@ -142,10 +193,43 @@ def test_migration_preserves_widget_config(tmp_path):
     cfg = claude / "widget-config.json"
     cfg.write_text('{"org_id":"abc","notifications":{"sounds":{"sessionEnded":"custom"}}}')
 
-    out = _run_interactive(tmp_path)
+    out = _run_interactive(tmp_path, _fake_repo(tmp_path))
 
     assert cfg.exists(), f"widget-config.json lost during migration:\n{out}"
     body = cfg.read_text()
-    assert '"org_id"' in body and '"custom"' in body, (
-        f"config survived but was rewritten: {body}"
+    assert '"org_id"' in body and '"custom"' in body, f"config rewritten: {body}"
+
+
+def test_config_survives_an_uninstaller_that_dies_midway(tmp_path):
+    """install.sh runs under `set -e`. An uninstaller that deletes the config
+    and then fails would abort the script before the restore loop, losing the
+    file and orphaning the backup in a temp dir nobody is told about."""
+    _make(tmp_path, OLD)
+    claude = tmp_path / ".claude"
+    claude.mkdir(parents=True)
+    cfg = claude / "widget-config.json"
+    cfg.write_text('{"org_id":"REAL-ORG-ID"}')
+
+    out = _run_interactive(tmp_path, _fake_repo(tmp_path, exit_code=130, die_midway=True))
+
+    assert cfg.exists(), (
+        f"widget-config.json lost when the uninstaller failed midway:\n{out}"
     )
+    assert '"org_id"' in cfg.read_text()
+    assert "RC=0" in out, f"migration should not abort the installer:\n{out}"
+    assert "exited 130" in out, f"partial removal not reported to the user:\n{out}"
+
+
+def test_stub_uninstaller_touches_no_system_state():
+    """The real legacy/uninstall.sh calls `systemctl --user` and removes
+    /tmp/claude_*.sqlite*. `systemctl --user` ignores HOME and reaches the
+    caller's own session manager, so no test may run it — they drive the stub."""
+    real = (REPO / "legacy" / "uninstall.sh").read_text()
+    assert "systemctl --user" in real, (
+        "guard is stale: the real uninstaller no longer calls systemctl, so this "
+        "test no longer guards anything"
+    )
+    for forbidden in ("systemctl", "pkill", "/tmp/"):
+        assert forbidden not in STUB_UNINSTALLER, (
+            f"the stub uninstaller must not reference {forbidden!r}"
+        )
