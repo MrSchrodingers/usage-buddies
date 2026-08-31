@@ -316,6 +316,26 @@ never as current conformance — the live number comes from layer B.
 not leave the machine. `/var/log/tollens-activation.jsonl` carries project file
 paths that name clients. Neither belongs in a JSON a desktop widget reads.
 
+**Usage metrics** come from `/var/log/tollens-activation.jsonl`, aggregated:
+which agents get invoked and their share, which skills and tools, distinct
+session count, and the split of loaded instructions across the precedence chain
+(Managed / Project / User). That last one is the closest thing Tollens records
+to evidence of **ACTIVATED**, the third of its three states and the one its own
+README calls hard to establish.
+
+The verify-gate ledgers under `~/.claude/evidence/` give a pass rate — ~3500
+files and 15 MB, measured at 0.41 s, so it rides along with layer B rather than
+running every cycle.
+
+These are **running totals, not a window**. The activation log carries no
+timestamps, and deriving a start from the file's `ctime` would be wrong: on
+Linux that is the inode change time and moves on every append.
+
+The log's `f` field holds project file paths that name clients. The probe
+declares an allowlist of safe fields (`ev`, `a`, `k`, `t`) and never indexes
+`f`; session ids are counted for the distinct total and never emitted. Tests
+assert both, and fail against a mutant that adds `f` to the list.
+
 **Not available.** Tollens records no hook execution timings anywhere, so the
 page says so rather than showing an empty chart.
 

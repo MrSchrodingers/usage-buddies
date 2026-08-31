@@ -127,20 +127,35 @@ def test_missing_heartbeat_is_empty(probe, monkeypatch, tmp_path):
 
 # ── privacy ──
 
-SENSITIVE = ["subagent-probe", "activation-log", "tollens-activation",
-             "last_assistant_message", "transcript_path"]
+# Never opened at all: the whole file is unsafe.
+NEVER_READ = ["subagent-probe", "last_assistant_message", "transcript_path"]
 
 
-@pytest.mark.parametrize("needle", SENSITIVE)
-def test_probe_never_names_a_sensitive_source(needle):
-    """subagent-probe.jsonl carries `last_assistant_message` and `cwd`; the
-    activation log carries project paths that name clients. Neither belongs in
-    a JSON a desktop widget reads."""
+@pytest.mark.parametrize("needle", NEVER_READ)
+def test_probe_never_touches_the_transcript_probe(needle):
+    """subagent-probe.jsonl carries `last_assistant_message` and `cwd`, and its
+    own header states the payload must not leave the machine. There is no safe
+    subset — the file is simply not opened."""
     body = PROBE.read_text()
-    code = "\n".join(l for l in body.split("\n") if not l.strip().startswith("#"))
-    # the docstring names them to explain the exclusion; code must not
-    code = code.split('"""', 2)[-1]
+    code = body.split('"""', 2)[-1]
+    code = "\n".join(l for l in code.split("\n") if not l.strip().startswith("#"))
     assert needle not in code, f"probe references {needle!r} outside its rationale"
+
+
+def test_activation_log_is_read_but_paths_are_not():
+    """The activation log is read — it is the only source of usage counts — but
+    its `f` field holds project paths that name clients. The rule is a field
+    allowlist, not file avoidance, so it is stated as one."""
+    body = PROBE.read_text()
+    assert "ACTIVATION_SAFE" in body, "no declared allowlist of safe fields"
+    assert '"f"' not in body.split("ACTIVATION_SAFE")[1].split(")")[0], (
+        "the paths field is inside the safe list"
+    )
+    # and the code must never index that field
+    code = body.split('"""', 2)[-1]
+    assert 'rec.get("f")' not in code and "['f']" not in code, (
+        "probe reads the project-paths field"
+    )
 
 
 def test_output_lands_outside_the_audited_tree():
@@ -186,3 +201,113 @@ def test_probe_runs_end_to_end(tmp_path):
     assert r.returncode == 0, r.stderr
     out = json.loads((tmp_path / "usage-buddies" / "tollens.json").read_text())
     assert "present" in out
+
+
+# ── usage metrics ──
+
+def _activation(tmp_path, records):
+    p = tmp_path / "activation.jsonl"
+    p.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+    return p
+
+
+def test_usage_ranks_agents_with_shares(probe, monkeypatch, tmp_path):
+    monkeypatch.setattr(probe, "ACTIVATION_LOG", _activation(tmp_path, [
+        {"ev": "SubagentStart", "a": "investigador", "s": "s1"},
+        {"ev": "SubagentStart", "a": "investigador", "s": "s1"},
+        {"ev": "SubagentStart", "a": "investigador", "s": "s2"},
+        {"ev": "SubagentStart", "a": "refutador", "s": "s2"},
+    ]))
+    u = probe.usage()
+    assert u["agents"][0] == {"name": "investigador", "count": 3, "share": 0.75}
+    assert u["sessions"] == 2, "distinct sessions miscounted"
+
+
+def test_skills_and_tools_are_separated_by_event(probe, monkeypatch, tmp_path):
+    """`k` carries both, distinguished only by the event that logged it."""
+    monkeypatch.setattr(probe, "ACTIVATION_LOG", _activation(tmp_path, [
+        {"ev": "Skill", "k": "claude-api", "s": "s1"},
+        {"ev": "PreToolUse", "k": "Bash", "s": "s1"},
+        {"ev": "PreToolUse", "k": "Bash", "s": "s1"},
+    ]))
+    u = probe.usage()
+    assert [r["name"] for r in u["skills"]] == ["claude-api"]
+    assert [r["name"] for r in u["tools"]] == ["Bash"]
+
+
+def test_memory_scope_is_captured(probe, monkeypatch, tmp_path):
+    """The closest thing Tollens records to evidence of ACTIVATED."""
+    monkeypatch.setattr(probe, "ACTIVATION_LOG", _activation(tmp_path, [
+        {"ev": "InstructionsLoaded", "t": "Managed", "s": "s1"},
+        {"ev": "InstructionsLoaded", "t": "Project", "s": "s1"},
+        {"ev": "InstructionsLoaded", "t": "Project", "s": "s2"},
+    ]))
+    assert probe.usage()["memoryScope"] == {"Managed": 1, "Project": 2}
+
+
+def test_project_paths_never_reach_the_output(probe, monkeypatch, tmp_path):
+    """`f` holds project file paths that name clients. They must not appear in
+    the emitted structure under any key."""
+    monkeypatch.setattr(probe, "ACTIVATION_LOG", _activation(tmp_path, [
+        {"ev": "InstructionsLoaded", "t": "Project", "s": "s1",
+         "f": "/var/www/ACME-CLIENT/backend/CLAUDE.md"},
+    ]))
+    blob = json.dumps(probe.usage())
+    assert "ACME-CLIENT" not in blob and "/var/www" not in blob, blob
+
+
+def test_session_ids_are_counted_not_emitted(probe, monkeypatch, tmp_path):
+    monkeypatch.setattr(probe, "ACTIVATION_LOG", _activation(tmp_path, [
+        {"ev": "SubagentStart", "a": "x", "s": "68e9eb26-f760-418d-a88d-613921631721"},
+    ]))
+    u = probe.usage()
+    assert u["sessions"] == 1
+    assert "68e9eb26" not in json.dumps(u)
+
+
+def test_usage_reports_no_time_window(probe, monkeypatch, tmp_path):
+    """The log has no timestamps. Deriving a start from ctime would be wrong —
+    on Linux that is the inode change time and moves on every append."""
+    monkeypatch.setattr(probe, "ACTIVATION_LOG", _activation(tmp_path, [
+        {"ev": "Skill", "k": "a", "s": "s1"}]))
+    assert "since" not in probe.usage()
+
+
+def test_missing_activation_log_is_empty(probe, monkeypatch, tmp_path):
+    monkeypatch.setattr(probe, "ACTIVATION_LOG", tmp_path / "absent.jsonl")
+    assert probe.usage() == {}
+
+
+def test_malformed_lines_are_skipped(probe, monkeypatch, tmp_path):
+    p = tmp_path / "a.jsonl"
+    p.write_text('{"ev":"Skill","k":"ok","s":"s1"}\nnot json\n\n{"ev":"Skill","k":"ok","s":"s1"}\n')
+    monkeypatch.setattr(probe, "ACTIVATION_LOG", p)
+    assert probe.usage()["records"] == 2
+
+
+# ── verify gate ──
+
+def test_gate_tallies_verdicts(probe, monkeypatch, tmp_path):
+    ev = tmp_path / "evidence"
+    ev.mkdir()
+    (ev / "a.jsonl").write_text(
+        json.dumps({"verdict": "pass"}) + "\n" + json.dumps({"verdict": "fail"}) + "\n")
+    (ev / "b.jsonl").write_text(json.dumps({"verdict": "pass"}) + "\n")
+    monkeypatch.setattr(probe, "EVIDENCE_DIR", ev)
+    g = probe.gate()
+    assert g["byVerdict"] == {"pass": 2, "fail": 1}
+    assert g["passRate"] == round(2 / 3, 4)
+
+
+def test_gate_skips_the_heartbeat_file(probe, monkeypatch, tmp_path):
+    """The heartbeat lives in the same directory and is not a gate ledger."""
+    ev = tmp_path / "evidence"
+    ev.mkdir()
+    (ev / probe.HEARTBEAT.name).write_text(json.dumps({"verdict": "pass"}) + "\n")
+    monkeypatch.setattr(probe, "EVIDENCE_DIR", ev)
+    assert probe.gate() == {}
+
+
+def test_gate_is_empty_without_evidence(probe, monkeypatch, tmp_path):
+    monkeypatch.setattr(probe, "EVIDENCE_DIR", tmp_path / "absent")
+    assert probe.gate() == {}

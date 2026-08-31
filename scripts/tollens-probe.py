@@ -37,6 +37,18 @@ from pathlib import Path
 MANAGED_SETTINGS = Path("/etc/claude-code/managed-settings.json")
 TOLLENS_SRC = Path(os.environ.get("TOLLENS_REPO", "/opt/.tollens-src"))
 HEARTBEAT = Path.home() / ".claude" / "evidence" / "session-integrity.jsonl"
+ACTIVATION_LOG = Path("/var/log/tollens-activation.jsonl")
+EVIDENCE_DIR = Path.home() / ".claude" / "evidence"
+
+# Fields in the activation log, and what may leave it.
+#   ev  event type              aggregate
+#   a   agent name              aggregate — this is the usage ranking
+#   k   skill or tool name      aggregate
+#   t   memory scope            aggregate — Managed/Project/User
+#   s   session id              counted, never emitted
+#   f   project file paths      NEVER READ: these name clients
+ACTIVATION_SAFE = ("ev", "a", "k", "t")
+TOP_N = 6
 
 # Outside ~/.claude on purpose: that tree is what Tollens audits, and a widget
 # file sitting in it is a candidate orphan the moment their scan widens.
@@ -105,6 +117,111 @@ def inventory() -> dict:
     except OSError:
         return {}
     return {"byType": counts, "total": sum(counts.values())}
+
+
+def _rank(counter, total, limit=TOP_N):
+    """Top entries with their share, so the page can show a proportion rather
+    than a bare number nobody can calibrate."""
+    rows = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
+    return [{"name": name, "count": n,
+             "share": round(n / total, 4) if total else 0}
+            for name, n in rows]
+
+
+def usage() -> dict:
+    """Aggregate counts from the activation log.
+
+    The log has no timestamps, so these are running totals — not a window.
+    Saying "last 7 days" would be an invention, and so would deriving a start
+    from the file's ctime, which on Linux is the inode change time and moves
+    on every append.
+
+    The `f` field holds project file paths that name clients and is never read;
+    `s` is counted for distinct sessions but the ids themselves never leave.
+    """
+    if not ACTIVATION_LOG.exists():
+        return {}
+
+    events, agents, skills, tools, scopes = {}, {}, {}, {}, {}
+    sessions = set()
+    lines = 0
+    try:
+        with open(ACTIVATION_LOG, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                lines += 1
+                ev = rec.get("ev") or "?"
+                events[ev] = events.get(ev, 0) + 1
+                if rec.get("s"):
+                    sessions.add(rec["s"])
+                if rec.get("a"):
+                    agents[rec["a"]] = agents.get(rec["a"], 0) + 1
+                if rec.get("t"):
+                    scopes[rec["t"]] = scopes.get(rec["t"], 0) + 1
+                name = rec.get("k")
+                if name:
+                    bucket = skills if ev == "Skill" else tools
+                    bucket[name] = bucket.get(name, 0) + 1
+    except OSError:
+        return {}
+
+    return {
+        "records": lines,
+        "sessions": len(sessions),
+        "events": events,
+        "agents": _rank(agents, sum(agents.values())),
+        "skills": _rank(skills, sum(skills.values())),
+        "tools": _rank(tools, sum(tools.values())),
+        # Which layer of the precedence chain instructions actually came from.
+        # This is the closest thing Tollens records to evidence of ACTIVATED,
+        # the third and hardest of its three states to establish.
+        "memoryScope": scopes,
+    }
+
+
+def gate() -> dict:
+    """Pass/fail tally from the verify-gate ledgers.
+
+    ~3500 files, 15MB, 0.41s — cheap enough for the throttled layer, not for
+    every cycle. Only the verdict field is read; `detail` is short but is not
+    needed and is left alone.
+    """
+    if not EVIDENCE_DIR.is_dir():
+        return {}
+    counts = {}
+    try:
+        for path in EVIDENCE_DIR.rglob("*.jsonl"):
+            if path.name == HEARTBEAT.name:
+                continue
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        if '"verdict"' not in line:
+                            continue
+                        try:
+                            v = json.loads(line).get("verdict")
+                        except json.JSONDecodeError:
+                            continue
+                        if v:
+                            counts[v] = counts.get(v, 0) + 1
+            except OSError:
+                continue
+    except OSError:
+        return {}
+
+    total = sum(counts.values())
+    if not total:
+        return {}
+    return {
+        "byVerdict": counts,
+        "total": total,
+        "passRate": round(counts.get("pass", 0) / total, 4),
+    }
 
 
 def _run(cmd, cwd):
@@ -206,14 +323,17 @@ def collect() -> dict:
 
     data["inventory"] = inventory()
     data["heartbeat"] = heartbeat()
+    data["usage"] = usage()
 
     previous = _read_json(OUT_FILE) or {}
     prior = previous.get("conformance") or {}
     age = time.time() - (prior.get("checkedAt") or 0)
     if age >= VERIFY_EVERY_SECONDS or "--now" in sys.argv:
         data["conformance"] = conformance()
+        data["gate"] = gate()
     else:
         data["conformance"] = prior
+        data["gate"] = previous.get("gate") or {}
 
     # Tollens records no hook timings anywhere — searched evidence/, execution/,
     # control/ and orchestration/. Stated rather than left as an empty chart.

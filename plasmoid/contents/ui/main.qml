@@ -183,7 +183,11 @@ PlasmoidItem {
             "history": "history", "live": "live",
             "switchTo": "Switch to", "followingLocale": "currently following the desktop locale",
             "justNow": "just now", "minutesAgo": "m ago", "hoursAgo": "h ago", "daysAgo": "d ago",
-            "stale": "stale"
+            "stale": "stale", "activity": "Activity", "agents": "Agents", "skills": "Skills",
+            "tools": "Tools", "runningTotals": "running totals, no time window",
+            "activation": "Activation", "activationNote": "which layer of the precedence chain instructions came from",
+            "verifyGate": "Verify gate", "passRate": "pass rate", "invocations": "invocations",
+            "distinctSessions": "sessions", "noneRecorded": "none recorded"
         },
         "pt": {
             "rolling5h": "janela de 5h",
@@ -218,7 +222,11 @@ PlasmoidItem {
             "history": "histórico", "live": "ao vivo",
             "switchTo": "Mudar para", "followingLocale": "seguindo o locale da área de trabalho",
             "justNow": "agora", "minutesAgo": "min atrás", "hoursAgo": "h atrás", "daysAgo": "d atrás",
-            "stale": "desatualizado"
+            "stale": "desatualizado", "activity": "Atividade", "agents": "Agentes", "skills": "Skills",
+            "tools": "Ferramentas", "runningTotals": "totais acumulados, sem janela de tempo",
+            "activation": "Ativação", "activationNote": "de qual camada da precedência vieram as instruções",
+            "verifyGate": "Verify gate", "passRate": "taxa de aprovação", "invocations": "invocações",
+            "distinctSessions": "sessões", "noneRecorded": "nada registrado"
         }
     })
 
@@ -1302,6 +1310,256 @@ PlasmoidItem {
                                 opacity: 0.55
                             }
                         }
+                    }
+                }
+            }
+
+            // ── Activation: which layer actually supplied the instructions ──
+            //
+            // Tollens' three states are INSTALLED, ENFORCED and ACTIVATED, and
+            // the third is the one its own README calls hard to establish.
+            // This is the closest thing it records to evidence for it: a count
+            // of where loaded instructions came from in the precedence chain.
+            Rectangle {
+                Layout.fillWidth: true
+                visible: Object.keys(t.usage?.memoryScope ?? ({})).length > 0
+                implicitHeight: actCol.implicitHeight + Kirigami.Units.mediumSpacing * 2
+                radius: 10
+                color: root.cardBg
+
+                ColumnLayout {
+                    id: actCol
+                    anchors.fill: parent
+                    anchors.margins: Kirigami.Units.mediumSpacing
+                    spacing: 5
+
+                    readonly property var scopes: {
+                        var m = t.usage?.memoryScope ?? ({});
+                        var order = ["Managed", "Project", "User"];
+                        var rows = [], total = 0;
+                        for (var k in m) total += m[k];
+                        for (var i = 0; i < order.length; i++) {
+                            if (m[order[i]] === undefined) continue;
+                            rows.push({ name: order[i], count: m[order[i]],
+                                        share: total ? m[order[i]] / total : 0 });
+                        }
+                        return rows;
+                    }
+
+                    PlasmaComponents3.Label {
+                        text: root.tr("activation")
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
+                        font.weight: Font.DemiBold; opacity: 0.45
+                    }
+
+                    // One stacked bar: the split is the point, not the values.
+                    Row {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 8
+                        spacing: 2
+                        Repeater {
+                            model: actCol.scopes
+                            delegate: Rectangle {
+                                required property var modelData
+                                required property int index
+                                width: (actCol.width - 4) * modelData.share
+                                height: 8
+                                radius: 4
+                                color: index === 0 ? root.greenAccent
+                                     : index === 1 ? root.calmFill : root.subtleBorder
+                                Behavior on width { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
+                            }
+                        }
+                    }
+
+                    Flow {
+                        Layout.fillWidth: true
+                        spacing: Kirigami.Units.largeSpacing
+                        Repeater {
+                            model: actCol.scopes
+                            delegate: RowLayout {
+                                required property var modelData
+                                required property int index
+                                spacing: 4
+                                Rectangle {
+                                    width: 7; height: 7; radius: 3.5
+                                    Layout.alignment: Qt.AlignVCenter
+                                    color: index === 0 ? root.greenAccent
+                                         : index === 1 ? root.calmFill : root.subtleBorder
+                                }
+                                PlasmaComponents3.Label {
+                                    text: modelData.name + " " + Math.round(modelData.share * 100) + "%"
+                                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.73
+                                    font.features: ({ "tnum": 1 })
+                                    opacity: 0.6
+                                }
+                            }
+                        }
+                    }
+
+                    PlasmaComponents3.Label {
+                        Layout.fillWidth: true
+                        text: root.tr("activationNote")
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.7
+                        opacity: 0.32
+                    }
+                }
+            }
+
+            // ── Activity: what actually gets invoked ──
+            Rectangle {
+                Layout.fillWidth: true
+                visible: (t.usage?.records ?? 0) > 0
+                implicitHeight: useCol.implicitHeight + Kirigami.Units.mediumSpacing * 2
+                radius: 10
+                color: root.cardBg
+
+                ColumnLayout {
+                    id: useCol
+                    anchors.fill: parent
+                    anchors.margins: Kirigami.Units.mediumSpacing
+                    spacing: Kirigami.Units.smallSpacing
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        PlasmaComponents3.Label {
+                            text: root.tr("activity")
+                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
+                            font.weight: Font.DemiBold; opacity: 0.45
+                        }
+                        Item { Layout.fillWidth: true }
+                        PlasmaComponents3.Label {
+                            text: (t.usage?.records ?? 0) + " " + root.tr("invocations") +
+                                  " · " + (t.usage?.sessions ?? 0) + " " + root.tr("distinctSessions")
+                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.72
+                            font.features: ({ "tnum": 1 })
+                            opacity: 0.4
+                        }
+                    }
+
+                    // Agents, skills and tools share one delegate: same shape,
+                    // different source, so they stay visually comparable.
+                    Repeater {
+                        model: [
+                            { key: "agents", rows: t.usage?.agents ?? [] },
+                            { key: "skills", rows: t.usage?.skills ?? [] },
+                            { key: "tools",  rows: t.usage?.tools ?? [] }
+                        ]
+                        delegate: ColumnLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            visible: modelData.rows.length > 0
+                            spacing: 2
+
+                            PlasmaComponents3.Label {
+                                Layout.topMargin: 3
+                                text: root.tr(modelData.key)
+                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.72
+                                opacity: 0.38
+                            }
+                            Repeater {
+                                model: modelData.rows
+                                delegate: RowLayout {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    spacing: Kirigami.Units.smallSpacing
+
+                                    PlasmaComponents3.Label {
+                                        Layout.preferredWidth: Kirigami.Units.gridUnit * 7
+                                        text: modelData.name
+                                        elide: Text.ElideRight
+                                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.75
+                                        opacity: 0.7
+                                    }
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        Layout.alignment: Qt.AlignVCenter
+                                        height: 5; radius: 2.5
+                                        color: root.subtleBorder
+                                        Rectangle {
+                                            width: parent.width * modelData.share
+                                            height: parent.height; radius: 2.5
+                                            color: root.calmFill
+                                            Behavior on width { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
+                                        }
+                                    }
+                                    PlasmaComponents3.Label {
+                                        Layout.preferredWidth: Kirigami.Units.gridUnit * 2.4
+                                        horizontalAlignment: Text.AlignRight
+                                        text: Math.round(modelData.share * 100) + "%"
+                                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.73
+                                        font.features: ({ "tnum": 1 })
+                                        font.weight: Font.Bold
+                                        opacity: 0.55
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    PlasmaComponents3.Label {
+                        Layout.fillWidth: true
+                        Layout.topMargin: 2
+                        text: root.tr("runningTotals")
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.68
+                        opacity: 0.28
+                    }
+                }
+            }
+
+            // ── Verify gate ──
+            Rectangle {
+                Layout.fillWidth: true
+                visible: (t.gate?.total ?? 0) > 0
+                implicitHeight: gateRow.implicitHeight + Kirigami.Units.mediumSpacing * 2
+                radius: 10
+                color: root.cardBg
+
+                ColumnLayout {
+                    id: gateRow
+                    anchors.fill: parent
+                    anchors.margins: Kirigami.Units.mediumSpacing
+                    spacing: 4
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        PlasmaComponents3.Label {
+                            text: root.tr("verifyGate")
+                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
+                            font.weight: Font.DemiBold; opacity: 0.45
+                        }
+                        Item { Layout.fillWidth: true }
+                        PlasmaComponents3.Label {
+                            property real rate: t.gate?.passRate ?? 0
+                            text: Math.round(rate * 100) + "% " + root.tr("passRate")
+                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.85
+                            font.weight: Font.Bold
+                            font.features: ({ "tnum": 1 })
+                            color: rate >= 0.7 ? root.greenAccent
+                                 : rate >= 0.4 ? Kirigami.Theme.textColor : root.claudeAmberLight
+                        }
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true; height: 6; radius: 3
+                        color: root.subtleBorder
+                        Rectangle {
+                            width: parent.width * (t.gate?.passRate ?? 0)
+                            height: parent.height; radius: 3
+                            color: (t.gate?.passRate ?? 0) >= 0.7 ? root.greenAccent : root.calmFill
+                            Behavior on width { NumberAnimation { duration: 600; easing.type: Easing.OutCubic } }
+                        }
+                    }
+                    PlasmaComponents3.Label {
+                        text: {
+                            var by = t.gate?.byVerdict ?? ({});
+                            var parts = [];
+                            for (var k in by) parts.push(by[k] + " " + k);
+                            return parts.join(" · ") + "  (" + (t.gate?.total ?? 0) + ")";
+                        }
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.7
+                        font.features: ({ "tnum": 1 })
+                        opacity: 0.35
                     }
                 }
             }
