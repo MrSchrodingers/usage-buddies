@@ -250,21 +250,48 @@ PlasmoidItem {
     // difference is noise: a burst at the start of a window is normal.
     readonly property real paceTolerance: 15
 
-    // One meaning per channel. Identity lives in the row's dot; the fill only
-    // ever says how close this quota is to being a problem, so a warm bar is
-    // always worth looking at and a cool one never is.
+    // Zone boundaries, shared by the gauges and by the collector's alerts.
+    readonly property real warnAt: 75
+    readonly property real alertAt: 90
+
+    // The calm colour is a desaturated neutral, NOT Kirigami.Theme.highlightColor.
+    //
+    // Borrowing the theme accent looked like the right way to respect the user's
+    // Plasma setup, until a theme whose accent *is* red made "you have plenty
+    // left" and "you are about to hit the wall" render identically — measured at
+    // rgb(243,83,83) on both, which is this theme's Colors:Selection. A state
+    // channel cannot take its quiet end from an arbitrary palette. Quiet is now
+    // quiet by construction, and follows the text colour so it still tracks
+    // light and dark.
+    readonly property color calmFill: Qt.rgba(Kirigami.Theme.textColor.r,
+                                              Kirigami.Theme.textColor.g,
+                                              Kirigami.Theme.textColor.b, 0.45)
+
+    // Zone of a quota: "calm" | "warn" | "alert".
+    // Absolute thresholds catch a quota that is simply nearly spent; the pace
+    // comparison catches one that is still low but being spent faster than the
+    // window refills, which is the failure you can still act on.
+    function usageZone(pct, pace) {
+        if (pct >= alertAt) return "alert";
+        if (pct >= warnAt) return "warn";
+        if (pace >= 0 && (pct - pace * 100) > paceTolerance) return "warn";
+        if (pace < 0 && pct > 50) return "warn";
+        return "calm";
+    }
+
+    function zoneColor(zone) {
+        if (zone === "alert") return redAlert;
+        if (zone === "warn") return claudeAmberLight;
+        return calmFill;
+    }
+
     function paceFill(pct, pace) {
-        if (pct > 85) return redAlert;
-        if (pace >= 0 && (pct - pace * 100) > paceTolerance) return claudeAmberLight;
-        if (pace < 0 && pct > 50) return claudeAmberLight;
-        return Kirigami.Theme.highlightColor;
+        return zoneColor(usageZone(pct, pace));
     }
 
     function paceTextColor(pct, pace) {
-        if (pct > 85) return redAlert;
-        if (pace >= 0 && (pct - pace * 100) > paceTolerance) return claudeAmberLight;
-        if (pace < 0 && pct > 50) return claudeAmberLight;
-        return Kirigami.Theme.textColor;
+        var z = usageZone(pct, pace);
+        return z === "calm" ? Kirigami.Theme.textColor : zoneColor(z);
     }
 
     function limitColor(pct) {
@@ -964,6 +991,23 @@ PlasmoidItem {
                                 ctx.lineWidth = lw;
                                 ctx.stroke();
 
+                                // Alert zones on the empty track, same
+                                // boundaries as the weekly bars, so the danger
+                                // is legible before the arc arrives in it.
+                                function zone(fromPct, toPct, colour) {
+                                    ctx.beginPath();
+                                    ctx.arc(cx, cy, r,
+                                            start + 2 * Math.PI * (fromPct / 100),
+                                            start + 2 * Math.PI * (toPct / 100));
+                                    ctx.strokeStyle = colour;
+                                    ctx.lineWidth = lw;
+                                    ctx.globalAlpha = 0.20;
+                                    ctx.stroke();
+                                    ctx.globalAlpha = 1;
+                                }
+                                zone(root.warnAt, root.alertAt, root.claudeAmberLight.toString());
+                                zone(root.alertAt, 100, root.redAlert.toString());
+
                                 // Usage arc
                                 ctx.beginPath();
                                 ctx.arc(cx, cy, r, start,
@@ -1024,20 +1068,37 @@ PlasmoidItem {
                         }
                     }
 
-                    // Predictive limit alert
-                    PlasmaComponents3.Label {
+                    // Burn rate and projected limit, always on.
+                    //
+                    // The projection used to appear only under two hours, which
+                    // is the point where knowing it stops being useful — by
+                    // then the decision to slow down has already been made for
+                    // you. It is quiet at a distance and warms as it closes in.
+                    RowLayout {
                         Layout.fillWidth: true
-                        Layout.alignment: Qt.AlignHCenter
-                        visible: {
-                            var eta = root.usageData.limitEta?.minutesToLimit;
-                            return eta != null && eta < 120 && eta > 0;
+                        Layout.topMargin: 2
+                        spacing: Kirigami.Units.smallSpacing
+                        visible: root.hasData
+
+                        PlasmaComponents3.Label {
+                            text: root.formatTokens(root.usageData.burnRate?.total_per_hour ?? 0) + "/h"
+                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
+                            font.features: ({ "tnum": 1 })
+                            opacity: 0.5
                         }
-                        text: "At current rate, limit in " + (root.usageData.limitEta?.label ?? "?")
-                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.828
-                        font.italic: true
-                        horizontalAlignment: Text.AlignHCenter
-                        color: root.claudeAmberLight
-                        opacity: 0.7
+                        Item { Layout.fillWidth: true }
+                        PlasmaComponents3.Label {
+                            property int eta: root.usageData.limitEta?.minutesToLimit ?? -1
+                            visible: eta > 0
+                            text: "limit in " + (root.usageData.limitEta?.label ?? "?")
+                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
+                            font.weight: eta < 120 ? Font.DemiBold : Font.Normal
+                            font.features: ({ "tnum": 1 })
+                            color: eta < 30 ? root.redAlert
+                                 : eta < 120 ? root.claudeAmberLight
+                                 : Kirigami.Theme.textColor
+                            opacity: eta < 120 ? 0.95 : 0.5
+                        }
                     }
                 }
             }
@@ -1117,12 +1178,33 @@ PlasmoidItem {
                                 id: track
                                 Layout.fillWidth: true; height: 8; radius: 4
                                 color: root.subtleBorder
+                                clip: true
+
+                                // Alert zones, drawn on the empty track so the
+                                // danger is visible before the bar reaches it.
+                                // A gauge that only turns red on arrival tells
+                                // you when it is already too late to slow down.
+                                Rectangle {
+                                    x: track.width * (root.warnAt / 100)
+                                    width: track.width * ((root.alertAt - root.warnAt) / 100)
+                                    height: parent.height
+                                    color: root.claudeAmberLight
+                                    opacity: 0.16
+                                }
+                                Rectangle {
+                                    x: track.width * (root.alertAt / 100)
+                                    width: track.width * (1 - root.alertAt / 100)
+                                    height: parent.height
+                                    color: root.redAlert
+                                    opacity: 0.16
+                                }
 
                                 Rectangle {
                                     width: track.width * Math.min(1, modelData.pct / 100)
                                     height: parent.height; radius: 4
                                     color: root.paceFill(modelData.pct, weeklyRow.pace)
                                     Behavior on width { NumberAnimation { duration: 600; easing.type: Easing.OutCubic } }
+                                    Behavior on color { ColorAnimation { duration: 400 } }
                                 }
 
                                 // Same tick as the session ring: where even burn
@@ -1130,10 +1212,10 @@ PlasmoidItem {
                                 Rectangle {
                                     visible: weeklyRow.pace >= 0 && weeklyRow.pace < 1
                                     x: Math.round(track.width * weeklyRow.pace) - width / 2
-                                    width: 2; height: parent.height + 4
-                                    y: -2; radius: 1
+                                    width: 2; height: parent.height
+                                    radius: 1
                                     color: Kirigami.Theme.textColor
-                                    opacity: 0.35
+                                    opacity: 0.5
                                 }
                             }
                         }
@@ -1199,10 +1281,15 @@ PlasmoidItem {
                         Item { Layout.fillWidth: true }
                         PlasmaComponents3.Label {
                             property bool on: root.usageData.rateLimits?.credits?.autoReload ?? false
-                            text: on ? "ON" : "OFF"
+                            text: on ? "On" : "Off"
                             font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.85
                             font.weight: Font.Bold
-                            color: on ? root.greenAccent : root.claudeAmberLight
+                            // Amber only when it would actually bite: auto-reload
+                            // off with credit left is a preference, not a warning.
+                            color: on ? root.greenAccent
+                                 : (root.usageData.rateLimits?.credits?.amount ?? 0) < 1
+                                   ? root.claudeAmberLight : Kirigami.Theme.textColor
+                            opacity: on ? 1.0 : 0.55
                         }
                     }
 
@@ -1223,28 +1310,33 @@ PlasmoidItem {
                             font.weight: Font.DemiBold; opacity: 0.55
                         }
                         Item { Layout.fillWidth: true }
+                        // Off is not an error. A red badge here competes for
+                        // attention with the quotas that can actually run out.
                         Rectangle {
                             property bool on: root.usageData.rateLimits?.extraUsage?.enabled ?? false
                             radius: height / 2
-                            color: Qt.rgba(on ? root.greenAccent.r : root.redAlert.r,
-                                           on ? root.greenAccent.g : root.redAlert.g,
-                                           on ? root.greenAccent.b : root.redAlert.b, 0.18)
+                            color: on ? Qt.rgba(root.greenAccent.r, root.greenAccent.g,
+                                                root.greenAccent.b, 0.18)
+                                      : root.subtleBorder
                             implicitWidth: _extraLbl.implicitWidth + 12
                             implicitHeight: _extraLbl.implicitHeight + 4
                             PlasmaComponents3.Label {
                                 id: _extraLbl; anchors.centerIn: parent
-                                text: parent.on ? "Active" : "Disabled"
+                                text: parent.on ? "Active" : "Off"
                                 font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
                                 font.weight: Font.Bold
-                                color: parent.on ? root.greenAccent : root.redAlert
+                                color: parent.on ? root.greenAccent : Kirigami.Theme.textColor
+                                opacity: parent.on ? 1.0 : 0.45
                             }
                         }
                     }
 
-                    // Extra usage: monthly limit + used
+                    // Detail only when the feature is on: a spend limit and a
+                    // 0/500 bar for something switched off is four rows of
+                    // nothing, above the fold, next to quotas that matter.
                     RowLayout {
                         Layout.fillWidth: true; spacing: 4
-                        visible: root.usageData.rateLimits?.extraUsage != null
+                        visible: root.usageData.rateLimits?.extraUsage?.enabled ?? false
                         PlasmaComponents3.Label {
                             text: "Monthly limit"
                             font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82; opacity: 0.5
@@ -1265,7 +1357,7 @@ PlasmoidItem {
                     // Used / remaining bar
                     ColumnLayout {
                         Layout.fillWidth: true; spacing: 3
-                        visible: root.usageData.rateLimits?.extraUsage != null
+                        visible: root.usageData.rateLimits?.extraUsage?.enabled ?? false
 
                         RowLayout {
                             Layout.fillWidth: true

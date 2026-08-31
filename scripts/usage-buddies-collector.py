@@ -27,6 +27,11 @@ CONFIG_FILE = CLAUDE_DIR / "widget-config.json"
 # Defaults para os 4 eventos de uso.
 # - sound: nome freedesktop (Linux/macOS via paplay) ou caminho absoluto.
 # - winSound: System.Media.SystemSounds equivalente no Windows.
+# Zonas de uso. Os mesmos limiares que o plasmoid desenha na trilha das barras
+# e do anel, para que o aviso sonoro e o visual concordem.
+USAGE_WARN_AT = 75
+USAGE_ALERT_AT = 90
+
 # Membros de System.Media.SystemSounds. Allowlist: ver _play_event_sound().
 SYSTEM_SOUNDS = frozenset({"Asterisk", "Beep", "Exclamation", "Hand", "Question"})
 
@@ -51,6 +56,27 @@ USAGE_EVENT_DEFAULTS = {
                      "urgency": "normal",
                      "title": "Limite semanal Claude renovado",
                      "body": "A janela de 7 dias foi resetada."},
+    # Limiares: avisam enquanto ainda há o que fazer a respeito.
+    "sessionWarn":  {"sound": "message",
+                     "winSound": "Asterisk",
+                     "urgency": "low",
+                     "title": f"Sessão em {USAGE_WARN_AT}%",
+                     "body": "A janela de 5h passou de três quartos."},
+    "sessionAlert": {"sound": "dialog-warning",
+                     "winSound": "Exclamation",
+                     "urgency": "normal",
+                     "title": f"Sessão em {USAGE_ALERT_AT}%",
+                     "body": "Pouco resta na janela de 5h."},
+    "weeklyWarn":   {"sound": "message",
+                     "winSound": "Asterisk",
+                     "urgency": "normal",
+                     "title": f"Semanal em {USAGE_WARN_AT}%",
+                     "body": "A janela de 7 dias passou de três quartos."},
+    "weeklyAlert":  {"sound": "dialog-warning",
+                     "winSound": "Exclamation",
+                     "urgency": "critical",
+                     "title": f"Semanal em {USAGE_ALERT_AT}%",
+                     "body": "Pouco resta na janela de 7 dias."},
 }
 
 # Anthropic pricing (per 1M tokens) — May 2025 public prices
@@ -1041,14 +1067,14 @@ def detect_usage_transitions(prev_state, curr_data):
     'weeklyEnded', 'weeklyReset'). Também devolve o snapshot novo."""
     rate_limits = curr_data.get("rateLimits") or {}
     scopes = {
-        "session":   ("sessionEnded",  "sessionReset"),
-        "weeklyAll": ("weeklyEnded",   "weeklyReset"),
+        "session":   ("sessionEnded",  "sessionReset",  "sessionWarn",  "sessionAlert"),
+        "weeklyAll": ("weeklyEnded",   "weeklyReset",   "weeklyWarn",   "weeklyAlert"),
     }
 
     events = []
     new_snapshot = {"lastRun": datetime.now(timezone.utc).isoformat()}
 
-    for scope_key, (ended_id, reset_id) in scopes.items():
+    for scope_key, (ended_id, reset_id, warn_id, alert_id) in scopes.items():
         curr = rate_limits.get(scope_key) or {}
         curr_pct = curr.get("percentUsed")
         curr_reset = curr.get("resetsAt") or ""
@@ -1056,11 +1082,35 @@ def detect_usage_transitions(prev_state, curr_data):
         prev_scope = (prev_state or {}).get(scope_key) or {}
         prev_pct = prev_scope.get("percentUsed")
         prev_reset = prev_scope.get("resetsAt") or ""
+        # Thresholds already announced for the window that is still running.
+        fired = list(prev_scope.get("fired") or [])
+        # A new window re-arms them; without this a quota that is warned about
+        # once is never warned about again.
+        if curr_reset and prev_reset and curr_reset != prev_reset:
+            fired = []
 
         # ACABOU: 1ª execução já em 100%, ou transição de <100 para >=100
         if curr_pct is not None and curr_pct >= 100:
             if prev_pct is None or prev_pct < 100:
                 events.append(ended_id)
+
+        # Limiares intermediários: avisam enquanto ainda dá para desacelerar.
+        # Disparam uma vez por janela, na subida, e o de 90% suprime o de 75%
+        # quando os dois são cruzados na mesma execução — dois toasts seguidos
+        # dizendo a mesma coisa é ruído.
+        if curr_pct is not None:
+            crossed = []
+            for threshold, event_id in ((USAGE_ALERT_AT, alert_id),
+                                        (USAGE_WARN_AT, warn_id)):
+                if curr_pct >= threshold and threshold not in fired:
+                    crossed.append((threshold, event_id))
+            if crossed:
+                # highest threshold first; announce only that one
+                threshold, event_id = crossed[0]
+                if curr_pct < 100:
+                    events.append(event_id)
+                for t, _ in crossed:
+                    fired.append(t)
 
         # RESETOU: resetsAt avançou claramente E havia uso significativo antes
         if prev_reset and curr_reset:
@@ -1069,12 +1119,14 @@ def detect_usage_transitions(prev_state, curr_data):
                 c = parse_timestamp(curr_reset)
                 if p and c and (c - p) > timedelta(hours=1) and (prev_pct or 0) > 5:
                     events.append(reset_id)
+                    fired = []
             except Exception:
                 pass
 
         new_snapshot[scope_key] = {
             "percentUsed": curr_pct,
             "resetsAt": curr_reset,
+            "fired": sorted(set(fired)),
         }
 
     return events, new_snapshot
