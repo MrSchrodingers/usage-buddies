@@ -2,7 +2,7 @@
     "KPlugin": {
         "Id": "org.kde.plasma.usagebuddies",
         "Name": "Usage Buddies",
-        "Description": "Real-time Claude AI usage limits, session tracking, weekly quotas, and prepaid balance from claude.ai API. Shows live data directly in your KDE Plasma panel.",
+        "Description": "Live usage limits, session pace, weekly quotas and service health in your Plasma panel. Follows Claude (claude.ai) or OpenAI Codex (chatgpt.com), selectable per widget instance.",
         "Category": "System Information",
         "Icon": "claude-logo",
         "Authors": [

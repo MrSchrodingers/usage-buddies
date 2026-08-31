@@ -17,14 +17,20 @@ const om = src.match(/readonly property var weeklyScopeOrder: (\[[\s\S]*?\n    \
 if (!om) { console.error("FALHA: nao achei weeklyScopeOrder"); process.exit(2); }
 const orderSrc = om[1].replace(/\b(blueAccent|greenAccent|purpleAccent|pinkAccent|cyanAccent|claudeAmberLight)\b/g, 'C.$1');
 
-function run(rateLimits) {
-  const fn = new Function("usageData", "C", `
+// Tabela de providers, extraida do QML: os rotulos genericos resolvem por ela.
+const bm = src.match(/readonly property var providers: \(([\s\S]*?)\)\n    readonly property var brand/);
+if (!bm) { console.error("FALHA: nao achei a tabela providers"); process.exit(2); }
+const PROVIDERS = new Function("return " + bm[1])();
+
+function run(rateLimits, provider = "claude") {
+  const brand = PROVIDERS[provider];
+  const fn = new Function("usageData", "C", "brand", `
     const weeklyScopeOrder = ${orderSrc};
     const blueAccent=C.blueAccent, greenAccent=C.greenAccent, purpleAccent=C.purpleAccent,
           pinkAccent=C.pinkAccent, cyanAccent=C.cyanAccent, claudeAmberLight=C.claudeAmberLight;
     ${body}
   `);
-  return fn({ rateLimits }, ctx);
+  return fn({ rateLimits }, ctx, brand);
 }
 
 let fail = 0;
@@ -50,6 +56,20 @@ check("Quasar renderizado", r2.some(r => r.label === "Quasar" && r.pct === 77), 
 
 console.log("\n=== sem rateLimits (cold start) ===");
 check("array vazio, sem crash", JSON.stringify(run(null)) === "[]" && JSON.stringify(run(undefined)) === "[]");
+
+console.log("\n=== rotulos seguem o provider ===");
+const rlClaude = run({ weeklyAll: { percentUsed: 32, resetsLabel: "" },
+                       weeklySonnet: { percentUsed: 5, resetsLabel: "" } }, "claude");
+const rlCodex = run({ weeklyAll: { percentUsed: 32, resetsLabel: "" },
+                      weeklySonnet: { percentUsed: 5, resetsLabel: "" } }, "codex");
+console.log("  claude:", rlClaude.map(r => r.label).join(" | "));
+console.log("  codex :", rlCodex.map(r => r.label).join(" | "));
+check("claude usa 'All models'", rlClaude[0].label === "All models", rlClaude[0].label);
+check("codex usa 'Weekly'", rlCodex[0].label === "Weekly", rlCodex[0].label);
+check("secundaria difere por provider", rlClaude[1].label !== rlCodex[1].label,
+      `${rlClaude[1].label} vs ${rlCodex[1].label}`);
+check("nenhum rotulo vem undefined", rlCodex.every(r => typeof r.label === "string" && r.label),
+      JSON.stringify(rlCodex.map(r => r.label)));
 
 console.log("\n=== ordem estavel entre chamadas ===");
 const a = run(live).map(r=>r.label).join("|"), b = run(live).map(r=>r.label).join("|");

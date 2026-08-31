@@ -8,6 +8,7 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 COLLECTOR="$HOME/.local/bin/usage-buddies-collector.py"
+CODEX_COLLECTOR="$HOME/.local/bin/codex-usage-collector.py"
 SYSTEMD_DIR="$HOME/.config/systemd/user"
 TAURI_DIR="$REPO_DIR/tauri-app"
 BUILD_LOG="$REPO_DIR/tauri-build.log"
@@ -290,6 +291,15 @@ install_collector() {
     else
         fail "Failed to copy collector to $COLLECTOR" "Check write permissions on ~/.local/bin/"
     fi
+
+    # The Codex collector is always installed; it only produces data when the
+    # widget instance is switched to the Codex provider (or ~/.codex exists).
+    step_desc "Copying codex-usage-collector.py to ~/.local/bin/"
+    if cp "$REPO_DIR/scripts/codex-usage-collector.py" "$CODEX_COLLECTOR" && chmod +x "$CODEX_COLLECTOR"; then
+        ok "Codex collector installed: $CODEX_COLLECTOR"
+    else
+        warn "Failed to copy Codex collector to $CODEX_COLLECTOR" "Claude mode is unaffected"
+    fi
 }
 
 install_timer() {
@@ -315,6 +325,21 @@ install_timer() {
     else
         warn "systemd timer failed to enable" "Run: systemctl --user status usage-buddies-collector.timer"
     fi
+
+    # Codex timer: installed always, enabled only when the Codex CLI is present,
+    # so a Claude-only machine gains no extra unit running every 30s.
+    cp "$REPO_DIR/scripts/codex-usage-collector.service" "$SYSTEMD_DIR/"
+    cp "$REPO_DIR/scripts/codex-usage-collector.timer" "$SYSTEMD_DIR/"
+    sed -i "s|/usr/bin/python3|$PYTHON_BIN|g" "$SYSTEMD_DIR/codex-usage-collector.service"
+    if [ -d "$HOME/.codex" ]; then
+        if systemctl --user daemon-reload && systemctl --user enable --now codex-usage-collector.timer; then
+            ok "Codex systemd timer enabled (~/.codex detected)"
+        else
+            warn "Codex systemd timer failed to enable" "Run: systemctl --user status codex-usage-collector.timer"
+        fi
+    else
+        step_desc "~/.codex not found — Codex timer installed but left disabled"
+    fi
 }
 
 install_plasmoid() {
@@ -335,7 +360,8 @@ install_plasmoid() {
     rm -rf "$PLASMOID_DIR"
     mkdir -p "$PLASMOID_DIR/contents/"{ui,icons,config}
     cp "$REPO_DIR/plasmoid/metadata.json" "$PLASMOID_DIR/"
-    cp "$REPO_DIR/plasmoid/contents/ui/main.qml" "$PLASMOID_DIR/contents/ui/"
+    # Glob, not just main.qml: the config page (configGeneral.qml) lives here too.
+    cp "$REPO_DIR/plasmoid/contents/ui/"*.qml "$PLASMOID_DIR/contents/ui/"
     cp "$REPO_DIR/plasmoid/contents/config/"* "$PLASMOID_DIR/contents/config/"
     if compgen -G "$REPO_DIR/plasmoid/contents/icons/*" > /dev/null 2>&1; then
         cp "$REPO_DIR/plasmoid/contents/icons/"* "$PLASMOID_DIR/contents/icons/"

@@ -47,16 +47,62 @@ PlasmoidItem {
 
     readonly property int refreshInterval: 30000
 
-    // Claude palette
+    // ─── Provider ───
+    // Every brand-specific value in this file resolves through `brand`, so a
+    // second provider is a row in this table — the layout is untouched.
+    readonly property string provider: Plasmoid.configuration.provider || "claude"
+    readonly property var providers: ({
+        "claude": {
+            "name": "Claude",
+            "vendor": "Anthropic",
+            "logo": "claude-logo.svg",
+            "mascot": "clawd.svg",
+            "collector": "usage-buddies-collector.py",
+            "dataFile": "$HOME/.claude/widget-data.json",
+            "siteLabel": "claude.ai",
+            "siteUrl": "https://claude.ai",
+            "statusUrl": "https://status.claude.com",
+            "downDetectorUrl": "https://downdetector.com/status/claude-ai/",
+            "weeklyAllLabel": "All models",
+            "weeklySecondaryLabel": "Sonnet only",
+            "accent": "#D97706",
+            "accentLight": "#F59E0B",
+            "accentDim": "#92400E",
+            "accentBlue": "#3B82F6"
+        },
+        "codex": {
+            "name": "Codex",
+            "vendor": "OpenAI",
+            "logo": "codex-logo.svg",
+            "mascot": "",
+            "collector": "codex-usage-collector.py",
+            "dataFile": "$HOME/.codex/widget-data.json",
+            "siteLabel": "chatgpt.com",
+            "siteUrl": "https://chatgpt.com/codex",
+            "statusUrl": "https://status.openai.com",
+            "downDetectorUrl": "https://downdetector.com/status/openai/",
+            "weeklyAllLabel": "Weekly",
+            "weeklySecondaryLabel": "Secondary window",
+            "accent": "#0EA5E9",
+            "accentLight": "#38BDF8",
+            "accentDim": "#0369A1",
+            "accentBlue": "#2563EB"
+        }
+    })
+    readonly property var brand: providers[provider] ?? providers["claude"]
+
+    // Brand palette
     // Global font scale — multiplier applied to every `pixelSize` binding.
     // Default 1.20 bumps the UI one step up from Plasma's system font size
     // without needing user intervention. Safe to tweak live.
     readonly property real fontScale: 1.20
 
-    readonly property color claudeAmber: "#D97706"
-    readonly property color claudeAmberLight: "#F59E0B"
-    readonly property color claudeAmberDim: "#92400E"
-    readonly property color blueAccent: "#3B82F6"
+    // Accent ramp of the active provider. The `claudeAmber*` names are kept
+    // because ~60 bindings below reference them; only the values follow `brand`.
+    readonly property color claudeAmber: root.brand.accent
+    readonly property color claudeAmberLight: root.brand.accentLight
+    readonly property color claudeAmberDim: root.brand.accentDim
+    readonly property color blueAccent: root.brand.accentBlue
     readonly property color greenAccent: "#10B981"
     readonly property color redAlert: "#EF4444"
     readonly property color purpleAccent: "#A855F7"    // Opus
@@ -68,7 +114,7 @@ PlasmoidItem {
     switchWidth: Kirigami.Units.gridUnit * 24
     switchHeight: Kirigami.Units.gridUnit * 32
 
-    toolTipMainText: "Usage Buddies"
+    toolTipMainText: "Usage Buddies · " + root.brand.name
     toolTipSubText: {
         if (!hasData) return "Loading...";
         var p = usageData.rateLimits?.session?.percentUsed ?? 0;
@@ -79,19 +125,30 @@ PlasmoidItem {
     }
 
     // ─── Data ───
-    // Declarative polling: the executable engine re-runs `source` every
-    // `interval` ms on its own. This avoids the connectSource/disconnectSource
-    // race where re-connecting an identical source string fails to re-emit
-    // onNewData. The systemd timer refreshes widget-data.json independently, so
-    // the widget only needs to `cat` it (fast, atomic via os.replace) and also
-    // runs the collector itself as a fallback when the timer is disabled.
-    property string dataCmd: "$HOME/.local/bin/usage-buddies-collector.py 1>/dev/null 2>/dev/null; cat $HOME/.claude/widget-data.json"
+    Timer {
+        interval: root.refreshInterval
+        running: true; repeat: true; triggeredOnStart: true
+        onTriggered: dataLoader.readData()
+    }
+
+    // Polled by the Timer above rather than by DataSource.interval, because the
+    // command itself depends on the selected provider. Each read connects a
+    // fresh source and disconnects it on delivery, so nothing accumulates.
+    //
+    // The systemd timer refreshes widget-data.json independently, so the widget
+    // only needs to `cat` it (fast, atomic via os.replace); running the
+    // collector here is the fallback for when that timer is disabled.
 
     P5Support.DataSource {
         id: dataLoader
         engine: "executable"
-        connectedSources: [root.dataCmd]
-        interval: root.refreshInterval
+        // The command depends on the provider, which changes at runtime, so the
+        // source is connected per read instead of being a static binding.
+        connectedSources: []
+        function readData() {
+            connectSource("$HOME/.local/bin/" + root.brand.collector +
+                          " 1>/dev/null 2>/dev/null; cat " + root.brand.dataFile);
+        }
         onNewData: function(source, data) {
             if (data["exit code"] === 0 && data.stdout) {
                 try {
@@ -214,9 +271,13 @@ PlasmoidItem {
     // named row already covers that model, so a scoped Fable cap shows up once,
     // not twice.
     readonly property var weeklyScopeOrder: [
-        { key: "weeklyAll",       label: "All models",    accent: blueAccent },
+        // The two generic scopes are named by the provider: "All models" reads
+        // wrong for a single-model API, and Codex has no Sonnet. The rest are
+        // Claude model families and simply never appear for another provider,
+        // because that collector does not emit those keys.
+        { key: "weeklyAll",       label: brand.weeklyAllLabel,       accent: blueAccent },
         { key: "weeklyOpus",      label: "Opus only",     accent: purpleAccent },
-        { key: "weeklySonnet",    label: "Sonnet only",   accent: greenAccent },
+        { key: "weeklySonnet",    label: brand.weeklySecondaryLabel, accent: greenAccent },
         { key: "weeklyFable",     label: "Fable only",    accent: blueAccent },
         { key: "weeklyHaiku",     label: "Haiku only",    accent: cyanAccent },
         { key: "weeklyDesign",    label: "Claude Design", accent: pinkAccent },
@@ -310,7 +371,7 @@ PlasmoidItem {
                 spacing: Kirigami.Units.smallSpacing
 
                 Image {
-                    source: Qt.resolvedUrl("../icons/claude-logo.svg")
+                    source: Qt.resolvedUrl("../icons/" + root.brand.logo)
                     Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
                     Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
                     sourceSize: Qt.size(Kirigami.Units.iconSizes.smallMedium, Kirigami.Units.iconSizes.smallMedium)
@@ -556,8 +617,11 @@ PlasmoidItem {
                 Layout.fillWidth: true
                 spacing: Kirigami.Units.mediumSpacing
 
-                // Clawd mascot — 5 animated states + easter egg
+                // Clawd mascot — 5 animated states + easter egg.
+                // The sprites visualise the dumbness score, so a provider that
+                // ships neither mascot art nor a score collapses the column.
                 Item {
+                    visible: root.brand.mascot !== ""
                     Layout.preferredWidth: Kirigami.Units.iconSizes.huge
                     Layout.preferredHeight: Kirigami.Units.iconSizes.huge
 
@@ -614,7 +678,7 @@ PlasmoidItem {
                         anchors.verticalCenterOffset: 6
                         width: parent.width * 0.7
                         height: parent.height * 0.7
-                        source: Qt.resolvedUrl("../icons/clawd.svg")
+                        source: Qt.resolvedUrl("../icons/" + root.brand.mascot)
                         sourceSize: Qt.size(parent.width, parent.height)
                         fillMode: Image.PreserveAspectFit
                     }
@@ -696,12 +760,12 @@ PlasmoidItem {
                     RowLayout {
                         spacing: 6
                         PlasmaComponents3.Label {
-                            text: "Claude"
+                            text: root.brand.name
                             font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 1.5
                             font.weight: Font.Bold
                         }
                         Rectangle {
-                            visible: root.hasData
+                            visible: root.hasData && root.usageData.dumbness !== undefined
                             radius: height / 2
                             color: {
                                 var c = statusColor(root.usageData.serviceStatus?.indicator ?? "none");
@@ -734,9 +798,9 @@ PlasmoidItem {
                     }
                     RowLayout {
                         spacing: Kirigami.Units.smallSpacing
-                        // Claude logo small
+                        // Provider logo small
                         Image {
-                            source: Qt.resolvedUrl("../icons/claude-logo.svg")
+                            source: Qt.resolvedUrl("../icons/" + root.brand.logo)
                             Layout.preferredWidth: 12
                             Layout.preferredHeight: 12
                             sourceSize: Qt.size(12, 12)
@@ -771,8 +835,7 @@ PlasmoidItem {
                     // Force an immediate re-poll: disconnect then reconnect the
                     // source so the executable engine re-runs it right away.
                     onClicked: {
-                        dataLoader.disconnectSource(root.dataCmd);
-                        dataLoader.connectSource(root.dataCmd);
+                        dataLoader.readData();
                     }
                     PlasmaComponents3.ToolTip { text: "Refresh" }
                 }
@@ -1370,7 +1433,7 @@ PlasmoidItem {
                             opacity: 0.55
                             flat: true
                             padding: 0
-                            onClicked: Qt.openUrlExternally("https://downdetector.com/status/claude-ai/")
+                            onClicked: Qt.openUrlExternally(root.brand.downDetectorUrl)
                         }
                     }
 
@@ -1547,6 +1610,11 @@ PlasmoidItem {
             // ── Burn Rate & Errors Card ──
             // ══════════════════════════════════
             Rectangle {
+                // Every row here comes from a local-log metric; a provider that
+                // reports none of them hides the card instead of showing zeros.
+                visible: root.usageData.burnRate !== undefined
+                         || root.usageData.errorRate !== undefined
+                         || root.usageData.adaptiveThinking !== undefined
                 Layout.fillWidth: true
                 radius: 10
                 color: root.cardBg
@@ -1805,10 +1873,10 @@ PlasmoidItem {
 
                 PlasmaComponents3.Button {
                     Layout.fillWidth: true
-                    text: "claude.ai"
+                    text: root.brand.siteLabel
                     icon.name: "internet-web-browser"
                     font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.828
-                    onClicked: Qt.openUrlExternally("https://claude.ai")
+                    onClicked: Qt.openUrlExternally(root.brand.siteUrl)
                 }
 
                 PlasmaComponents3.Button {
@@ -1816,7 +1884,7 @@ PlasmoidItem {
                     text: "Status"
                     icon.name: "network-connect"
                     font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.828
-                    onClicked: Qt.openUrlExternally("https://status.claude.com")
+                    onClicked: Qt.openUrlExternally(root.brand.statusUrl)
                 }
 
                 PlasmaComponents3.Button {
@@ -1826,7 +1894,7 @@ PlasmoidItem {
                     font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.828
                     onClicked: {
                         var s = root.usageData;
-                        var stats = "Claude " + new Date().toLocaleDateString()
+                        var stats = root.brand.name + " " + new Date().toLocaleDateString()
                             + " | Session: " + Math.round(s.rateLimits?.session?.percentUsed ?? 0) + "%"
                             + " | Weekly: " + Math.round(s.rateLimits?.weeklyAll?.percentUsed ?? 0) + "%"
                             + " | $" + (s.today?.costUSD ?? 0).toFixed(2)
@@ -1983,7 +2051,7 @@ PlasmoidItem {
                     spacing: Kirigami.Units.smallSpacing
 
                     Image {
-                        source: Qt.resolvedUrl("../icons/claude-logo.svg")
+                        source: Qt.resolvedUrl("../icons/" + root.brand.logo)
                         Layout.preferredWidth: 10
                         Layout.preferredHeight: 10
                         sourceSize: Qt.size(10, 10)
@@ -2026,7 +2094,7 @@ PlasmoidItem {
                     }
 
                     PlasmaComponents3.Label {
-                        text: "Anthropic"
+                        text: root.brand.vendor
                         font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
                         font.weight: Font.DemiBold
                         opacity: 0.2

@@ -5,6 +5,13 @@
       http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
   <kcfgfile name=""/>
   <group name="General">
+    <!-- Which usage source this applet instance follows: "claude" or "codex".
+         Default keeps every existing installation on Claude. -->
+    <entry name="provider" type="String">
+      <default>claude</default>
+    </entry>
+    <!-- Panel representation: full | weeklyBarOnly | sessionCountdown |
+         weeklyCountdown | fableBarOnly. Cycled from the popup header. -->
     <entry name="displayMode" type="String">
       <default>full</default>
     </entry>
