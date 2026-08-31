@@ -27,9 +27,23 @@ PlasmoidItem {
     property bool isHealthy: isGenius || isSmart
     property bool isDegraded: isSlow || isDumb || isBraindead
 
-    // Live countdown
+    // Live countdown — session (5h rolling)
     property int countdownMinutes: usageData.rateLimits?.session?.resetsInMinutes ?? 0
     property int countdownSeconds: 0
+
+    // Weekly countdown — derived from resetsAt ISO timestamp
+    property int weeklyCountdownSeconds: {
+        var resetsAt = usageData.rateLimits?.weeklyAll?.resetsAt ?? "";
+        if (!resetsAt) return 0;
+        var target = new Date(resetsAt);
+        if (isNaN(target.getTime())) return 0;
+        var delta = Math.max(0, Math.floor((target.getTime() - new Date().getTime()) / 1000));
+        return delta;
+    }
+    property int weeklyCountdownLive: weeklyCountdownSeconds
+
+    // Display mode — persisted per-instance via Plasmoid.configuration (KConfigXT)
+    property string displayMode: Plasmoid.configuration.displayMode || "full"
 
     readonly property int refreshInterval: 30000
 
@@ -65,28 +79,30 @@ PlasmoidItem {
     }
 
     // ─── Data ───
-    Timer {
-        interval: root.refreshInterval
-        running: true; repeat: true; triggeredOnStart: true
-        onTriggered: dataLoader.readData()
-    }
+    // Declarative polling: the executable engine re-runs `source` every
+    // `interval` ms on its own. This avoids the connectSource/disconnectSource
+    // race where re-connecting an identical source string fails to re-emit
+    // onNewData. The systemd timer refreshes widget-data.json independently, so
+    // the widget only needs to `cat` it (fast, atomic via os.replace) and also
+    // runs the collector itself as a fallback when the timer is disabled.
+    property string dataCmd: "$HOME/.local/bin/claude-usage-collector.py 1>/dev/null 2>/dev/null; cat $HOME/.claude/widget-data.json"
 
     P5Support.DataSource {
         id: dataLoader
         engine: "executable"
-        connectedSources: []
-        function readData() {
-            connectSource("$HOME/.local/bin/claude-usage-collector.py 1>/dev/null 2>/dev/null; cat $HOME/.claude/widget-data.json");
-        }
+        connectedSources: [root.dataCmd]
+        interval: root.refreshInterval
         onNewData: function(source, data) {
             if (data["exit code"] === 0 && data.stdout) {
                 try {
-                    root.usageData = JSON.parse(data.stdout.trim());
-                    root.countdownMinutes = root.usageData.rateLimits?.session?.resetsInMinutes ?? 0;
+                    var parsed = JSON.parse(data.stdout.trim());
+                    root.usageData = parsed;
+                    root.countdownMinutes = parsed.rateLimits?.session?.resetsInMinutes ?? 0;
                     root.countdownSeconds = 0;
-                } catch(e) {}
+                } catch(e) {
+                    console.warn("claude-usage: failed to parse widget-data.json:", e);
+                }
             }
-            disconnectSource(source);
         }
     }
 
@@ -99,6 +115,29 @@ PlasmoidItem {
             if (root.countdownSeconds > 0) root.countdownSeconds--;
             else if (root.countdownMinutes > 0) { root.countdownMinutes--; root.countdownSeconds = 59; }
         }
+    }
+
+    // Weekly countdown — ticks every second, re-syncs on data refresh
+    Timer {
+        interval: 1000
+        running: root.weeklyCountdownLive > 0
+        repeat: true
+        onTriggered: { if (root.weeklyCountdownLive > 0) root.weeklyCountdownLive--; }
+    }
+    // Re-sync weeklyCountdownLive when fresh data arrives
+    onWeeklyCountdownSecondsChanged: { root.weeklyCountdownLive = root.weeklyCountdownSeconds; }
+
+    // Helper: format a total-seconds value as "Xd Yh Zm" / "Xh Ym Zs" / "Ym Zs" / "Zs"
+    function formatCountdown(totalSeconds) {
+        if (totalSeconds <= 0) return "--";
+        var d = Math.floor(totalSeconds / 86400);
+        var h = Math.floor((totalSeconds % 86400) / 3600);
+        var m = Math.floor((totalSeconds % 3600) / 60);
+        var s = totalSeconds % 60;
+        if (d > 0) return d + "d " + h + "h " + m + "m";
+        if (h > 0) return h + "h " + m + "m " + s + "s";
+        if (m > 0) return m + "m " + s + "s";
+        return s + "s";
     }
 
     // Clipboard helper
@@ -148,82 +187,243 @@ PlasmoidItem {
 
     // ─── Panel (Compact) ───
     compactRepresentation: MouseArea {
-        Layout.minimumWidth: compactRow.implicitWidth
-        Layout.preferredWidth: compactRow.implicitWidth
+        id: compactArea
+        Layout.minimumWidth: compactLoader.implicitWidth
+        Layout.preferredWidth: compactLoader.implicitWidth
         hoverEnabled: true
         onClicked: root.expanded = !root.expanded
 
-        RowLayout {
-            id: compactRow
+        // Loader selects the correct compact layout based on displayMode
+        Loader {
+            id: compactLoader
             anchors.fill: parent
-            spacing: Kirigami.Units.smallSpacing
-
-            // Claude logo — smallMedium for better visibility
-            Image {
-                source: Qt.resolvedUrl("../icons/claude-logo.svg")
-                Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
-                Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
-                sourceSize: Qt.size(Kirigami.Units.iconSizes.smallMedium, Kirigami.Units.iconSizes.smallMedium)
-                fillMode: Image.PreserveAspectFit
+            sourceComponent: {
+                if (root.displayMode === "weeklyBarOnly")     return compWeeklyBar;
+                if (root.displayMode === "fableBarOnly")      return compFableBar;
+                if (root.displayMode === "sessionCountdown")  return compSessionCountdown;
+                if (root.displayMode === "weeklyCountdown")   return compWeeklyCountdown;
+                return compFull;
             }
+        }
 
-            // Session percentage — bigger and bolder
-            PlasmaComponents3.Label {
-                property real pct: root.usageData.rateLimits?.session?.percentUsed ?? 0
-                text: root.hasData ? Math.round(pct) + "%" : "--"
-                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 1.15
-                font.weight: Font.Bold
-                color: limitColor(pct)
-            }
-
-            // Session bar — taller for prominence
-            Rectangle {
-                Layout.preferredWidth: 34; Layout.preferredHeight: 5
-                Layout.alignment: Qt.AlignVCenter
-                radius: 3
-                color: root.subtleBorder
-                Rectangle {
-                    property real pct: root.usageData.rateLimits?.session?.percentUsed ?? 0
-                    width: parent.width * Math.min(1, pct / 100)
-                    height: parent.height; radius: 3
-                    color: barFill(pct, root.claudeAmber)
-                    Behavior on width { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
-                }
-            }
-
-            // Service health: dot + short label when not Healthy
+        // ── Mode: full (default) ──────────────────────────────────
+        Component {
+            id: compFull
             RowLayout {
-                id: statusCompact
-                property string indicator: root.usageData.serviceStatus?.indicator ?? "none"
-                visible: root.hasData && indicator !== "none" && indicator !== "" && indicator !== "unknown"
-                spacing: 3
-                Layout.alignment: Qt.AlignVCenter
+                spacing: Kirigami.Units.smallSpacing
+
+                Image {
+                    source: Qt.resolvedUrl("../icons/claude-logo.svg")
+                    Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
+                    Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
+                    sourceSize: Qt.size(Kirigami.Units.iconSizes.smallMedium, Kirigami.Units.iconSizes.smallMedium)
+                    fillMode: Image.PreserveAspectFit
+                }
+
+                PlasmaComponents3.Label {
+                    property real pct: root.usageData.rateLimits?.session?.percentUsed ?? 0
+                    text: root.hasData ? Math.round(pct) + "%" : "--"
+                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 1.15
+                    font.weight: Font.Bold
+                    color: limitColor(pct)
+                }
 
                 Rectangle {
-                    id: compactDot
-                    width: 8; height: 8; radius: 4
-                    color: statusColor(statusCompact.indicator)
+                    Layout.preferredWidth: 34; Layout.preferredHeight: 5
+                    Layout.alignment: Qt.AlignVCenter
+                    radius: 3; color: root.subtleBorder
+                    Rectangle {
+                        property real pct: root.usageData.rateLimits?.session?.percentUsed ?? 0
+                        width: parent.width * Math.min(1, pct / 100)
+                        height: parent.height; radius: 3
+                        color: barFill(pct, root.claudeAmber)
+                        Behavior on width { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
+                    }
+                }
+
+                RowLayout {
+                    id: statusCompact
+                    property string indicator: root.usageData.serviceStatus?.indicator ?? "none"
+                    visible: root.hasData && indicator !== "none" && indicator !== "" && indicator !== "unknown"
+                    spacing: 3
                     Layout.alignment: Qt.AlignVCenter
 
-                    SequentialAnimation on opacity {
-                        running: statusCompact.indicator === "major" || statusCompact.indicator === "critical"
-                        loops: Animation.Infinite
-                        NumberAnimation { to: 0.2; duration: 650; easing.type: Easing.InOutSine }
-                        NumberAnimation { to: 1.0; duration: 650; easing.type: Easing.InOutSine }
+                    Rectangle {
+                        width: 8; height: 8; radius: 4
+                        color: statusColor(statusCompact.indicator)
+                        Layout.alignment: Qt.AlignVCenter
+                        SequentialAnimation on opacity {
+                            running: statusCompact.indicator === "major" || statusCompact.indicator === "critical"
+                            loops: Animation.Infinite
+                            NumberAnimation { to: 0.2; duration: 650; easing.type: Easing.InOutSine }
+                            NumberAnimation { to: 1.0; duration: 650; easing.type: Easing.InOutSine }
+                        }
                     }
+
+                    PlasmaComponents3.Label {
+                        text: {
+                            var ind = statusCompact.indicator;
+                            if (ind === "minor")    return "Degraded";
+                            if (ind === "major")    return "Outage";
+                            if (ind === "critical") return "Critical";
+                            return "";
+                        }
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.80
+                        font.weight: Font.DemiBold
+                        color: statusColor(statusCompact.indicator)
+                    }
+                }
+            }
+        }
+
+        // ── Mode: weeklyBarOnly ───────────────────────────────────
+        Component {
+            id: compWeeklyBar
+            RowLayout {
+                spacing: Kirigami.Units.smallSpacing
+
+                PlasmaComponents3.Label {
+                    text: "W"
+                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.75
+                    font.weight: Font.Bold
+                    opacity: 0.45
+                    Layout.alignment: Qt.AlignVCenter
+                }
+
+                ColumnLayout {
+                    spacing: 2
+                    Layout.alignment: Qt.AlignVCenter
+
+                    PlasmaComponents3.Label {
+                        property real pct: root.usageData.rateLimits?.weeklyAll?.percentUsed ?? 0
+                        text: root.hasData ? Math.round(pct) + "%" : "--"
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.90
+                        font.weight: Font.Bold
+                        color: limitColor(pct)
+                    }
+
+                    Rectangle {
+                        Layout.preferredWidth: 48; height: 5; radius: 3
+                        color: root.subtleBorder
+                        Rectangle {
+                            property real pct: root.usageData.rateLimits?.weeklyAll?.percentUsed ?? 0
+                            width: parent.width * Math.min(1, pct / 100)
+                            height: parent.height; radius: 3
+                            color: barFill(pct, root.blueAccent)
+                            Behavior on width { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Mode: fableBarOnly ────────────────────────────────────
+        Component {
+            id: compFableBar
+            RowLayout {
+                spacing: Kirigami.Units.smallSpacing
+
+                PlasmaComponents3.Label {
+                    text: "F"
+                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.75
+                    font.weight: Font.Bold
+                    opacity: 0.45
+                    Layout.alignment: Qt.AlignVCenter
+                }
+
+                ColumnLayout {
+                    spacing: 2
+                    Layout.alignment: Qt.AlignVCenter
+
+                    PlasmaComponents3.Label {
+                        property var fable: root.usageData.rateLimits?.weeklyFable ?? null
+                        property real pct: fable?.percentUsed ?? 0
+                        text: (root.hasData && fable) ? Math.round(pct) + "%" : "--"
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.90
+                        font.weight: Font.Bold
+                        color: limitColor(pct)
+                    }
+
+                    Rectangle {
+                        Layout.preferredWidth: 48; height: 5; radius: 3
+                        color: root.subtleBorder
+                        Rectangle {
+                            property real pct: root.usageData.rateLimits?.weeklyFable?.percentUsed ?? 0
+                            width: parent.width * Math.min(1, pct / 100)
+                            height: parent.height; radius: 3
+                            color: barFill(pct, root.blueAccent)
+                            Behavior on width { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Mode: sessionCountdown ────────────────────────────────
+        Component {
+            id: compSessionCountdown
+            RowLayout {
+                spacing: Kirigami.Units.smallSpacing
+
+                Kirigami.Icon {
+                    source: "chronometer"
+                    Layout.preferredWidth: Kirigami.Units.iconSizes.small
+                    Layout.preferredHeight: Kirigami.Units.iconSizes.small
+                    opacity: 0.5
+                    Layout.alignment: Qt.AlignVCenter
                 }
 
                 PlasmaComponents3.Label {
                     text: {
-                        var ind = statusCompact.indicator;
-                        if (ind === "minor")    return "Degraded";
-                        if (ind === "major")    return "Outage";
-                        if (ind === "critical") return "Critical";
-                        return "";
+                        var totalSec = root.countdownMinutes * 60 + root.countdownSeconds;
+                        return root.hasData ? root.formatCountdown(totalSec) : "--";
                     }
-                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.80
-                    font.weight: Font.DemiBold
-                    color: statusColor(statusCompact.indicator)
+                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 1.0
+                    font.weight: Font.Bold
+                    color: {
+                        var m = root.countdownMinutes;
+                        if (m < 30) return root.redAlert;
+                        if (m < 60) return root.claudeAmberLight;
+                        return Kirigami.Theme.textColor;
+                    }
+                    Layout.alignment: Qt.AlignVCenter
+                }
+            }
+        }
+
+        // ── Mode: weeklyCountdown ─────────────────────────────────
+        Component {
+            id: compWeeklyCountdown
+            RowLayout {
+                spacing: Kirigami.Units.smallSpacing
+
+                PlasmaComponents3.Label {
+                    text: "W"
+                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.75
+                    font.weight: Font.Bold
+                    opacity: 0.45
+                    Layout.alignment: Qt.AlignVCenter
+                }
+
+                Kirigami.Icon {
+                    source: "chronometer"
+                    Layout.preferredWidth: Kirigami.Units.iconSizes.small
+                    Layout.preferredHeight: Kirigami.Units.iconSizes.small
+                    opacity: 0.5
+                    Layout.alignment: Qt.AlignVCenter
+                }
+
+                PlasmaComponents3.Label {
+                    text: root.hasData ? root.formatCountdown(root.weeklyCountdownLive) : "--"
+                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 1.0
+                    font.weight: Font.Bold
+                    color: {
+                        var h = Math.floor(root.weeklyCountdownLive / 3600);
+                        if (h < 24)  return root.redAlert;
+                        if (h < 72)  return root.claudeAmberLight;
+                        return Kirigami.Theme.textColor;
+                    }
+                    Layout.alignment: Qt.AlignVCenter
                 }
             }
         }
@@ -471,8 +671,42 @@ PlasmoidItem {
 
                 PlasmaComponents3.ToolButton {
                     icon.name: "view-refresh"
-                    onClicked: dataLoader.readData()
+                    // Force an immediate re-poll: disconnect then reconnect the
+                    // source so the executable engine re-runs it right away.
+                    onClicked: {
+                        dataLoader.disconnectSource(root.dataCmd);
+                        dataLoader.connectSource(root.dataCmd);
+                    }
                     PlasmaComponents3.ToolTip { text: "Refresh" }
+                }
+
+                // Display mode switcher — cycles through the 4 panel modes
+                PlasmaComponents3.ToolButton {
+                    id: modeBtn
+                    readonly property var modes: ["full", "weeklyBarOnly", "fableBarOnly", "sessionCountdown", "weeklyCountdown"]
+                    readonly property var modeIcons: ({
+                        "full":             "view-split-left-right",
+                        "weeklyBarOnly":    "office-chart-bar",
+                        "fableBarOnly":     "office-chart-bar-stacked",
+                        "sessionCountdown": "chronometer",
+                        "weeklyCountdown":  "view-calendar-week"
+                    })
+                    readonly property var modeLabels: ({
+                        "full":             "Full (default)",
+                        "weeklyBarOnly":    "Weekly bar only",
+                        "fableBarOnly":     "Fable bar only",
+                        "sessionCountdown": "Session countdown",
+                        "weeklyCountdown":  "Weekly countdown"
+                    })
+                    icon.name: modeIcons[root.displayMode] ?? "configure"
+                    onClicked: {
+                        var idx = modes.indexOf(root.displayMode);
+                        var next = modes[(idx + 1) % modes.length];
+                        Plasmoid.configuration.displayMode = next;
+                    }
+                    PlasmaComponents3.ToolTip {
+                        text: "Panel mode: " + (modeBtn.modeLabels[root.displayMode] ?? root.displayMode) + "\nClick to cycle"
+                    }
                 }
             }
 
@@ -729,6 +963,49 @@ PlasmoidItem {
                                 width: parent.width * Math.min(1, pct / 100)
                                 height: parent.height; radius: 3
                                 color: barFill(pct, root.purpleAccent)
+                                Behavior on width { NumberAnimation { duration: 600; easing.type: Easing.OutCubic } }
+                            }
+                        }
+                    }
+
+                    // Fable only row (visible only when the field is populated)
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+                        visible: root.usageData.rateLimits?.weeklyFable !== undefined &&
+                                 root.usageData.rateLimits?.weeklyFable !== null
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Rectangle { width: 8; height: 8; radius: 4; color: root.blueAccent }
+                            PlasmaComponents3.Label {
+                                text: "Fable only"
+                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.9
+                            }
+                            Item { Layout.fillWidth: true }
+                            PlasmaComponents3.Label {
+                                visible: (root.usageData.rateLimits?.weeklyFable?.resetsLabel ?? "") !== ""
+                                text: "Resets " + (root.usageData.rateLimits?.weeklyFable?.resetsLabel ?? "")
+                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
+                                opacity: 0.35
+                            }
+                            PlasmaComponents3.Label {
+                                property real pct: root.usageData.rateLimits?.weeklyFable?.percentUsed ?? 0
+                                text: Math.round(pct) + "%"
+                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 1.1
+                                font.weight: Font.Bold
+                                color: limitColor(pct)
+                            }
+                        }
+
+                        Rectangle {
+                            Layout.fillWidth: true; height: 6; radius: 3
+                            color: root.subtleBorder
+                            Rectangle {
+                                property real pct: root.usageData.rateLimits?.weeklyFable?.percentUsed ?? 0
+                                width: parent.width * Math.min(1, pct / 100)
+                                height: parent.height; radius: 3
+                                color: barFill(pct, root.blueAccent)
                                 Behavior on width { NumberAnimation { duration: 600; easing.type: Easing.OutCubic } }
                             }
                         }

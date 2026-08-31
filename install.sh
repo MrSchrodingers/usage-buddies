@@ -245,6 +245,7 @@ install_plasmoid() {
     mkdir -p "$PLASMOID_DIR/contents/"{ui,icons,config}
     cp "$REPO_DIR/plasmoid/metadata.json" "$PLASMOID_DIR/"
     cp "$REPO_DIR/plasmoid/contents/ui/main.qml" "$PLASMOID_DIR/contents/ui/"
+    cp "$REPO_DIR/plasmoid/contents/config/"* "$PLASMOID_DIR/contents/config/"
     if compgen -G "$REPO_DIR/plasmoid/contents/icons/*" > /dev/null 2>&1; then
         cp "$REPO_DIR/plasmoid/contents/icons/"* "$PLASMOID_DIR/contents/icons/"
     fi
