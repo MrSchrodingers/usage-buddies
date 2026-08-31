@@ -12,6 +12,7 @@ import glob
 import sys
 import urllib.request
 import urllib.error
+import urllib.parse
 import http.cookiejar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -720,6 +721,45 @@ def get_org_id(cookies=""):
     return org_id
 
 
+class _NoCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse any redirect that leaves the origin the credentials belong to.
+
+    urllib follows redirects by default and re-sends every header, so a 302 —
+    from an open redirect on the API host, or from a proxy in the path — hands
+    the session cookie to whatever host the Location names. Its own check only
+    rejects schemes outside http/https/ftp, so an https->http downgrade is
+    allowed and the cookie goes out in clear text.
+
+    These are fixed JSON API calls; a legitimate response never redirects
+    off-origin. Same-origin redirects still work.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        old = urllib.parse.urlsplit(req.full_url)
+        new = urllib.parse.urlsplit(newurl)
+        if new.scheme != old.scheme or new.netloc != old.netloc:
+            raise urllib.error.HTTPError(
+                req.full_url, code,
+                f"refused cross-origin redirect to {new.scheme}://{new.netloc}",
+                headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_NoCrossOriginRedirect)
+
+
+def _sanitize_header_value(value):
+    """Drop anything that cannot legally sit in a header value.
+
+    http.client raises ValueError on control characters and puts the offending
+    value in the message — which is the whole cookie. That traceback goes to
+    stderr and, under systemd, straight into the journal. Cookies decrypted
+    with the wrong key produce exactly such bytes, and the widget retries with
+    a fallback key, so this is reachable in normal operation.
+    """
+    return "".join(c for c in (value or "") if 0x20 <= ord(c) < 0x7F)
+
+
 def _api_request(path):
     """Make an authenticated request to claude.ai API."""
     cookies = get_claude_cookies()
@@ -732,16 +772,23 @@ def _api_request(path):
 
     url = f"https://claude.ai/api/organizations/{org_id}/{path}"
     req = urllib.request.Request(url)
-    req.add_header("Cookie", cookies)
+    req.add_header("Cookie", _sanitize_header_value(cookies))
     req.add_header("Content-Type", "application/json")
     req.add_header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:145.0) Gecko/20100101 Firefox/145.0")
     req.add_header("anthropic-client-platform", "web_claude_ai")
     req.add_header("anthropic-client-version", "1.0.0")
 
     try:
-        resp = urllib.request.urlopen(req, timeout=10)
-        return json.loads(resp.read().decode())
-    except Exception:
+        # Capped read: the response is a small JSON document, and an unbounded
+        # read would let a hostile or broken endpoint exhaust memory.
+        resp = _OPENER.open(req, timeout=10)
+        return json.loads(resp.read(4 * 1024 * 1024).decode())
+    except Exception as e:
+        # Class name only. Several exceptions here carry the credential or the
+        # response body in their message (ValueError from an invalid header
+        # value quotes the cookie; BadStatusLine quotes the server's bytes),
+        # and this runs every 30s under systemd.
+        print(f"warn: API request failed: {type(e).__name__}", file=sys.stderr)
         return None
 
 

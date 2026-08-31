@@ -7,3 +7,23 @@ Type=oneshot
 ExecStart=/usr/bin/python3 %h/.local/bin/codex-usage-collector.py
 StandardOutput=journal
 StandardError=journal
+
+# Hardening. PrivateTmp alone removes the shared-/tmp exposure of the cookie
+# database copies; the rest is the standard least-privilege set for a user
+# service that only needs to read a browser profile and reach one API.
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=%h/.codex %h/.local/bin

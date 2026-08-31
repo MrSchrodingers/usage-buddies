@@ -13,10 +13,12 @@ import json
 import os
 import hashlib
 import shutil
+import sys
 import sqlite3
 import subprocess
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -90,6 +92,63 @@ def _decrypt_chrome_cookie(value: bytes, key: bytes) -> str | None:
     return None
 
 
+def _private_tmpdir() -> Path:
+    """A 0700 scratch directory under XDG_RUNTIME_DIR, falling back to home.
+
+    Cookie-database copies must not sit in shared /tmp even briefly.
+    """
+    base = os.environ.get("XDG_RUNTIME_DIR") or str(Path.home() / ".cache")
+    target = Path(base) / "usage-buddies"
+    target.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return target
+
+
+def _copy_private(source: Path, target: Path) -> None:
+    """Copy without ever following a symlink at the destination."""
+    fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    try:
+        with open(fd, "wb", closefd=True) as out, open(source, "rb") as src:
+            shutil.copyfileobj(src, out)
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+
+
+def _sanitize_header_value(value: str) -> str:
+    """Strip bytes that cannot legally sit in a header value.
+
+    http.client raises ValueError on control characters and quotes the offending
+    value — the whole cookie — in the message. That traceback reaches the
+    journal. Cookies decrypted with the wrong key produce exactly such bytes,
+    and this code retries with a fallback key, so it is reachable normally.
+    """
+    return "".join(c for c in (value or "") if 0x20 <= ord(c) < 0x7F)
+
+
+class _NoCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects that leave the origin the credentials belong to.
+
+    urllib follows redirects and re-sends every header, so a 302 hands the
+    session cookie *and* the bearer token to whatever host Location names. Its
+    own check only rejects schemes outside http/https/ftp, so an https->http
+    downgrade is allowed and both go out in clear text.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        old = urllib.parse.urlsplit(req.full_url)
+        new = urllib.parse.urlsplit(newurl)
+        if new.scheme != old.scheme or new.netloc != old.netloc:
+            raise urllib.error.HTTPError(
+                req.full_url, code,
+                f"refused cross-origin redirect to {new.scheme}://{new.netloc}",
+                headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_NoCrossOriginRedirect)
+MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+
+
 def browser_cookies() -> str:
     """Read ChatGPT cookies from Chromium-family profiles without persisting them."""
     browser_dirs = [
@@ -108,17 +167,28 @@ def browser_cookies() -> str:
                 cookie_db = profile / "Cookies"
             if not cookie_db.exists():
                 continue
-            temporary = Path(tempfile.mkstemp(prefix="codex-usage-cookies-", suffix=".sqlite")[1])
+            # Private 0700 directory rather than shared /tmp: mkstemp protects
+            # the .sqlite itself, but the -wal/-shm copies below are created by
+            # shutil.copy2, which follows symlinks and leaves the file
+            # world-readable until copystat runs.
+            temporary = Path(tempfile.mkstemp(prefix="cookies-", suffix=".sqlite",
+                                              dir=_private_tmpdir())[1])
             try:
                 shutil.copy2(cookie_db, temporary)
                 for suffix in ("-wal", "-shm"):
                     source = Path(str(cookie_db) + suffix)
                     if source.exists():
-                        shutil.copy2(source, Path(str(temporary) + suffix))
+                        _copy_private(source, Path(str(temporary) + suffix))
                 with sqlite3.connect(temporary) as database:
+                    # Exact hosts, not LIKE '%chatgpt.com%'. A leading wildcard
+                    # also matches evil-chatgpt.com.attacker.io, so any such
+                    # domain the user ever visited would have its cookies read
+                    # and forwarded. openai.com is deliberately excluded: it is
+                    # a different registrable domain from chatgpt.com, and the
+                    # browser would never send one host's cookies to the other.
                     rows = database.execute(
                         "SELECT name, value, encrypted_value FROM cookies "
-                        "WHERE host_key LIKE '%chatgpt.com%' OR host_key LIKE '%openai.com%'"
+                        "WHERE host_key IN ('chatgpt.com', '.chatgpt.com')"
                     ).fetchall()
                 pairs = []
                 for name, plain, encrypted in rows:
@@ -145,7 +215,7 @@ def fetch_authenticated_usage() -> tuple[dict[str, Any], dict[str, str]]:
     results: dict[str, Any] = {}
     errors: dict[str, str] = {}
     common_headers = {
-        "Cookie": cookies,
+        "Cookie": _sanitize_header_value(cookies),
         "Accept": "application/json",
         "Origin": "https://chatgpt.com",
         "Referer": "https://chatgpt.com/",
@@ -156,38 +226,54 @@ def fetch_authenticated_usage() -> tuple[dict[str, Any], dict[str, str]]:
     access_token = ""
     try:
         session_request = urllib.request.Request("https://chatgpt.com/api/auth/session", headers=common_headers)
-        with urllib.request.urlopen(session_request, timeout=12) as response:
-            session = json.loads(response.read().decode("utf-8"))
-            access_token = session.get("accessToken", session.get("access_token", ""))
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+        with _OPENER.open(session_request, timeout=12) as response:
+            session = json.loads(response.read(MAX_RESPONSE_BYTES).decode("utf-8"))
+        if isinstance(session, dict):
+            access_token = session.get("accessToken", session.get("access_token", "")) or ""
+        if not isinstance(access_token, str):
+            access_token = ""
+    # Catch-all on purpose: BadStatusLine carries the server's raw bytes in its
+    # message and ValueError from an invalid header carries the cookie. Neither
+    # is an OSError, so a typed list lets them reach the journal as a traceback.
+    except Exception as error:
         errors["authentication"] = type(error).__name__
     for name, url in USAGE_ENDPOINTS.items():
         headers = dict(common_headers)
         if access_token:
             headers["Authorization"] = f"Bearer {access_token}"
+        headers["Authorization"] = _sanitize_header_value(headers.get("Authorization", "")) \
+            if headers.get("Authorization") else None
+        headers = {k: v for k, v in headers.items() if v is not None}
         request = urllib.request.Request(url, headers=headers)
         try:
-            with urllib.request.urlopen(request, timeout=12) as response:
-                results[name] = json.loads(response.read().decode("utf-8"))
+            with _OPENER.open(request, timeout=12) as response:
+                results[name] = json.loads(response.read(MAX_RESPONSE_BYTES).decode("utf-8"))
         except urllib.error.HTTPError as error:
             errors[name] = f"HTTP {error.code}"
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+        except Exception as error:
             errors[name] = type(error).__name__
     return results, errors
 
 
-def find_rate_limit_blocks(value: Any) -> list[dict[str, Any]]:
-    """Locate API objects that look like a Codex 5h/weekly rate-limit window."""
+def find_rate_limit_blocks(value: Any, depth: int = 0) -> list[dict[str, Any]]:
+    """Locate API objects that look like a Codex 5h/weekly rate-limit window.
+
+    Depth-bounded: the input is third-party JSON, and unbounded recursion over
+    a deeply nested document raises RecursionError, which kills the collector
+    and prints a traceback to the journal.
+    """
     found: list[dict[str, Any]] = []
+    if depth > 64:
+        return found
     if isinstance(value, dict):
         keys = set(value)
         if ("used_percent" in keys and ("window_minutes" in keys or "limit_window_seconds" in keys)) or ("usedPercent" in keys and "windowMinutes" in keys):
             found.append(value)
         for child in value.values():
-            found.extend(find_rate_limit_blocks(child))
+            found.extend(find_rate_limit_blocks(child, depth + 1))
     elif isinstance(value, list):
         for child in value:
-            found.extend(find_rate_limit_blocks(child))
+            found.extend(find_rate_limit_blocks(child, depth + 1))
     return found
 
 
@@ -356,8 +442,17 @@ def collect() -> dict[str, Any]:
 
 
 def main() -> None:
-    data = collect()
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        data = collect()
+    # Third-party JSON reaches arithmetic and attribute access all over collect();
+    # a hostile or merely changed shape raises AttributeError, TypeError,
+    # OverflowError or ValueError. Letting those escape prints a traceback to the
+    # journal every 30s and leaves the widget with no file at all.
+    except Exception as error:
+        print(f"error: collection failed: {type(error).__name__}", file=sys.stderr)
+        raise SystemExit(1) from None
+    # 0700: ~/.codex also holds the Codex CLI's auth.json.
+    DATA_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, temporary = tempfile.mkstemp(prefix="usage-widget-", suffix=".json", dir=DATA_DIR)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as target:
@@ -368,7 +463,12 @@ def main() -> None:
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
-    print(json.dumps(data))
+    # Only under --verbose. StandardOutput=journal means an unconditional dump
+    # writes plan, credits and account fields into the journal 2880 times a day,
+    # and nothing consumes it: the widget runs this with stdout redirected to
+    # /dev/null and then reads the file.
+    if "--verbose" in sys.argv:
+        print(json.dumps(data))
 
 
 if __name__ == "__main__":
