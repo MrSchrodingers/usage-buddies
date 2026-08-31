@@ -24,20 +24,25 @@ CONFIG_FILE = CLAUDE_DIR / "widget-config.json"
 
 # Defaults para os 4 eventos de uso.
 # - sound: nome freedesktop (Linux/macOS via paplay) ou caminho absoluto.
+# - winSound: System.Media.SystemSounds equivalente no Windows.
 USAGE_EVENT_DEFAULTS = {
     "sessionEnded": {"sound": "dialog-warning",
+                     "winSound": "Exclamation",
                      "urgency": "normal",
                      "title": "Sessão Claude esgotada",
                      "body": "A janela de 5h atingiu 100%."},
     "sessionReset": {"sound": "complete",
+                     "winSound": "Asterisk",
                      "urgency": "low",
                      "title": "Sessão Claude renovada",
                      "body": "A janela de 5h foi resetada."},
     "weeklyEnded":  {"sound": "phone-outgoing-busy",
+                     "winSound": "Hand",
                      "urgency": "critical",
                      "title": "Limite semanal Claude esgotado",
                      "body": "A janela de 7 dias atingiu 100%."},
     "weeklyReset":  {"sound": "service-login",
+                     "winSound": "Asterisk",
                      "urgency": "normal",
                      "title": "Limite semanal Claude renovado",
                      "body": "A janela de 7 dias foi resetada."},
@@ -531,7 +536,7 @@ def _get_chrome_cookies():
 def _get_firefox_cookies():
     """Extract claude.ai cookies from Firefox (plain text, no decryption needed).
 
-    Searches native, snap, flatpak, and macOS Firefox paths.
+    Searches native, snap, flatpak, Windows, and macOS Firefox paths.
     Returns cookie string or empty string.
     """
     import sqlite3
@@ -544,7 +549,13 @@ def _get_firefox_cookies():
         Path.home() / "snap" / "firefox" / "common" / ".mozilla" / "firefox",
         Path.home() / ".var" / "app" / "org.mozilla.firefox" / ".mozilla" / "firefox",
     ]
-    if platform.system() == "Darwin":
+    if platform.system() == "Windows":
+        # Chrome/Edge on Windows encrypt cookies with App-Bound Encryption, which
+        # the DPAPI path never handled (it only read v10/v11 blobs). Firefox keeps
+        # them in plaintext SQLite, so it is the only automatic source on Windows.
+        appdata = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+        firefox_dirs.insert(0, appdata / "Mozilla" / "Firefox" / "Profiles")
+    elif platform.system() == "Darwin":
         firefox_dirs.insert(0, Path.home() / "Library" / "Application Support" / "Firefox" / "Profiles")
 
     import tempfile
@@ -885,12 +896,26 @@ def _resolve_sound_path(sound_spec):
     return None
 
 
-def _play_event_sound(sound_spec):
+def _play_event_sound(sound_spec, win_sound=None):
     """Toca som de forma cross-platform. Fire-and-forget."""
     import subprocess
     import platform
 
     system = platform.system()
+
+    if system == "Windows":
+        # PowerShell + System.Media.SystemSounds (sempre disponível)
+        win_name = win_sound or "Asterisk"
+        ps_cmd = f"[System.Media.SystemSounds]::{win_name}.Play(); Start-Sleep -Milliseconds 600"
+        try:
+            subprocess.Popen(
+                ["powershell", "-NoProfile", "-Command", ps_cmd],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as e:
+            print(f"warn: falha ao tocar som Windows '{win_name}': {e}", file=sys.stderr)
+        return
 
     if system == "Darwin":  # macOS
         path = _resolve_sound_path(sound_spec) or f"/System/Library/Sounds/{sound_spec}.aiff"
@@ -1012,6 +1037,33 @@ def _notify_desktop(title, body, urgency, icon="claude-logo", app_name="Claude U
             print(f"warn: notify-send falhou: {e}", file=sys.stderr)
         return
 
+    if system == "Windows":
+        # Toast nativo via PowerShell (sem dependências externas)
+        # Escape de aspas simples para PowerShell
+        t = title.replace("'", "''")
+        b = body.replace("'", "''")
+        ps_cmd = (
+            "[reflection.assembly]::loadwithpartialname('System.Windows.Forms') | Out-Null;"
+            "[reflection.assembly]::loadwithpartialname('System.Drawing') | Out-Null;"
+            "$n = New-Object System.Windows.Forms.NotifyIcon;"
+            "$n.Icon = [System.Drawing.SystemIcons]::Information;"
+            "$n.BalloonTipTitle = '" + t + "';"
+            "$n.BalloonTipText  = '" + b + "';"
+            "$n.Visible = $true;"
+            "$n.ShowBalloonTip(8000);"
+            "Start-Sleep -Seconds 9;"
+            "$n.Dispose();"
+        )
+        try:
+            subprocess.Popen(
+                ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_cmd],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as e:
+            print(f"warn: notificação Windows falhou: {e}", file=sys.stderr)
+        return
+
     if system == "Darwin":
         try:
             subprocess.run(
@@ -1031,8 +1083,9 @@ def notify_usage_event(event_id, config):
 
     sounds_cfg = (config.get("notifications") or {}).get("sounds") or {}
     sound = sounds_cfg.get(event_id, defaults["sound"])
+    win_sound = sounds_cfg.get(event_id + "Win", defaults.get("winSound"))
 
-    _play_event_sound(sound)
+    _play_event_sound(sound, win_sound=win_sound)
     _notify_desktop(defaults["title"], defaults["body"], defaults["urgency"])
 
 
@@ -1057,8 +1110,9 @@ def run_test_sounds(config):
     order = ["sessionEnded", "sessionReset", "weeklyEnded", "weeklyReset"]
     for ev in order:
         sound = sounds_cfg.get(ev, USAGE_EVENT_DEFAULTS[ev]["sound"])
+        win_sound = sounds_cfg.get(ev + "Win", USAGE_EVENT_DEFAULTS[ev].get("winSound"))
         print(f"▶ {ev} → {sound}")
-        _play_event_sound(sound)
+        _play_event_sound(sound, win_sound=win_sound)
         time.sleep(1.5)
     print("OK: 4 sons testados.")
 
@@ -1684,6 +1738,9 @@ def build_rate_limits():
                 "percentUsed": five_hour.get("utilization", 0) or 0,
                 "resetsInMinutes": reset_minutes,
                 "windowHours": 5,
+                # detect_usage_transitions() compares resetsAt across runs to
+                # fire sessionReset; without it that event can never trigger.
+                "resetsAt": five_hour.get("resets_at", "") or "",
             },
             "weeklyAll": {
                 "percentUsed": seven_day.get("utilization", 0) or 0,
@@ -2112,7 +2169,9 @@ def run_health_check():
         Path.home() / "snap" / "firefox" / "common" / ".mozilla" / "firefox",
         Path.home() / ".var" / "app" / "org.mozilla.firefox" / ".mozilla" / "firefox",
     ]
-    if platform.system() == "Darwin":
+    if platform.system() == "Windows":
+        firefox_dirs.insert(0, Path(os.environ.get("APPDATA", Path.home())) / "Mozilla" / "Firefox" / "Profiles")
+    elif platform.system() == "Darwin":
         firefox_dirs.insert(0, Path.home() / "Library" / "Application Support" / "Firefox" / "Profiles")
 
     ff_cookies = _get_firefox_cookies()
