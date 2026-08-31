@@ -1,1 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#0EA5E9"/><path d="M20 18h18a8 8 0 0 1 0 16H26a6 6 0 0 0 0 12h18" fill="none" stroke="white" stroke-width="7" stroke-linecap="round"/></svg>
+<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg"
+     fill="none" stroke="#0EA5E9" stroke-width="7"
+     stroke-linecap="round" stroke-linejoin="round">
+  <!-- Terminal prompt: Codex is a CLI. Flat and container-less, to sit beside
+       the vendor mark used on the Claude row rather than compete with it.
+       Drawn rather than borrowed: inventing a vendor's logo would be worse
+       than having none. -->
+  <path d="M14 18 L30 32 L14 46"/>
+  <path d="M36 46 L52 46"/>
+</svg>

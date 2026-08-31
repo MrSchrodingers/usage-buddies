@@ -99,5 +99,37 @@ check("resetsAt invalido -> -1", windowPace("nao-e-data", 5) === -1);
 check("windowHours zero -> -1", windowPace(iso(H), 0) === -1);
 check("resetsAt alem da janela -> 0 (nao extrapola)", windowPace(iso(99 * H), 5) === 0);
 
+
+// ── usageZone: o que decide cor, pulso de alerta e agitacao do buddy ──
+const zm = src.match(/function usageZone\(pct, pace\) \{\n([\s\S]*?)\n    \}\n/);
+if (!zm) { console.error("FALHA: nao achei usageZone no QML"); process.exit(2); }
+const K = {};
+for (const k of ["warnAt", "alertAt", "paceTolerance"]) {
+  const m = src.match(new RegExp("readonly property real " + k + ": (\\d+)"));
+  if (!m) { console.error("FALHA: nao achei " + k); process.exit(2); }
+  K[k] = Number(m[1]);
+}
+const usageZone = new Function("pct", "pace",
+  `const warnAt=${K.warnAt}, alertAt=${K.alertAt}, paceTolerance=${K.paceTolerance};\n` + zm[1]);
+
+console.log("\n=== usageZone (limiares lidos do QML: warn=" + K.warnAt + " alert=" + K.alertAt + ") ===");
+const zcases = [
+  [0, 0.00, "calm", "janela recem-comecada"],
+  [33, 0.51, "calm", "o caso do screenshot: 33% com metade da semana"],
+  [76, 0.50, "warn", "acima do limiar de aviso"],
+  [91, 0.50, "alert", "acima do limiar de alerta"],
+  [40, 0.10, "warn", "adiantado: 40% gastos em 10% da janela"],
+  [60, 0.90, "calm", "dentro do ritmo no fim da janela"],
+  [60, -1,   "warn", "sem ritmo conhecido, acima de 50%"],
+  [40, -1,   "calm", "sem ritmo conhecido, abaixo de 50%"],
+  [75, 0.50, "warn", "limiar exato de aviso"],
+  [90, 0.50, "alert", "limiar exato de alerta"],
+];
+for (const [pct, pace, want, why] of zcases) {
+  const got = usageZone(pct, pace);
+  check(`${String(pct).padStart(3)}% pace=${String(pace).padStart(5)} -> ${want.padEnd(5)} (${why})`,
+        got === want, `recebeu ${got}`);
+}
+
 console.log(fail ? `\n${fail} FALHA(S)` : "\nTODAS PASSARAM");
 process.exit(fail ? 1 : 0);

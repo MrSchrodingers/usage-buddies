@@ -74,7 +74,7 @@ PlasmoidItem {
             "name": "Codex",
             "vendor": "OpenAI",
             "logo": "codex-logo.svg",
-            "mascot": "",
+            "mascot": "rex.svg",
             "collector": "codex-usage-collector.py",
             "dataFile": "$HOME/.codex/widget-data.json",
             "siteLabel": "chatgpt.com",
@@ -283,6 +283,25 @@ PlasmoidItem {
         if (zone === "alert") return redAlert;
         if (zone === "warn") return claudeAmberLight;
         return calmFill;
+    }
+
+    // Worst zone across every quota on screen, so the widget has one answer to
+    // "how am I doing" that the mascot and the gauges can both react to.
+    readonly property string worstZone: {
+        var limits = usageData.rateLimits;
+        if (!limits) return "calm";
+        var worst = "calm";
+        var scopes = ["session", "weeklyAll", "weeklyOpus", "weeklySonnet",
+                      "weeklyFable", "weeklyHaiku", "weeklyScoped"];
+        for (var i = 0; i < scopes.length; i++) {
+            var b = limits[scopes[i]];
+            if (!b) continue;
+            var hours = scopes[i] === "session" ? (b.windowHours ?? 5) : 168;
+            var z = usageZone(b.percentUsed ?? 0, windowPace(b.resetsAt ?? "", hours));
+            if (z === "alert") return "alert";
+            if (z === "warn") worst = "warn";
+        }
+        return worst;
     }
 
     function paceFill(pct, pace) {
@@ -708,8 +727,15 @@ PlasmoidItem {
                     }
                     Timer { id: eggHide; interval: 1500; onTriggered: eggLabel.visible = false }
 
-                    // Clawd — hidden when braindead (ghost replaces him)
+                    // The buddy — hidden when braindead (ghost replaces him).
+                    //
+                    // It breathes all the time, and gets agitated when a quota
+                    // enters the alert zone. The motion is the widget's one
+                    // ambient animation, and it is tied to state rather than
+                    // decorative: a still buddy means nothing is close to a
+                    // limit, so glancing at it is already an answer.
                     Image {
+                        id: mascotImage
                         visible: !root.isBraindead
                         anchors.centerIn: parent
                         anchors.verticalCenterOffset: 6
@@ -718,6 +744,34 @@ PlasmoidItem {
                         source: Qt.resolvedUrl("../icons/" + root.brand.mascot)
                         sourceSize: Qt.size(parent.width, parent.height)
                         fillMode: Image.PreserveAspectFit
+
+                        property bool agitated: root.worstZone === "alert"
+
+                        transform: Translate {
+                            id: mascotShift
+                            y: mascotImage.bob
+                            x: mascotImage.jitter
+                        }
+                        property real bob: 0
+                        property real jitter: 0
+
+                        SequentialAnimation on bob {
+                            running: mascotImage.visible
+                            loops: Animation.Infinite
+                            NumberAnimation { to: -2.0; duration: mascotImage.agitated ? 260 : 1300
+                                              easing.type: Easing.InOutSine }
+                            NumberAnimation { to: 0;    duration: mascotImage.agitated ? 260 : 1300
+                                              easing.type: Easing.InOutSine }
+                        }
+                        SequentialAnimation on jitter {
+                            running: mascotImage.visible && mascotImage.agitated
+                            loops: Animation.Infinite
+                            NumberAnimation { to: -1.2; duration: 90 }
+                            NumberAnimation { to:  1.2; duration: 90 }
+                            NumberAnimation { to:  0;   duration: 90 }
+                            PauseAnimation  { duration: 620 }
+                        }
+                        onAgitatedChanged: if (!agitated) jitter = 0
                     }
                     // === ALL OVERLAYS ON TOP OF CLAWD ===
                     // DUMB: Fire
@@ -915,13 +969,33 @@ PlasmoidItem {
                 implicitHeight: sessionInner.implicitHeight + Kirigami.Units.largeSpacing * 2
                 radius: 12
                 color: root.cardBg
+                id: sessionCard
                 border.width: 2
+
+                // Same zones as every other gauge — the border used its own
+                // 50/80 thresholds, so the card could read amber while the ring
+                // inside it read calm.
+                property string zone: root.usageZone(
+                    root.usageData.rateLimits?.session?.percentUsed ?? 0,
+                    progressRing.pace)
+                property real alertPulse: 1.0
+
                 border.color: {
-                    var p = root.usageData.rateLimits?.session?.percentUsed ?? 0;
-                    if (p > 80) return Qt.rgba(redAlert.r, redAlert.g, redAlert.b, 0.6);
-                    if (p > 50) return Qt.rgba(claudeAmberLight.r, claudeAmberLight.g, claudeAmberLight.b, 0.5);
-                    return Qt.rgba(claudeAmber.r, claudeAmber.g, claudeAmber.b, 0.35);
+                    var c = root.zoneColor(zone);
+                    var a = zone === "alert" ? 0.75 * alertPulse
+                          : zone === "warn" ? 0.5 : 0.28;
+                    return Qt.rgba(c.r, c.g, c.b, a);
                 }
+
+                // Pulses only in the alert zone. Something that pulses always
+                // stops meaning anything; here it means act now.
+                SequentialAnimation on alertPulse {
+                    running: sessionCard.zone === "alert"
+                    loops: Animation.Infinite
+                    NumberAnimation { to: 0.35; duration: 700; easing.type: Easing.InOutSine }
+                    NumberAnimation { to: 1.0;  duration: 700; easing.type: Easing.InOutSine }
+                }
+                onZoneChanged: if (zone !== "alert") alertPulse = 1.0
 
                 ColumnLayout {
                     id: sessionInner
@@ -1200,11 +1274,21 @@ PlasmoidItem {
                                 }
 
                                 Rectangle {
+                                    id: fill
                                     width: track.width * Math.min(1, modelData.pct / 100)
                                     height: parent.height; radius: 4
                                     color: root.paceFill(modelData.pct, weeklyRow.pace)
                                     Behavior on width { NumberAnimation { duration: 600; easing.type: Easing.OutCubic } }
                                     Behavior on color { ColorAnimation { duration: 400 } }
+
+                                    property bool alerting: root.usageZone(modelData.pct, weeklyRow.pace) === "alert"
+                                    SequentialAnimation on opacity {
+                                        running: fill.alerting
+                                        loops: Animation.Infinite
+                                        NumberAnimation { to: 0.5; duration: 700; easing.type: Easing.InOutSine }
+                                        NumberAnimation { to: 1.0; duration: 700; easing.type: Easing.InOutSine }
+                                    }
+                                    onAlertingChanged: if (!alerting) opacity = 1.0
                                 }
 
                                 // Same tick as the session ring: where even burn
