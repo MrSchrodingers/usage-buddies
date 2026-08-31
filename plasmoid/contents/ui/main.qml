@@ -91,6 +91,16 @@ PlasmoidItem {
     })
     readonly property var brand: providers[provider] ?? providers["claude"]
 
+    // Switching provider must not leave the previous one's numbers on screen
+    // under the new one's labels while the next poll is pending: drop the stale
+    // payload and read again immediately.
+    onProviderChanged: {
+        usageData = ({});
+        countdownMinutes = 0;
+        countdownSeconds = 0;
+        dataLoader.readData();
+    }
+
     // Brand palette
     // Global font scale — multiplier applied to every `pixelSize` binding.
     // Default 1.20 bumps the UI one step up from Plasma's system font size
