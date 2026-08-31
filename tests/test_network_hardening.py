@@ -144,20 +144,16 @@ def codex():
     return mod
 
 
-def _cookie_sql(codex):
-    """The SELECT the collector actually runs, pulled out of its source.
-
-    Asserting on source text would be satisfied by a comment; this extracts the
-    real statement and runs it, so the test fails if the filter changes.
-    """
-    import inspect
-    src = inspect.getsource(codex.browser_cookies)
-    m = re.search(r'database\.execute\(\s*((?:\s*"[^"]*"\s*)+)\)', src)
-    assert m, f"could not locate the cookie query:\n{src}"
-    return "".join(re.findall(r'"([^"]*)"', m.group(1)))
+def _run_host_filter(codex, host, table, column, sql):
+    """Run the collector's real host filter against a fixture row."""
+    import sqlite3
+    db = sqlite3.connect(":memory:")
+    db.execute(f"CREATE TABLE {table} (name TEXT, value TEXT, {column} TEXT)")
+    db.execute(f"INSERT INTO {table} VALUES ('s','v',?)", (host,))
+    return bool(db.execute(sql, codex.CHATGPT_HOSTS).fetchall())
 
 
-@pytest.mark.parametrize("host,should_match", [
+LOOKALIKES = [
     ("chatgpt.com", True),
     (".chatgpt.com", True),
     # A leading-wildcard LIKE matches all of these; they are attacker-controlled
@@ -169,16 +165,52 @@ def _cookie_sql(codex):
     # cookies here, or these to chatgpt.com.
     ("openai.com", False),
     (".openai.com", False),
-])
-def test_codex_cookie_query_rejects_lookalike_hosts(codex, host, should_match):
+    # Websocket host: carries nothing the usage endpoints need.
+    ("ws.chatgpt.com", False),
+]
+
+
+@pytest.mark.parametrize("host,should_match", LOOKALIKES)
+def test_codex_chromium_filter_rejects_lookalikes(codex, host, should_match):
+    got = _run_host_filter(
+        codex, host, "cookies", "host_key",
+        "SELECT name FROM cookies WHERE host_key IN (?, ?)")
+    assert got is should_match, f"{host!r} matched={got}, expected {should_match}"
+
+
+@pytest.mark.parametrize("host,should_match", LOOKALIKES)
+def test_codex_firefox_filter_rejects_lookalikes(codex, host, should_match):
+    got = _run_host_filter(
+        codex, host, "moz_cookies", "host",
+        "SELECT name FROM moz_cookies WHERE host IN (?, ?)")
+    assert got is should_match, f"{host!r} matched={got}, expected {should_match}"
+
+
+def test_both_collectors_share_one_host_list(codex):
+    """Chromium and Firefox paths must not drift apart on which hosts count.
+
+    Asserting on the source text was tried and is worthless here: the word LIKE
+    appears in the comment explaining why it is not used.
+    """
+    assert codex.CHATGPT_HOSTS == ("chatgpt.com", ".chatgpt.com")
+
+
+def test_codex_reads_firefox(codex, monkeypatch, tmp_path):
+    """Firefox stores cookies in plaintext and needs no keyring. Without this
+    path a user logged into ChatGPT in Firefox gets an empty widget."""
     import sqlite3
-    db = sqlite3.connect(":memory:")
-    db.execute("CREATE TABLE cookies (name TEXT, value TEXT, encrypted_value BLOB, host_key TEXT)")
-    db.execute("INSERT INTO cookies VALUES ('s','v','', ?)", (host,))
-    rows = db.execute(_cookie_sql(codex)).fetchall()
-    assert bool(rows) is should_match, (
-        f"{host!r} matched={bool(rows)}, expected {should_match}; query: {_cookie_sql(codex)}"
-    )
+    profile = tmp_path / ".mozilla" / "firefox" / "abc.default-release"
+    profile.mkdir(parents=True)
+    db = sqlite3.connect(profile / "cookies.sqlite")
+    db.execute("CREATE TABLE moz_cookies (name TEXT, value TEXT, host TEXT)")
+    db.execute("INSERT INTO moz_cookies VALUES ('__Secure-next-auth.session-token','tok','chatgpt.com')")
+    db.execute("INSERT INTO moz_cookies VALUES ('other','x','.example.com')")
+    db.commit(); db.close()
+
+    monkeypatch.setattr(codex.Path, "home", staticmethod(lambda: tmp_path))
+    got = codex.firefox_cookies()
+    assert "__Secure-next-auth.session-token=tok" in got
+    assert "other=x" not in got, "cookie from an unrelated host was collected"
 
 
 def test_codex_recursion_is_bounded(codex):

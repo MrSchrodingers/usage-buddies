@@ -149,8 +149,61 @@ _OPENER = urllib.request.build_opener(_NoCrossOriginRedirect)
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
 
+CHATGPT_HOSTS = ("chatgpt.com", ".chatgpt.com")
+
+
+def firefox_cookies() -> str:
+    """Read chatgpt.com cookies from Firefox, which stores them in plaintext.
+
+    The Chromium path below needs the desktop keyring and App-Bound-style
+    decryption; Firefox needs neither. Leaving it out meant a user logged into
+    ChatGPT in Firefox got an empty widget with no indication why — the sibling
+    Claude collector has read Firefox from the start.
+
+    ws.chatgpt.com is deliberately not matched: it is the websocket host and
+    carries nothing the usage endpoints need.
+    """
+    roots = [
+        Path.home() / ".mozilla" / "firefox",
+        Path.home() / "snap" / "firefox" / "common" / ".mozilla" / "firefox",
+        Path.home() / ".var" / "app" / "org.mozilla.firefox" / ".mozilla" / "firefox",
+    ]
+    for root in roots:
+        if not root.exists():
+            continue
+        for profile in root.iterdir():
+            database = profile / "cookies.sqlite"
+            if not database.exists():
+                continue
+            temporary = Path(tempfile.mkstemp(prefix="ff-cookies-", suffix=".sqlite",
+                                              dir=_private_tmpdir())[1])
+            try:
+                shutil.copy2(database, temporary)
+                with sqlite3.connect(temporary) as connection:
+                    rows = connection.execute(
+                        "SELECT name, value FROM moz_cookies WHERE host IN (?, ?)",
+                        CHATGPT_HOSTS,
+                    ).fetchall()
+                pairs = [f"{name}={value}" for name, value in rows if value]
+                if pairs:
+                    return "; ".join(pairs)
+            except (OSError, sqlite3.Error):
+                continue
+            finally:
+                temporary.unlink(missing_ok=True)
+    return ""
+
+
 def browser_cookies() -> str:
-    """Read ChatGPT cookies from Chromium-family profiles without persisting them."""
+    """Read ChatGPT cookies from any supported browser, without persisting them.
+
+    Firefox first: it needs no keyring and no decryption, so it is both cheaper
+    and more likely to succeed than the Chromium path.
+    """
+    from_firefox = firefox_cookies()
+    if from_firefox:
+        return from_firefox
+
     browser_dirs = [
         Path.home() / ".config" / "google-chrome",
         Path.home() / ".config" / "chromium",
@@ -188,7 +241,7 @@ def browser_cookies() -> str:
                     # browser would never send one host's cookies to the other.
                     rows = database.execute(
                         "SELECT name, value, encrypted_value FROM cookies "
-                        "WHERE host_key IN ('chatgpt.com', '.chatgpt.com')"
+                        "WHERE host_key IN (?, ?)", CHATGPT_HOSTS
                     ).fetchall()
                 pairs = []
                 for name, plain, encrypted in rows:
