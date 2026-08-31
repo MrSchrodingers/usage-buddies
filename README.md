@@ -316,6 +316,31 @@ reading only the final line makes every settled session look busy.
 Only record types, stop reasons, tool names and timestamps are inspected. No
 message text is read.
 
+### The desktop companion
+
+With chatter on, a companion appears at the bottom of the screen and wanders —
+it walks, pauses, turns around, and speaks in a bubble when it has something to
+say. Left-click a line about a session to jump to that session; right-click to
+quit it.
+
+It is a **separate process**, not part of the widget: a Plasma applet lives
+inside the panel's window and cannot leave it. The header button owns its
+lifecycle, so there is one control rather than two.
+
+It runs under **XWayland** (`QT_QPA_PLATFORM=xcb`), because Wayland has no call
+for a client to position its own window — by design. The alternative is asking
+KWin to move the window over D-Bus on every frame, which is neither smooth nor
+kind to the compositor.
+
+Two traps worth recording, both hit here:
+
+- `pkill -f usage-buddy-companion` kills the shell running it, because that
+  string is in its own command line. `companion-ctl.sh` walks `/proc` and skips
+  its own pid.
+- A shebang script is exec'd as `/usr/bin/python3 /path/script.py`, so argv[0]
+  is the interpreter. Matching only argv[0] finds nothing, and `status`
+  reported zero while the companion was running.
+
 ### Notification and focus
 
 With chatter enabled, a session entering **asking** or **done** raises a

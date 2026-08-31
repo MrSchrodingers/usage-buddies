@@ -16,6 +16,9 @@ echo ""
 
 REMOVED=0
 
+# ── Stop the desktop companion ──
+[ -x "$HOME/.local/bin/companion-ctl.sh" ] && "$HOME/.local/bin/companion-ctl.sh" stop 2>/dev/null
+
 # ── Kill running tray app (only our specific binary) ──
 # -f, not -x: /proc/PID/comm truncates at 15 chars, so `pgrep -x` never
 # matches a name this long and the process was silently left running.
@@ -68,6 +71,8 @@ for f in "$HOME/.local/bin/usage-buddies-collector.py" \
          "$HOME/.local/bin/tollens-probe.py" \
          "$HOME/.local/bin/sessions-probe.py" \
          "$HOME/.local/bin/focus-session.sh" \
+         "$HOME/.local/bin/usage-buddy-companion.py" \
+         "$HOME/.local/bin/companion-ctl.sh" \
          "$HOME/.local/bin/usage-buddies-tray"; do
     if [ -f "$f" ]; then
         rm -f "$f"

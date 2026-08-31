@@ -293,6 +293,38 @@ PlasmoidItem {
         onTriggered: sessionsLoader.readData()
     }
 
+    // The companion is a separate process: a Plasma applet lives inside the
+    // panel's window and cannot wander the screen. The widget owns its
+    // lifecycle so the header button governs both — one control, not two.
+    P5Support.DataSource {
+        id: companionCtl
+        engine: "executable"
+        connectedSources: []
+        onNewData: function(source, data) { disconnectSource(source); }
+    }
+
+    function syncCompanion() {
+        // Through companion-ctl.sh, never `pkill -f`: that pattern matches the
+        // shell running the command, which then kills itself before the start
+        // can happen. The script matches the process properly, looks past the
+        // interpreter in argv[0], and skips its own pid.
+        var ctl = "$HOME/.local/bin/companion-ctl.sh";
+        if (buddyMode === "off") {
+            companionCtl.connectSource(ctl + " stop");
+            return;
+        }
+        // Restart rather than reconfigure: the flags are read at startup, so a
+        // companion already running with the old ones would ignore them.
+        companionCtl.connectSource(ctl + " start" +
+            (brand.name === "Codex" ? " --codex" : "") +
+            (lang === "pt" ? " --pt" : "") +
+            (buddyMode === "alerts" ? " --alerts-only" : ""));
+    }
+
+    onBuddyModeChanged: syncCompanion()
+    onLangChanged: if (buddyMode !== "off") syncCompanion()
+    Component.onCompleted: if (buddyMode !== "off") syncCompanion()
+
     P5Support.DataSource {
         id: focusHelper
         engine: "executable"

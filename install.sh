@@ -296,7 +296,7 @@ install_collector() {
     # sessions are running and which need an answer; the helper raises the
     # terminal one of them is running in.
     step_desc "Copying sessions-probe.py and focus-session.sh to ~/.local/bin/"
-    for f in sessions-probe.py focus-session.sh; do
+    for f in sessions-probe.py focus-session.sh usage-buddy-companion.py companion-ctl.sh; do
         cp "$REPO_DIR/scripts/$f" "$HOME/.local/bin/" && chmod +x "$HOME/.local/bin/$f" \
             || warn "Failed to copy $f" "The live-session list will not work"
     done
