@@ -87,13 +87,51 @@ USAGE_EVENT_DEFAULTS = {
                      "body": "Guarde o que resta para o que importa."},
 }
 
-# Anthropic pricing (per 1M tokens) — May 2025 public prices
+# Anthropic pricing, USD per 1M tokens.
+#
+# Source: the `claude-api` skill's cached model table (cached 2026-06-24) for
+# input/output, and its prompt-caching reference for the cache multipliers —
+# cache read ~0.1x input, cache write ~1.25x input at the 5-minute TTL. The
+# 1-hour TTL doubles the write premium; this table assumes the default.
+#
+# The previous table priced Opus 4.6 at $15/$75, three times the current
+# $5/$25, so every historical figure derived from it was inflated. It also
+# stopped at the 4.x family, which is why an account running claude-opus-5
+# reported $0.00 spent today while showing a five-figure lifetime total.
+_CACHE_READ = 0.10
+_CACHE_WRITE = 1.25
+
+
+def _tier(inp, out):
+    return {"input": inp, "output": out,
+            "cache_read": round(inp * _CACHE_READ, 4),
+            "cache_create": round(inp * _CACHE_WRITE, 4)}
+
+
 PRICING = {
-    "claude-opus-4-6":            {"input": 15.00, "output": 75.00, "cache_read": 1.50,  "cache_create": 18.75},
-    "claude-sonnet-4-6":          {"input":  3.00, "output": 15.00, "cache_read": 0.30,  "cache_create":  3.75},
-    "claude-sonnet-4-5-20250929": {"input":  3.00, "output": 15.00, "cache_read": 0.30,  "cache_create":  3.75},
-    "claude-haiku-4-5-20251001":  {"input":  0.80, "output":  4.00, "cache_read": 0.08,  "cache_create":  1.00},
+    "claude-fable-5":             _tier(10.00, 50.00),
+    "claude-mythos-5":            _tier(10.00, 50.00),
+    "claude-opus-5":              _tier(5.00, 25.00),
+    "claude-opus-4-8":            _tier(5.00, 25.00),
+    "claude-opus-4-7":            _tier(5.00, 25.00),
+    "claude-opus-4-6":            _tier(5.00, 25.00),
+    "claude-sonnet-5":            _tier(3.00, 15.00),
+    "claude-sonnet-4-6":          _tier(3.00, 15.00),
+    "claude-sonnet-4-5-20250929": _tier(3.00, 15.00),
+    "claude-haiku-4-5":           _tier(1.00, 5.00),
+    "claude-haiku-4-5-20251001":  _tier(1.00, 5.00),
 }
+
+# Longest-prefix fallback. Model ids grow suffixes — "claude-opus-5[1m]",
+# dated snapshots — and an exact-match table silently prices those at zero.
+# Sorted longest-first so "claude-sonnet-4-5-20250929" wins over "claude-sonnet".
+_PRICING_PREFIXES = sorted(PRICING, key=len, reverse=True)
+
+# Tokens the table could not price, per run. A cost of 0 because we do not know
+# the model is a different fact from a cost of 0 because nothing was spent, and
+# the widget has to be able to tell them apart.
+UNPRICED_MODELS = {}
+
 
 MODEL_DISPLAY = {
     "claude-opus-4-6":            "Opus",
@@ -120,10 +158,28 @@ COMPONENT_SHORT_NAMES = {
 }
 
 
-def calculate_cost(model, input_t, output_t, cache_read_t, cache_create_t):
-    """Calculate cost in USD for a given model and token counts."""
+def price_for(model):
+    """Price row for a model id, by exact match then longest prefix."""
     p = PRICING.get(model)
+    if p:
+        return p
+    for prefix in _PRICING_PREFIXES:
+        if model and model.startswith(prefix):
+            return PRICING[prefix]
+    return None
+
+
+def calculate_cost(model, input_t, output_t, cache_read_t, cache_create_t):
+    """Calculate cost in USD for a given model and token counts.
+
+    An unpriced model contributes 0 and is recorded, so the caller can say the
+    total is partial instead of presenting it as complete.
+    """
+    p = price_for(model)
     if not p:
+        total = (input_t or 0) + (output_t or 0) + (cache_read_t or 0) + (cache_create_t or 0)
+        if total:
+            UNPRICED_MODELS[model or "<unknown>"] = UNPRICED_MODELS.get(model or "<unknown>", 0) + total
         return 0.0
     return (
         (input_t / 1_000_000) * p["input"]
