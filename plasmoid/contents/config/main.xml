@@ -12,6 +12,10 @@
     </entry>
     <!-- Panel representation: full | weeklyBarOnly | sessionCountdown |
          weeklyCountdown | fableBarOnly | sparkline. Cycled from the popup header. -->
+    <!-- Interface language: auto | en | pt. "auto" follows the desktop locale. -->
+    <entry name="language" type="String">
+      <default>auto</default>
+    </entry>
     <entry name="displayMode" type="String">
       <default>full</default>
     </entry>

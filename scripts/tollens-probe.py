@@ -123,6 +123,30 @@ def _summary_line(text, prefix):
     return ""
 
 
+def _numbers(line):
+    """Pull the counters out of a summary line.
+
+    verify.sh emits prose — "PROJECAO USUARIO: 39/49 ok | 10 divergentes | 0
+    ausentes | 0 orfaos". Rendering that raw wraps badly in a narrow popup and
+    forces one language on the widget. Parsing it here lets the page lay the
+    numbers out and label them in whatever language is selected.
+    """
+    import re
+    out = {}
+    m = re.search(r"(\d+)\s*/\s*(\d+)\s*ok", line)
+    if m:
+        out["ok"], out["total"] = int(m.group(1)), int(m.group(2))
+    for key, word in (("divergent", "divergent"), ("missing", "ausent"),
+                      ("orphans", "orfao"), ("components", "componente"),
+                      ("wrongOwner", "dono errado"), ("writable", "gravave")):
+        # [^|]* rather than \S*: the counters are separated by pipes and the
+        # words between number and label vary ("0 com dono errado").
+        m = re.search(r"(\d+)[^|]*?" + word, line)
+        if m:
+            out[key] = int(m.group(1))
+    return out
+
+
 def conformance() -> dict:
     """Layer B. Both verifiers are read-only and need no root — established by
     snapshotting mtime and size across 6443 entries before and after."""
@@ -138,12 +162,14 @@ def conformance() -> dict:
         "detail": detail,
         "exitCode": rc,
         "user": _summary_line(out, "PROJECAO USUARIO:"),
+        "userCounts": _numbers(_summary_line(out, "PROJECAO USUARIO:")),
         "checkedAt": time.time(),
     }
 
     mrc, mout = _run(["bash", "install/apply-managed.sh", "--verify"], TOLLENS_SRC)
     if mrc is not None:
         result["managed"] = _summary_line(mout, "managed:")
+        result["managedCounts"] = _numbers(_summary_line(mout, "managed:"))
         result["managedExitCode"] = mrc
 
     result["tookSeconds"] = round(time.monotonic() - started, 3)

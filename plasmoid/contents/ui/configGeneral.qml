@@ -7,6 +7,7 @@ KCM.SimpleKCM {
     id: page
 
     property string cfg_provider
+    property string cfg_language
 
     Kirigami.FormLayout {
         anchors.left: parent.left
@@ -23,6 +24,20 @@ KCM.SimpleKCM {
             ]
             currentIndex: Math.max(0, indexOfValue(page.cfg_provider))
             onActivated: page.cfg_provider = currentValue
+        }
+
+        QQC2.ComboBox {
+            id: languageBox
+            Kirigami.FormData.label: "Language:"
+            textRole: "text"
+            valueRole: "value"
+            model: [
+                { value: "auto", text: "Automatic (follow desktop)" },
+                { value: "en",   text: "English" },
+                { value: "pt",   text: "Português" }
+            ]
+            currentIndex: Math.max(0, indexOfValue(page.cfg_language))
+            onActivated: page.cfg_language = currentValue
         }
 
         QQC2.Label {

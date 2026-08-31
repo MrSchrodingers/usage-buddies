@@ -164,5 +164,51 @@ check("streak de 3 dias vira badge",
 check("madrugada so conta com volume",
       quirks({ lifetime: { peakHours: { "1": 5, "14": 5 } } }).length === 0);
 
+
+// ── i18n: tabela de traducao e resolucao de idioma ──
+const sm = src.match(/readonly property var strings: \(([\s\S]*?)\)\n\n    \/\/ Falls back/);
+if (!sm) { console.error("FALHA: nao achei a tabela strings no QML"); process.exit(2); }
+const STRINGS = new Function("return " + sm[1])();
+
+console.log("\n=== i18n ===");
+check("tem os dois idiomas", "en" in STRINGS && "pt" in STRINGS,
+      JSON.stringify(Object.keys(STRINGS)));
+
+const enKeys = Object.keys(STRINGS.en).sort();
+const ptKeys = Object.keys(STRINGS.pt).sort();
+const faltaPt = enKeys.filter(k => !(k in STRINGS.pt));
+const faltaEn = ptKeys.filter(k => !(k in STRINGS.en));
+check("nenhuma chave so em ingles", faltaPt.length === 0, JSON.stringify(faltaPt));
+check("nenhuma chave so em portugues", faltaEn.length === 0, JSON.stringify(faltaEn));
+check("nenhum valor vazio",
+      [...enKeys, ...ptKeys].every(k => STRINGS.en[k] && STRINGS.pt[k]));
+check("traducoes realmente diferem do ingles",
+      enKeys.filter(k => STRINGS.pt[k] !== STRINGS.en[k]).length > enKeys.length * 0.6,
+      "muitas iguais: " + enKeys.filter(k => STRINGS.pt[k] === STRINGS.en[k]).join(","));
+
+// tr(): fallback e resolucao automatica
+const trm = src.match(/function tr\(key\) \{\n([\s\S]*?)\n    \}\n/);
+if (!trm) { console.error("FALHA: nao achei tr()"); process.exit(2); }
+const makeTr = lang => new Function("key",
+  `const strings=${JSON.stringify(STRINGS)}, lang=${JSON.stringify(lang)};\n` + trm[1]);
+check("tr en", makeTr("en")("conformance") === "Conformance");
+check("tr pt", makeTr("pt")("conformance") === "Conformidade");
+check("chave inexistente devolve a propria chave",
+      makeTr("pt")("chave-que-nao-existe") === "chave-que-nao-existe");
+check("idioma desconhecido cai no ingles",
+      makeTr("de")("conformance") === "Conformance");
+
+// resolucao de "auto" a partir do locale
+const lm = src.match(/readonly property string lang: \{\n([\s\S]*?)\n    \}\n/);
+if (!lm) { console.error("FALHA: nao achei a resolucao de lang"); process.exit(2); }
+const resolve = (setting, locale) => new Function(
+  `const langSetting=${JSON.stringify(setting)};` +
+  `const Qt={locale:()=>({name:${JSON.stringify(locale)}})};` + lm[1])();
+check("auto + pt_BR -> pt", resolve("auto", "pt_BR") === "pt", resolve("auto", "pt_BR"));
+check("auto + en_US -> en", resolve("auto", "en_US") === "en", resolve("auto", "en_US"));
+check("auto + de_DE -> en", resolve("auto", "de_DE") === "en", resolve("auto", "de_DE"));
+check("escolha explicita vence o locale",
+      resolve("en", "pt_BR") === "en" && resolve("pt", "en_US") === "pt");
+
 console.log(fail ? `\n${fail} FALHA(S)` : "\nTODAS PASSARAM");
 process.exit(fail ? 1 : 0);
