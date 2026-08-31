@@ -2,12 +2,12 @@
 set -euo pipefail
 
 # ═══════════════════════════════════════════════════
-# Claude Usage Monitor - Universal Linux Installer
+# Usage Buddies - Universal Linux Installer
 # Supports: KDE Plasma 6 (plasmoid) + any DE (tray app)
 # ═══════════════════════════════════════════════════
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
-COLLECTOR="$HOME/.local/bin/claude-usage-collector.py"
+COLLECTOR="$HOME/.local/bin/usage-buddies-collector.py"
 SYSTEMD_DIR="$HOME/.config/systemd/user"
 TAURI_DIR="$REPO_DIR/tauri-app"
 BUILD_LOG="$REPO_DIR/tauri-build.log"
@@ -56,21 +56,21 @@ step_desc() {
 header() {
     echo ""
     echo -e "${BOLD}═══════════════════════════════════════════${NC}"
-    echo -e "${BOLD}  Claude Usage Monitor - Linux Installer   ${NC}"
+    echo -e "${BOLD}  Usage Buddies - Linux Installer   ${NC}"
     echo -e "${BOLD}═══════════════════════════════════════════${NC}"
     echo ""
 }
 
-# Detect an install made under the old project name (claude-usage-*) and offer
+# Detect an install made under the old project name (usage-buddies-*) and offer
 # to clear it. Leaving it in place means two collectors on two systemd timers
 # writing the same ~/.claude/widget-data.json, and a stale plasmoid in the panel.
 migrate_legacy_install() {
     local found=()
-    [ -f "$HOME/.local/bin/claude-usage-collector.py" ] && found+=("~/.local/bin/claude-usage-collector.py")
-    [ -f "$HOME/.local/bin/claude-usage-tray" ] && found+=("~/.local/bin/claude-usage-tray")
-    [ -f "$HOME/.config/systemd/user/claude-usage-collector.timer" ] && found+=("systemd timer claude-usage-collector.timer")
-    [ -d "$HOME/.local/share/plasma/plasmoids/org.kde.plasma.claudeusage" ] && found+=("plasmoid org.kde.plasma.claudeusage")
-    [ -f "$HOME/.config/autostart/claude-usage-tray.desktop" ] && found+=("autostart claude-usage-tray.desktop")
+    [ -f "$HOME/.local/bin/usage-buddies-collector.py" ] && found+=("~/.local/bin/usage-buddies-collector.py")
+    [ -f "$HOME/.local/bin/usage-buddies-tray" ] && found+=("~/.local/bin/usage-buddies-tray")
+    [ -f "$HOME/.config/systemd/user/usage-buddies-collector.timer" ] && found+=("systemd timer usage-buddies-collector.timer")
+    [ -d "$HOME/.local/share/plasma/plasmoids/org.kde.plasma.usagebuddies" ] && found+=("plasmoid org.kde.plasma.usagebuddies")
+    [ -f "$HOME/.config/autostart/usage-buddies-tray.desktop" ] && found+=("autostart usage-buddies-tray.desktop")
 
     [ ${#found[@]} -eq 0 ] && return 0
 
@@ -78,7 +78,7 @@ migrate_legacy_install() {
     echo -e "${AMBER}Previous install found under the old name:${NC}"
     for f in "${found[@]}"; do echo -e "  ${DIM}- $f${NC}"; done
     echo ""
-    echo -e "  This project was renamed ${BOLD}claude-usage-widget${NC} -> ${BOLD}usage-buddies${NC}."
+    echo -e "  This project was renamed ${BOLD}usage-buddies${NC} -> ${BOLD}usage-buddies${NC}."
     echo -e "  Keeping both means two collectors on two timers writing the same"
     echo -e "  ~/.claude/widget-data.json. Your data files are not touched either way."
     echo ""
@@ -237,9 +237,9 @@ install_deps() {
 install_collector() {
     echo ""
     echo -e "${AMBER}[2/7]${NC} Installing data collector..."
-    step_desc "Copying claude-usage-collector.py to ~/.local/bin/"
+    step_desc "Copying usage-buddies-collector.py to ~/.local/bin/"
     mkdir -p "$HOME/.local/bin"
-    if cp "$REPO_DIR/scripts/claude-usage-collector.py" "$COLLECTOR" && chmod +x "$COLLECTOR"; then
+    if cp "$REPO_DIR/scripts/usage-buddies-collector.py" "$COLLECTOR" && chmod +x "$COLLECTOR"; then
         ok "Collector installed: $COLLECTOR"
     else
         fail "Failed to copy collector to $COLLECTOR" "Check write permissions on ~/.local/bin/"
@@ -257,22 +257,22 @@ install_timer() {
 
     step_desc "Installing systemd user timer (refresh every 30s)..."
     mkdir -p "$SYSTEMD_DIR"
-    cp "$REPO_DIR/scripts/claude-usage-collector.service" "$SYSTEMD_DIR/"
-    cp "$REPO_DIR/scripts/claude-usage-collector.timer" "$SYSTEMD_DIR/"
+    cp "$REPO_DIR/scripts/usage-buddies-collector.service" "$SYSTEMD_DIR/"
+    cp "$REPO_DIR/scripts/usage-buddies-collector.timer" "$SYSTEMD_DIR/"
 
     local PYTHON_BIN
     PYTHON_BIN=$(command -v python3 || command -v python || echo "/usr/bin/python3")
-    sed -i "s|/usr/bin/python3|$PYTHON_BIN|g" "$SYSTEMD_DIR/claude-usage-collector.service"
+    sed -i "s|/usr/bin/python3|$PYTHON_BIN|g" "$SYSTEMD_DIR/usage-buddies-collector.service"
 
-    if systemctl --user daemon-reload && systemctl --user enable --now claude-usage-collector.timer; then
+    if systemctl --user daemon-reload && systemctl --user enable --now usage-buddies-collector.timer; then
         ok "systemd timer enabled (refreshes every 30s)"
     else
-        warn "systemd timer failed to enable" "Run: systemctl --user status claude-usage-collector.timer"
+        warn "systemd timer failed to enable" "Run: systemctl --user status usage-buddies-collector.timer"
     fi
 }
 
 install_plasmoid() {
-    local PLASMOID_DIR="$HOME/.local/share/plasma/plasmoids/org.kde.plasma.claudeusage"
+    local PLASMOID_DIR="$HOME/.local/share/plasma/plasmoids/org.kde.plasma.usagebuddies"
 
     echo ""
     echo -e "${AMBER}[4/7]${NC} Installing KDE Plasmoid..."
@@ -299,7 +299,7 @@ install_plasmoid() {
         cp "$REPO_DIR/plasmoid/contents/icons/claude-logo.png" "$HOME/.local/share/icons/hicolor/48x48/apps/claude-logo.png"
     fi
 
-    ok "Plasmoid installed — right-click panel → Add Widgets → 'Claude Usage Monitor'"
+    ok "Plasmoid installed — right-click panel → Add Widgets → 'Usage Buddies'"
 }
 
 install_tauri() {
@@ -371,10 +371,10 @@ install_tauri() {
     step_desc "Compiling Tauri app (this takes 2–5 minutes)..."
     npx tauri build 2>&1 | tee -a "$BUILD_LOG" > /dev/null || true
 
-    local BIN="$TAURI_DIR/src-tauri/target/release/claude-usage-tray"
+    local BIN="$TAURI_DIR/src-tauri/target/release/usage-buddies-tray"
     if [ -f "$BIN" ]; then
-        if cp "$BIN" "$HOME/.local/bin/claude-usage-tray" && chmod +x "$HOME/.local/bin/claude-usage-tray"; then
-            ok "Tray app built and installed: ~/.local/bin/claude-usage-tray"
+        if cp "$BIN" "$HOME/.local/bin/usage-buddies-tray" && chmod +x "$HOME/.local/bin/usage-buddies-tray"; then
+            ok "Tray app built and installed: ~/.local/bin/usage-buddies-tray"
         else
             fail "Tray binary copy failed" "Check write permissions on ~/.local/bin/"
         fi
@@ -414,7 +414,7 @@ setup_auth() {
     if [ $hc_exit -eq 0 ]; then
         ok "Browser authentication OK — live data available"
     else
-        warn "Browser authentication failed" "Widget will run in Offline mode (local estimates only); follow advice above and re-run: claude-usage-collector.py --health-check"
+        warn "Browser authentication failed" "Widget will run in Offline mode (local estimates only); follow advice above and re-run: usage-buddies-collector.py --health-check"
     fi
 
     step_desc "Generating initial widget-data.json..."
@@ -436,21 +436,21 @@ run_sanity_checks() {
         fail "Collector missing or not executable: $COLLECTOR" "Re-run ./install.sh"
     fi
 
-    if [ -f "$HOME/.local/bin/claude-usage-tray" ]; then
+    if [ -f "$HOME/.local/bin/usage-buddies-tray" ]; then
         step_desc "Checking tray app binary..."
-        if [ -x "$HOME/.local/bin/claude-usage-tray" ]; then
+        if [ -x "$HOME/.local/bin/usage-buddies-tray" ]; then
             ok "Tray app present and executable"
         else
-            warn "Tray binary exists but is not executable" "Run: chmod +x ~/.local/bin/claude-usage-tray"
+            warn "Tray binary exists but is not executable" "Run: chmod +x ~/.local/bin/usage-buddies-tray"
         fi
     fi
 
     if $HAS_SYSTEMD; then
         step_desc "Checking systemd timer status..."
-        if systemctl --user is-active --quiet claude-usage-collector.timer 2>/dev/null; then
+        if systemctl --user is-active --quiet usage-buddies-collector.timer 2>/dev/null; then
             ok "systemd timer is active"
         else
-            warn "systemd timer is not active" "Run: systemctl --user enable --now claude-usage-collector.timer"
+            warn "systemd timer is not active" "Run: systemctl --user enable --now usage-buddies-collector.timer"
         fi
     fi
 
@@ -505,13 +505,13 @@ finish() {
 
     if $HAS_KDE; then
         echo -e "  ${BOLD}KDE Plasmoid:${NC}"
-        echo "    Right-click panel → Add Widgets → 'Claude Usage Monitor'"
+        echo "    Right-click panel → Add Widgets → 'Usage Buddies'"
         echo ""
     fi
 
-    if [ -f "$HOME/.local/bin/claude-usage-tray" ]; then
+    if [ -f "$HOME/.local/bin/usage-buddies-tray" ]; then
         echo -e "  ${BOLD}Tray App:${NC}"
-        echo "    Run: claude-usage-tray"
+        echo "    Run: usage-buddies-tray"
         echo "    Or:  Super+Shift+C to toggle"
         if $HAS_GNOME; then
             echo -e "    ${AMBER}Note:${NC} GNOME needs AppIndicator extension (installed above)."
@@ -520,11 +520,11 @@ finish() {
         echo ""
 
         mkdir -p "$HOME/.config/autostart"
-        cat > "$HOME/.config/autostart/claude-usage-tray.desktop" << DESKTOP
+        cat > "$HOME/.config/autostart/usage-buddies-tray.desktop" << DESKTOP
 [Desktop Entry]
 Type=Application
-Name=Claude Usage Monitor
-Exec=$HOME/.local/bin/claude-usage-tray
+Name=Usage Buddies
+Exec=$HOME/.local/bin/usage-buddies-tray
 Icon=claude-logo
 StartupNotify=false
 Terminal=false

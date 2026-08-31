@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Claude Usage Data Collector
+Usage Buddies Data Collector
 Parses ~/.claude/ local data and outputs structured JSON for the Plasma widget.
 Runs periodically via systemd timer or called directly.
 """
@@ -1015,7 +1015,7 @@ def detect_usage_transitions(prev_state, curr_data):
     return events, new_snapshot
 
 
-def _notify_desktop(title, body, urgency, icon="claude-logo", app_name="Claude Usage"):
+def _notify_desktop(title, body, urgency, icon="claude-logo", app_name="Usage Buddies"):
     """Envia notificação visual cross-platform."""
     import subprocess
     import platform
@@ -2267,8 +2267,8 @@ def run_health_check():
             report["collectorError"] = f"{type(e).__name__}: {e}"
             report["advice"].append(
                 f"Collector bug (not an auth failure): {type(e).__name__}: {e}. "
-                "Please report this at https://github.com/MrSchrodingers/claude-usage-widget/issues "
-                "with the output of: claude-usage-collector.py --verbose"
+                "Please report this at https://github.com/MrSchrodingers/usage-buddies/issues "
+                "with the output of: usage-buddies-collector.py --verbose"
             )
     else:
         report["source"] = "local_estimate"
@@ -2309,7 +2309,7 @@ def run_health_check():
         else:
             GREEN = RED = AMBER = DIM = NC = ""
         mark = f"{GREEN}✓{NC}" if report["ok"] else f"{AMBER}!{NC}"
-        print(f"{mark} Claude Usage Collector — health check")
+        print(f"{mark} Usage Buddies Collector — health check")
         print(f"  Source: {report['source']}  Winner: {report['winner'] or 'none'}")
         for browser in ("firefox", "chrome"):
             b = report[browser]

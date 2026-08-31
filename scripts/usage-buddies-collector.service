@@ -1,0 +1,9 @@
+[Unit]
+Description=Usage Buddies Data Collector
+Documentation=https://github.com/MrSchrodingers/usage-buddies
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.local/bin/usage-buddies-collector.py
+StandardOutput=journal
+StandardError=journal

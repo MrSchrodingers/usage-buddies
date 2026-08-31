@@ -1,5 +1,5 @@
 [Unit]
-Description=Run Claude Usage Collector every 30 seconds
+Description=Run Usage Buddies Collector every 30 seconds
 
 [Timer]
 OnBootSec=10s

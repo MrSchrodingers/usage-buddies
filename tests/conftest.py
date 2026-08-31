@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-COLLECTOR = Path(__file__).resolve().parents[1] / "scripts" / "claude-usage-collector.py"
+COLLECTOR = Path(__file__).resolve().parents[1] / "scripts" / "usage-buddies-collector.py"
 
 
 def _load(name="collector_under_test"):

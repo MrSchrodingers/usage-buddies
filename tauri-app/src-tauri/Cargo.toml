@@ -1,5 +1,5 @@
 [package]
-name = "claude-usage-tray"
+name = "usage-buddies-tray"
 version = "1.0.0"
 edition = "2021"
 

@@ -93,7 +93,7 @@ fn create_tray(app: &AppHandle) -> tauri::Result<()> {
 
     TrayIconBuilder::with_id("main")
         .icon(icon)
-        .tooltip("Claude Usage")
+        .tooltip("Usage Buddies")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| {

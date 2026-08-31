@@ -1,6 +1,6 @@
 <div align="center">
 
-# Claude Usage Monitor
+# Usage Buddies
 
 ### KDE Plasmoid · Cross-Platform Tauri Tray · Windows Widget
 
@@ -15,7 +15,7 @@
 
 <br>
 
-<img src="screenshots/widget.gif" alt="Claude Usage Widget" width="427"/>
+<img src="screenshots/widget.gif" alt="Usage Buddies" width="427"/>
 
 <br>
 
@@ -36,7 +36,7 @@
 | **Trigger** | Click panel widget | Click tray icon or `Super+Shift+C` | Click tray icon |
 | **Data source** | `~/.claude/widget-data.json` | `~/.claude/widget-data.json` | `~/.claude/widget-data.json` |
 
-All three read the same file written by the shared Python collector at `scripts/claude-usage-collector.py`.
+All three read the same file written by the shared Python collector at `scripts/usage-buddies-collector.py`.
 
 > **Windows Widget** (`win-widget/`) is a fresh, Windows-first build in Tauri v2 — not a port of the Linux UI. It docks a frameless popup at the bottom-right corner, opened from a tray icon, with an animated **Clawd** pixel-art mascot, a per-second session countdown, weekly limits (including the API-scoped model, e.g. **Fable**), service health, activity tiles, model distribution, a JSON-derived 7-day chart, and peak hours. It installs as a self-contained `.exe` that auto-starts on login — no vite/dev server, no admin rights.
 
@@ -146,11 +146,23 @@ Genius band is deliberately tight (0-4): any realistic working session lands in 
 
 ## Installation
 
+> **Upgrading from `claude-usage-widget`?** The project was renamed, so every
+> artifact changed name: `usage-buddies-collector.py`, the
+> `usage-buddies-collector` systemd units, the `org.kde.plasma.usagebuddies`
+> plasmoid. `install.sh` detects the old install and offers to clear it — leaving
+> both in place means two collectors on two timers writing the same
+> `~/.claude/widget-data.json`. To do it by hand: `bash legacy/uninstall.sh`.
+> Your data in `~/.claude/` is not touched by the rename.
+>
+> On KDE the panel references the plasmoid by ID, so the old widget disappears
+> from the panel when the ID changes. Re-add it: right-click panel → Add Widgets
+> → "Usage Buddies".
+
 ### Ubuntu / Debian (any desktop)
 
 ```bash
-git clone https://github.com/MrSchrodingers/claude-usage-widget.git
-cd claude-usage-widget
+git clone https://github.com/MrSchrodingers/usage-buddies.git
+cd usage-buddies
 chmod +x install.sh
 ./install.sh
 ```
@@ -175,8 +187,8 @@ Every installer step prints an explicit `✓ OK`, `⚠ warning`, or `✗ failure
 ### KDE Plasmoid (Fedora, Kubuntu, Arch)
 
 ```bash
-git clone https://github.com/MrSchrodingers/claude-usage-widget.git
-cd claude-usage-widget
+git clone https://github.com/MrSchrodingers/usage-buddies.git
+cd usage-buddies
 chmod +x install.sh
 ./install.sh
 ```
@@ -199,7 +211,7 @@ The installer will:
 
 1. Right-click your KDE panel
 2. Click **"Add Widgets..."**
-3. Search for **"Claude Usage Monitor"**
+3. Search for **"Usage Buddies"**
 4. Drag it to your panel
 
 ### Tauri Tray App (macOS, Ubuntu GNOME, other non-KDE Linux)
@@ -207,20 +219,20 @@ The installer will:
 On Linux, `install.sh` handles Tauri automatically. To build manually:
 
 ```bash
-git clone https://github.com/MrSchrodingers/claude-usage-widget.git
-cd claude-usage-widget/tauri-app
+git clone https://github.com/MrSchrodingers/usage-buddies.git
+cd usage-buddies/tauri-app
 npm install
 cargo tauri build
 ```
 
-The built binary is at `src-tauri/target/release/claude-usage-tray`. Bundled packages (.deb, .rpm, .dmg) are generated in `src-tauri/target/release/bundle/`.
+The built binary is at `src-tauri/target/release/usage-buddies-tray`. Bundled packages (.deb, .rpm, .dmg) are generated in `src-tauri/target/release/bundle/`.
 
 #### Running the collector manually
 
 The collector runs automatically under every installer path above. To run it yourself:
 
 ```bash
-~/.local/bin/claude-usage-collector.py
+~/.local/bin/usage-buddies-collector.py
 ```
 
 On platforms not covered by an installer, schedule it with cron or launchd.
@@ -230,17 +242,17 @@ On platforms not covered by an installer, schedule it with cron or launchd.
 Build the standalone widget (no admin required):
 
 ```powershell
-cd claude-usage-widget\win-widget
+cd usage-buddies\win-widget
 npm install
 npx tauri build --no-bundle
 ```
 
-This produces a self-contained `claude-usage-win.exe` at `win-widget\src-tauri\target\release\`. To install it so it refreshes and auto-starts on login:
+This produces a self-contained `usage-buddies-win.exe` at `win-widget\src-tauri\target\release\`. To install it so it refreshes and auto-starts on login:
 
-1. Copy `claude-usage-win.exe` and `scripts\claude-usage-collector.py` into `%LOCALAPPDATA%\ClaudeUsageWin\`.
+1. Copy `usage-buddies-win.exe` and `scripts\usage-buddies-collector.py` into `%LOCALAPPDATA%\UsageBuddiesWin\`.
 2. Register a per-user **Scheduled Task** that runs the collector every 60 s (no admin):
-   `pythonw.exe -X utf8 "%LOCALAPPDATA%\ClaudeUsageWin\claude-usage-collector.py"`
-3. Add a **Startup** shortcut pointing to `claude-usage-win.exe`.
+   `pythonw.exe -X utf8 "%LOCALAPPDATA%\UsageBuddiesWin\usage-buddies-collector.py"`
+3. Add a **Startup** shortcut pointing to `usage-buddies-win.exe`.
 
 The widget then lives as a **tray icon** — left-click to toggle the popup (docked at the bottom-right corner), right-click for **Quit**. If the icon hides in the notification-area overflow, pin it via *Taskbar settings → Select which icons appear on the taskbar*.
 
@@ -266,7 +278,7 @@ Priority: Firefox first (plaintext cookies, fastest), then Chrome/Chromium as fa
 Browser cookies (Firefox/Chrome/Chromium)
         |
         v
-claude-usage-collector.py (every 30s)
+usage-buddies-collector.py (every 30s)
         |
         |--- claude.ai/api/.../usage
         |       Session %, weekly limits, reset timers
@@ -382,20 +394,20 @@ The collector supports several flags useful for diagnostics and testing:
 
 ```bash
 # Verbose log of cookie discovery, decryption, and API calls
-~/.local/bin/claude-usage-collector.py --verbose
+~/.local/bin/usage-buddies-collector.py --verbose
 
 # Structured health report (human-readable)
-~/.local/bin/claude-usage-collector.py --health-check
+~/.local/bin/usage-buddies-collector.py --health-check
 
 # Same report as JSON for programmatic consumption
-~/.local/bin/claude-usage-collector.py --health-check --json
+~/.local/bin/usage-buddies-collector.py --health-check --json
 
 # Preview each mascot state without touching the live data
-~/.local/bin/claude-usage-collector.py --test-state=genius
-~/.local/bin/claude-usage-collector.py --test-state=smart
-~/.local/bin/claude-usage-collector.py --test-state=slow
-~/.local/bin/claude-usage-collector.py --test-state=dumb
-~/.local/bin/claude-usage-collector.py --test-state=braindead
+~/.local/bin/usage-buddies-collector.py --test-state=genius
+~/.local/bin/usage-buddies-collector.py --test-state=smart
+~/.local/bin/usage-buddies-collector.py --test-state=slow
+~/.local/bin/usage-buddies-collector.py --test-state=dumb
+~/.local/bin/usage-buddies-collector.py --test-state=braindead
 ```
 
 `--health-check` distinguishes three failure modes: no browser profile, got cookies but API rejected them (session expired), and got cookies + API response but the collector itself crashed parsing it (bug — please report). Installers use it to decide between Live and Offline modes.
@@ -407,19 +419,23 @@ The collector supports several flags useful for diagnostics and testing:
 ### Linux (KDE plasmoid + Tauri tray, any DE)
 
 ```bash
-cd claude-usage-widget
+cd usage-buddies
 ./uninstall.sh
 ```
 
 Removes: collector binary, plasmoid, systemd timer, tray binary, autostart entry, and only the widget-owned files in `~/.claude/` (`widget-data.json`, `widget-config.json`, `widget-status-prev.json`). `stats-cache.json` belongs to Claude Code itself and is never touched.
 
+Installs made **before** the rename are removed by the frozen scripts in
+`legacy/` (`bash legacy/uninstall.sh`), which still know the old artifact names.
+See `legacy/README.md`.
+
 ### Windows Widget
 
 ```powershell
-Get-Process claude-usage-win -ErrorAction SilentlyContinue | Stop-Process -Force
-Unregister-ScheduledTask -TaskName ClaudeUsageCollector -Confirm:$false
-Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Claude Usage Widget.lnk" -Force -ErrorAction SilentlyContinue
-Remove-Item "$env:LOCALAPPDATA\ClaudeUsageWin" -Recurse -Force
+Get-Process usage-buddies-win -ErrorAction SilentlyContinue | Stop-Process -Force
+Unregister-ScheduledTask -TaskName UsageBuddiesCollector -Confirm:$false
+Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Usage Buddies.lnk" -Force -ErrorAction SilentlyContinue
+Remove-Item "$env:LOCALAPPDATA\UsageBuddiesWin" -Recurse -Force
 ```
 
 Removes the widget, its scheduled collector task, the Startup shortcut, and the install folder. Delete the widget-owned files in `~/.claude/` too if you want a full cleanup.
@@ -431,14 +447,14 @@ Removes the widget, its scheduled collector task, the Startup shortcut, and the 
 ### First step: run the health check
 
 ```bash
-~/.local/bin/claude-usage-collector.py --health-check
+~/.local/bin/usage-buddies-collector.py --health-check
 ```
 
 The report pinpoints the failing layer (browser profile missing, cookies not decryptable, session expired, or collector bug) and prints the exact next action. Installers use the same check and include its output in the post-install summary.
 
 ### Widget shows `--` or no data
 - Run `--health-check` first (above) to pinpoint the cause
-- Run `~/.local/bin/claude-usage-collector.py --verbose` for a detailed log
+- Run `~/.local/bin/usage-buddies-collector.py --verbose` for a detailed log
 - Make sure you're logged in to [claude.ai](https://claude.ai) in Firefox/Chrome
 
 ### Widget shows `Offline` instead of `Live`
@@ -462,8 +478,8 @@ The report pinpoints the failing layer (browser profile missing, cookies not dec
 
 ### Timer not running
 ```bash
-systemctl --user status claude-usage-collector.timer
-systemctl --user enable --now claude-usage-collector.timer
+systemctl --user status usage-buddies-collector.timer
+systemctl --user enable --now usage-buddies-collector.timer
 ```
 
 ### Tauri app: tray icon not visible (Linux)

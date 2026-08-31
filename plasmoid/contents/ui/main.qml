@@ -68,7 +68,7 @@ PlasmoidItem {
     switchWidth: Kirigami.Units.gridUnit * 24
     switchHeight: Kirigami.Units.gridUnit * 32
 
-    toolTipMainText: "Claude Usage"
+    toolTipMainText: "Usage Buddies"
     toolTipSubText: {
         if (!hasData) return "Loading...";
         var p = usageData.rateLimits?.session?.percentUsed ?? 0;
@@ -85,7 +85,7 @@ PlasmoidItem {
     // onNewData. The systemd timer refreshes widget-data.json independently, so
     // the widget only needs to `cat` it (fast, atomic via os.replace) and also
     // runs the collector itself as a fallback when the timer is disabled.
-    property string dataCmd: "$HOME/.local/bin/claude-usage-collector.py 1>/dev/null 2>/dev/null; cat $HOME/.claude/widget-data.json"
+    property string dataCmd: "$HOME/.local/bin/usage-buddies-collector.py 1>/dev/null 2>/dev/null; cat $HOME/.claude/widget-data.json"
 
     P5Support.DataSource {
         id: dataLoader
@@ -100,7 +100,7 @@ PlasmoidItem {
                     root.countdownMinutes = parsed.rateLimits?.session?.resetsInMinutes ?? 0;
                     root.countdownSeconds = 0;
                 } catch(e) {
-                    console.warn("claude-usage: failed to parse widget-data.json:", e);
+                    console.warn("usage-buddies: failed to parse widget-data.json:", e);
                 }
             }
         }

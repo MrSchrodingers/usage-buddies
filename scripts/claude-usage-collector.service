@@ -1,9 +1,0 @@
-[Unit]
-Description=Claude Usage Data Collector
-Documentation=https://github.com/MrSchrodingers/claude-usage-widget
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/python3 %h/.local/bin/claude-usage-collector.py
-StandardOutput=journal
-StandardError=journal

@@ -484,7 +484,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "claude-usage-tray"
+name = "usage-buddies-tray"
 version = "1.0.0"
 dependencies = [
  "dirs",

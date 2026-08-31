@@ -47,7 +47,7 @@ if gnome-extensions-cli install "$EXTENSION_UUID" 2>/dev/null; then
     echo -e "  ${GREEN}✓${NC} Extension installed"
     gnome-extensions-cli enable "$EXTENSION_UUID" 2>/dev/null || true
     echo -e "  ${AMBER}!${NC} ${AMBER}Log out and back in${NC} (or Alt+F2 → r on X11) to load the tray icon"
-    echo -e "  ${DIM}    Afterwards: claude-usage-tray${NC}"
+    echo -e "  ${DIM}    Afterwards: usage-buddies-tray${NC}"
 else
     echo -e "  ${RED}!${NC} Extension install failed"
     echo -e "  ${DIM}    Install manually: https://extensions.gnome.org/extension/615/appindicator-support/${NC}"

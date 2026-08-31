@@ -10,28 +10,28 @@ NC='\033[0m'
 
 echo ""
 echo -e "${BOLD}═══════════════════════════════════════════${NC}"
-echo -e "${BOLD}  Claude Usage Monitor - Uninstaller       ${NC}"
+echo -e "${BOLD}  Usage Buddies - Uninstaller       ${NC}"
 echo -e "${BOLD}═══════════════════════════════════════════${NC}"
 echo ""
 
 REMOVED=0
 
 # ── Kill running tray app (only our specific binary) ──
-if command -v pgrep &>/dev/null && pgrep -x "claude-usage-tray" &>/dev/null; then
-    pkill -x "claude-usage-tray" 2>/dev/null
+if command -v pgrep &>/dev/null && pgrep -x "usage-buddies-tray" &>/dev/null; then
+    pkill -x "usage-buddies-tray" 2>/dev/null
     echo -e "  ${GREEN}✓${NC} Stopped running tray app"
     ((REMOVED++))
 fi
 
 # ── Remove systemd timer (only if systemd available) ──
 if command -v systemctl &>/dev/null && systemctl --user status &>/dev/null 2>&1; then
-    if systemctl --user is-enabled claude-usage-collector.timer &>/dev/null 2>&1; then
-        systemctl --user disable --now claude-usage-collector.timer 2>/dev/null
+    if systemctl --user is-enabled usage-buddies-collector.timer &>/dev/null 2>&1; then
+        systemctl --user disable --now usage-buddies-collector.timer 2>/dev/null
         echo -e "  ${GREEN}✓${NC} Disabled systemd timer"
         ((REMOVED++))
     fi
     # Only remove our specific service files
-    for f in claude-usage-collector.service claude-usage-collector.timer; do
+    for f in usage-buddies-collector.service usage-buddies-collector.timer; do
         if [ -f "$HOME/.config/systemd/user/$f" ]; then
             rm -f "$HOME/.config/systemd/user/$f"
         fi
@@ -40,10 +40,10 @@ if command -v systemctl &>/dev/null && systemctl --user status &>/dev/null 2>&1;
 fi
 
 # ── Remove plasmoid (only our specific widget ID) ──
-PLASMOID_DIR="$HOME/.local/share/plasma/plasmoids/org.kde.plasma.claudeusage"
+PLASMOID_DIR="$HOME/.local/share/plasma/plasmoids/org.kde.plasma.usagebuddies"
 if [ -d "$PLASMOID_DIR" ]; then
     # Verify it's actually our widget before deleting
-    if [ -f "$PLASMOID_DIR/metadata.json" ] && grep -q "claudeusage" "$PLASMOID_DIR/metadata.json" 2>/dev/null; then
+    if [ -f "$PLASMOID_DIR/metadata.json" ] && grep -q "usagebuddies" "$PLASMOID_DIR/metadata.json" 2>/dev/null; then
         rm -rf "$PLASMOID_DIR"
         echo -e "  ${GREEN}✓${NC} Removed KDE Plasmoid"
         ((REMOVED++))
@@ -57,7 +57,7 @@ if [ -f "$ICON_PATH" ]; then
 fi
 
 # ── Remove our binaries (exact paths only) ──
-for f in "$HOME/.local/bin/claude-usage-collector.py" "$HOME/.local/bin/claude-usage-tray"; do
+for f in "$HOME/.local/bin/usage-buddies-collector.py" "$HOME/.local/bin/usage-buddies-tray"; do
     if [ -f "$f" ]; then
         rm -f "$f"
         echo -e "  ${GREEN}✓${NC} Removed $(basename "$f")"
@@ -66,10 +66,10 @@ for f in "$HOME/.local/bin/claude-usage-collector.py" "$HOME/.local/bin/claude-u
 done
 
 # ── Remove autostart (only our specific desktop file) ──
-AUTOSTART="$HOME/.config/autostart/claude-usage-tray.desktop"
+AUTOSTART="$HOME/.config/autostart/usage-buddies-tray.desktop"
 if [ -f "$AUTOSTART" ]; then
     # Verify it's ours before deleting
-    if grep -q "claude-usage-tray" "$AUTOSTART" 2>/dev/null; then
+    if grep -q "usage-buddies-tray" "$AUTOSTART" 2>/dev/null; then
         rm -f "$AUTOSTART"
         echo -e "  ${GREEN}✓${NC} Removed autostart entry"
         ((REMOVED++))

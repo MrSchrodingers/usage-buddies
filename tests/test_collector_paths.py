@@ -5,7 +5,7 @@ specifically the Snap and Flatpak entries that Ubuntu users depend on.
 """
 from pathlib import Path
 
-COLLECTOR = Path(__file__).resolve().parents[1] / "scripts" / "claude-usage-collector.py"
+COLLECTOR = Path(__file__).resolve().parents[1] / "scripts" / "usage-buddies-collector.py"
 
 
 def test_firefox_linux_paths_present():

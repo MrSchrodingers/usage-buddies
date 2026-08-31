@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Claude Usage",
+  "productName": "Usage Buddies",
   "version": "0.1.0",
-  "identifier": "com.claudeusage.win",
+  "identifier": "com.usagebuddies.win",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1421",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "popup",
-        "title": "Claude Usage",
+        "title": "Usage Buddies",
         "width": 360,
         "height": 660,
         "resizable": false,
@@ -27,7 +27,7 @@
       {
         "label": "pill",
         "url": "pill.html",
-        "title": "Claude Usage",
+        "title": "Usage Buddies",
         "width": 190,
         "height": 60,
         "resizable": false,
