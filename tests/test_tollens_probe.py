@@ -311,3 +311,100 @@ def test_gate_skips_the_heartbeat_file(probe, monkeypatch, tmp_path):
 def test_gate_is_empty_without_evidence(probe, monkeypatch, tmp_path):
     monkeypatch.setattr(probe, "EVIDENCE_DIR", tmp_path / "absent")
     assert probe.gate() == {}
+
+
+# ── divergence detail and trend ──
+
+VERIFY_OUTPUT = """
+  DIVERGE   agents/investigador.md                     (instalado != manifesto)
+  DIVERGE   agents/refutador.md                        (instalado != manifesto)
+  AUSENTE   hooks/self-mod-audit.sh                    (declarado, nao instalado)
+  ORFAO     hooks/estranho.sh                          (roda, nao esta no manifesto)
+  REPO-DRIFT skills/forge                              (working tree != manifesto)
+
+PROJECAO USUARIO: 45/49 ok | 3 divergentes | 1 ausentes | 1 orfaos
+"""
+
+
+def test_details_name_the_offending_components(probe):
+    """"10 divergent" is a count; the ten names are a to-do list."""
+    rows = probe._details(VERIFY_OUTPUT)
+    assert [r["name"] for r in rows][:3] == [
+        "agents/investigador.md", "agents/refutador.md", "hooks/self-mod-audit.sh"]
+
+
+def test_details_carry_the_kind(probe):
+    kinds = {r["name"]: r["kind"] for r in probe._details(VERIFY_OUTPUT)}
+    assert kinds["agents/refutador.md"] == "divergent"
+    assert kinds["hooks/self-mod-audit.sh"] == "missing"
+    assert kinds["hooks/estranho.sh"] == "orphan"
+    assert kinds["skills/forge"] == "repoDrift"
+
+
+def test_details_drop_the_trailing_reason(probe):
+    """Every row of a kind carries the same parenthetical; it is noise."""
+    assert all("(" not in r["name"] for r in probe._details(VERIFY_OUTPUT))
+
+
+def test_details_are_capped(probe):
+    many = "\n".join(f"  DIVERGE   c{i}   (x)" for i in range(50))
+    assert len(probe._details(many)) <= 12
+
+
+def test_a_clean_run_lists_nothing(probe):
+    assert probe._details("PROJECAO USUARIO: 49/49 ok | 0 divergentes") == []
+
+
+def test_trend_records_one_sample_per_hour(probe, monkeypatch, tmp_path):
+    """The probe may run every five minutes; a fortnight of that is 4000 points
+    to render a sparkline nobody reads at that resolution."""
+    monkeypatch.setattr(probe, "TREND_FILE", tmp_path / "trend.jsonl")
+    monkeypatch.setattr(probe, "OUT_DIR", tmp_path)
+    for _ in range(5):
+        probe.record_trend({"available": True, "state": "conformant",
+                            "userCounts": {"ok": 49, "total": 49}})
+    lines = [l for l in (tmp_path / "trend.jsonl").read_text().split("\n") if l.strip()]
+    assert len(lines) == 1, f"{len(lines)} samples written for one hour"
+
+
+def test_no_history_at_all_yields_no_series(probe, monkeypatch, tmp_path):
+    """Before the first sample there is nothing to trend, and seven hollow bars
+    would be noise. The card hides on an empty list."""
+    monkeypatch.setattr(probe, "TREND_FILE", tmp_path / "absent.jsonl")
+    assert probe.read_trend(days=7) == []
+
+
+def test_gaps_inside_a_series_are_slots_not_zeros(probe, monkeypatch, tmp_path):
+    """Once a series exists, a day with no sample is a different state from a
+    bad day and must not render as one."""
+    import time as _t
+    day = _t.strftime("%Y-%m-%d", _t.gmtime())
+    f = tmp_path / "trend.jsonl"
+    f.write_text(json.dumps({"h": day + "T01", "ok": True, "n": 49, "t": 49}) + "\n")
+    monkeypatch.setattr(probe, "TREND_FILE", f)
+    rows = probe.read_trend(days=7)
+    assert len(rows) == 7
+    assert rows[-1]["share"] == 1.0, "today's sample missing"
+    assert all(r["ok"] is None and r["share"] is None for r in rows[:-1]), (
+        "days without a sample rendered as data"
+    )
+
+
+def test_trend_keeps_the_worst_reading_of_a_day(probe, monkeypatch, tmp_path):
+    """A day that was ever broken was a broken day."""
+    import time as _t
+    day = _t.strftime("%Y-%m-%d", _t.gmtime())
+    f = tmp_path / "trend.jsonl"
+    f.write_text(
+        json.dumps({"h": day + "T01", "ok": True, "n": 49, "t": 49}) + "\n" +
+        json.dumps({"h": day + "T05", "ok": False, "n": 39, "t": 49}) + "\n" +
+        json.dumps({"h": day + "T09", "ok": True, "n": 49, "t": 49}) + "\n")
+    monkeypatch.setattr(probe, "TREND_FILE", f)
+    today = probe.read_trend(days=1)[0]
+    assert today["ok"] is False and today["share"] == pytest.approx(39 / 49, abs=0.001)
+
+
+def test_unavailable_conformance_records_nothing(probe, monkeypatch, tmp_path):
+    monkeypatch.setattr(probe, "TREND_FILE", tmp_path / "trend.jsonl")
+    probe.record_trend({"available": False})
+    assert not (tmp_path / "trend.jsonl").exists()

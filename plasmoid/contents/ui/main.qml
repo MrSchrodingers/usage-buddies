@@ -183,7 +183,14 @@ PlasmoidItem {
             "history": "history", "live": "live",
             "switchTo": "Switch to", "followingLocale": "currently following the desktop locale",
             "justNow": "just now", "minutesAgo": "m ago", "hoursAgo": "h ago", "daysAgo": "d ago",
-            "stale": "stale", "activity": "Activity", "agents": "Agents", "skills": "Skills",
+            "stale": "stale",
+            "cacheSaved": "Cache saved", "hit": "hit", "readPerOutput": "Read per output",
+            "produced": "produced", "planPayback": "Plan paid back", "thisMonth": "This month",
+            "daysShort": "d", "efficiency": "Efficiency", "costliestSessions": "Costliest sessions",
+            "serviceHealth": "Service health", "normal": "normal for you", "degraded": "worse than usual",
+            "unknownHealth": "not enough history", "uncachedWouldBe": "uncached would be",
+            "divergentComponents": "What diverged", "conformanceTrend": "7-day trend",
+            "activity": "Activity", "agents": "Agents", "skills": "Skills",
             "tools": "Tools", "runningTotals": "running totals, no time window",
             "activation": "Activation", "activationNote": "which layer of the precedence chain instructions came from",
             "verifyGate": "Verify gate", "passRate": "pass rate", "invocations": "invocations",
@@ -222,7 +229,14 @@ PlasmoidItem {
             "history": "histórico", "live": "ao vivo",
             "switchTo": "Mudar para", "followingLocale": "seguindo o locale da área de trabalho",
             "justNow": "agora", "minutesAgo": "min atrás", "hoursAgo": "h atrás", "daysAgo": "d atrás",
-            "stale": "desatualizado", "activity": "Atividade", "agents": "Agentes", "skills": "Skills",
+            "stale": "desatualizado",
+            "cacheSaved": "Cache economizou", "hit": "de acerto", "readPerOutput": "Lido por produzido",
+            "produced": "produzidos", "planPayback": "Plano se pagou", "thisMonth": "Este mês",
+            "daysShort": "d", "efficiency": "Eficiência", "costliestSessions": "Sessões mais caras",
+            "serviceHealth": "Saúde do serviço", "normal": "normal para você", "degraded": "pior que o normal",
+            "unknownHealth": "histórico insuficiente", "uncachedWouldBe": "sem cache seria",
+            "divergentComponents": "O que divergiu", "conformanceTrend": "Tendência de 7 dias",
+            "activity": "Atividade", "agents": "Agentes", "skills": "Skills",
             "tools": "Ferramentas", "runningTotals": "totais acumulados, sem janela de tempo",
             "activation": "Ativação", "activationNote": "de qual camada da precedência vieram as instruções",
             "verifyGate": "Verify gate", "passRate": "taxa de aprovação", "invocations": "invocações",
@@ -507,24 +521,44 @@ PlasmoidItem {
         return "$" + v.toFixed(2);
     }
 
+    // Three diagnostics, replacing a "value extracted" card that was 98% cache
+    // reads — the same context re-read, billed at a tenth of input precisely
+    // because it is cheap. Calling that extracted value inflated the number
+    // with an implementation detail and answered nothing.
     readonly property var valueTiles: {
-        var t = usageData.today ?? {};
-        var proj = usageData.costProjection ?? {};
-        var life = usageData.lifetime ?? {};
-        return [
-            { label: tr("today"),
-              value: formatTokens(t.totalTokens ?? 0),
-              sub: _usd(proj.todayUSD ?? 0),
-              accent: Kirigami.Theme.textColor },
-            { label: tr("perHour"),
-              value: _usd(proj.usdPerHour ?? 0),
-              sub: formatTokens(usageData.burnRate?.total_per_hour ?? 0) + " tok",
-              accent: Kirigami.Theme.textColor },
-            { label: tr("lifetime"),
-              value: _usd(life.totalCostUSD ?? 0),
-              sub: (life.totalSessions ?? 0) + " " + tr("sessions"),
-              accent: greenAccent }
-        ];
+        var eff = usageData.efficiency ?? {};
+        var mtd = usageData.monthToDate ?? {};
+        var plan = Plasmoid.configuration.planMonthlyCost || 0;
+        var rows = [];
+
+        // What the cache is worth. Falls when something invalidates the prefix.
+        rows.push({ label: tr("cacheSaved"),
+                    value: _usd(eff.savedUSD ?? 0),
+                    sub: Math.round((eff.cacheHitRate ?? 0) * 100) + "% " + tr("hit"),
+                    accent: (eff.cacheHitRate ?? 0) >= 0.6 ? greenAccent
+                          : (eff.cacheHitRate ?? 0) >= 0.3 ? Kirigami.Theme.textColor
+                          : claudeAmberLight });
+
+        // Read per produced. Climbs when context is carried without earning it.
+        rows.push({ label: tr("readPerOutput"),
+                    value: Math.round(eff.readPerOutput ?? 0) + ":1",
+                    sub: formatTokens(eff.outputTokens ?? 0) + " " + tr("produced"),
+                    accent: Kirigami.Theme.textColor });
+
+        // Only with a plan price entered. Without one this would be a
+        // fabricated denominator in a "is it worth it" answer.
+        if (plan > 0 && (mtd.usd ?? 0) > 0) {
+            rows.push({ label: tr("planPayback"),
+                        value: (mtd.usd / plan).toFixed(1) + "×",
+                        sub: _usd(mtd.usd) + " " + tr("thisMonth"),
+                        accent: greenAccent });
+        } else {
+            rows.push({ label: tr("thisMonth"),
+                        value: _usd(mtd.usd ?? 0),
+                        sub: (mtd.days ?? 0) + tr("daysShort"),
+                        accent: Kirigami.Theme.textColor });
+        }
+        return rows;
     }
 
     // Badges derived from data already collected. Nothing here triggers a
@@ -1189,6 +1223,121 @@ PlasmoidItem {
                             font.weight: Font.Bold
                             font.features: ({ "tnum": 1 })
                             color: bad === 0 ? root.greenAccent : root.claudeAmberLight
+                        }
+                    }
+                }
+            }
+
+            // ── What diverged ──
+            // "10 divergent" is a count; the ten names are a to-do list.
+            Rectangle {
+                Layout.fillWidth: true
+                visible: (conf.details ?? []).length > 0
+                implicitHeight: divCol.implicitHeight + Kirigami.Units.mediumSpacing * 2
+                radius: 10
+                color: root.cardBg
+
+                ColumnLayout {
+                    id: divCol
+                    anchors.fill: parent
+                    anchors.margins: Kirigami.Units.mediumSpacing
+                    spacing: 3
+
+                    PlasmaComponents3.Label {
+                        text: root.tr("divergentComponents")
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
+                        font.weight: Font.DemiBold; opacity: 0.45
+                    }
+
+                    Repeater {
+                        model: conf.details ?? []
+                        delegate: RowLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            spacing: Kirigami.Units.smallSpacing
+
+                            Rectangle {
+                                width: 6; height: 6; radius: 3
+                                Layout.alignment: Qt.AlignVCenter
+                                color: modelData.kind === "orphan" ? root.claudeAmberLight
+                                     : modelData.kind === "missing" ? root.redAlert
+                                     : root.calmFill
+                            }
+                            PlasmaComponents3.Label {
+                                Layout.fillWidth: true
+                                text: modelData.name
+                                elide: Text.ElideMiddle
+                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.74
+                                opacity: 0.75
+                            }
+                            PlasmaComponents3.Label {
+                                text: modelData.kind
+                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.68
+                                opacity: 0.35
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Conformance trend ──
+            // Tollens' heartbeat only records session starts, so the series is
+            // ours: one sample per hour, collapsed to the worst reading of each
+            // day, because a day that was ever broken was a broken day.
+            Rectangle {
+                Layout.fillWidth: true
+                visible: (t.trend ?? []).length > 0
+                implicitHeight: trendCol.implicitHeight + Kirigami.Units.mediumSpacing * 2
+                radius: 10
+                color: root.cardBg
+
+                ColumnLayout {
+                    id: trendCol
+                    anchors.fill: parent
+                    anchors.margins: Kirigami.Units.mediumSpacing
+                    spacing: 5
+
+                    PlasmaComponents3.Label {
+                        text: root.tr("conformanceTrend")
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
+                        font.weight: Font.DemiBold; opacity: 0.45
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 3
+                        Repeater {
+                            model: t.trend ?? []
+                            delegate: ColumnLayout {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                spacing: 2
+
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 22
+                                    radius: 3
+                                    // No sample is a different state from a bad
+                                    // sample, and reads as such: hollow, not red.
+                                    color: root.subtleBorder
+
+                                    Rectangle {
+                                        visible: modelData.share !== null
+                                        anchors.bottom: parent.bottom
+                                        width: parent.width
+                                        height: Math.max(3, parent.height * (modelData.share ?? 0))
+                                        radius: 3
+                                        color: modelData.ok ? root.greenAccent : root.claudeAmberLight
+                                    }
+                                }
+                                PlasmaComponents3.Label {
+                                    Layout.alignment: Qt.AlignHCenter
+                                    text: (modelData.date ?? "").slice(8)
+                                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.62
+                                    font.features: ({ "tnum": 1 })
+                                    opacity: 0.3
+                                }
+                            }
                         }
                     }
                 }
@@ -2929,7 +3078,7 @@ PlasmoidItem {
                             color: root.greenAccent; opacity: 0.6
                         }
                         PlasmaComponents3.Label {
-                            text: root.tr("valueExtracted")
+                            text: root.tr("efficiency")
                             font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.9
                             font.weight: Font.DemiBold; opacity: 0.55
                         }
@@ -2974,6 +3123,108 @@ PlasmoidItem {
                             }
                         }
                     }
+                }
+            }
+
+            // ── Costliest sessions ──
+            // A daily total cannot be acted on; a session that cost four times
+            // its neighbours can.
+            Rectangle {
+                Layout.fillWidth: true
+                visible: (root.usageData.sessionCosts ?? []).length > 1
+                implicitHeight: sessCol.implicitHeight + Kirigami.Units.mediumSpacing * 2
+                radius: 10
+                color: root.cardBg
+
+                ColumnLayout {
+                    id: sessCol
+                    anchors.fill: parent
+                    anchors.margins: Kirigami.Units.mediumSpacing
+                    spacing: 3
+
+                    readonly property real peak: {
+                        var rows = root.usageData.sessionCosts ?? [];
+                        var m = 0;
+                        for (var i = 0; i < rows.length; i++) m = Math.max(m, rows[i].costUSD ?? 0);
+                        return m || 1;
+                    }
+
+                    PlasmaComponents3.Label {
+                        text: root.tr("costliestSessions")
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
+                        font.weight: Font.DemiBold; opacity: 0.45
+                    }
+
+                    Repeater {
+                        model: root.usageData.sessionCosts ?? []
+                        delegate: RowLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            spacing: Kirigami.Units.smallSpacing
+
+                            PlasmaComponents3.Label {
+                                Layout.preferredWidth: Kirigami.Units.gridUnit * 7
+                                text: modelData.project || modelData.id
+                                elide: Text.ElideLeft
+                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.74
+                                opacity: 0.7
+                            }
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.alignment: Qt.AlignVCenter
+                                height: 5; radius: 2.5
+                                color: root.subtleBorder
+                                Rectangle {
+                                    width: parent.width * ((modelData.costUSD ?? 0) / sessCol.peak)
+                                    height: parent.height; radius: 2.5
+                                    color: root.calmFill
+                                    Behavior on width { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
+                                }
+                            }
+                            PlasmaComponents3.Label {
+                                Layout.preferredWidth: Kirigami.Units.gridUnit * 3
+                                horizontalAlignment: Text.AlignRight
+                                text: root._usd(modelData.costUSD ?? 0)
+                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.74
+                                font.features: ({ "tnum": 1 })
+                                font.weight: Font.Bold
+                                opacity: 0.6
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Service health, against this account's own baseline ──
+            // A fixed threshold cannot know that 10s is normal here. The
+            // verdict is withheld until there is enough history to compare
+            // against — "not enough history" is a real answer.
+            RowLayout {
+                Layout.fillWidth: true
+                visible: (root.usageData.health?.state ?? "") !== ""
+                spacing: Kirigami.Units.smallSpacing
+
+                Rectangle {
+                    width: 9; height: 9; radius: 4.5
+                    Layout.alignment: Qt.AlignVCenter
+                    property string st: root.usageData.health?.state ?? ""
+                    color: st === "normal" ? root.greenAccent
+                         : st === "degraded" ? root.claudeAmberLight : root.subtleBorder
+                }
+                PlasmaComponents3.Label {
+                    text: root.tr("serviceHealth")
+                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.78
+                    opacity: 0.5
+                }
+                Item { Layout.fillWidth: true }
+                PlasmaComponents3.Label {
+                    property string st: root.usageData.health?.state ?? ""
+                    text: st === "normal" ? root.tr("normal")
+                        : st === "degraded" ? root.tr("degraded") : root.tr("unknownHealth")
+                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.78
+                    font.weight: st === "degraded" ? Font.Bold : Font.Normal
+                    color: st === "degraded" ? root.claudeAmberLight : Kirigami.Theme.textColor
+                    opacity: st === "degraded" ? 0.95 : 0.5
                 }
             }
 

@@ -16,6 +16,13 @@
     <entry name="language" type="String">
       <default>auto</default>
     </entry>
+    <!-- What the plan costs per month, in the account's own currency. Zero
+         hides the payback figure: the price varies by tier and contract, and a
+         fabricated default would put an invented number at the centre of a
+         "is this worth it" answer. -->
+    <entry name="planMonthlyCost" type="Double">
+      <default>0</default>
+    </entry>
     <entry name="displayMode" type="String">
       <default>full</default>
     </entry>

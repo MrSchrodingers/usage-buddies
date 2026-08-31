@@ -8,6 +8,7 @@ KCM.SimpleKCM {
 
     property string cfg_provider
     property string cfg_language
+    property double cfg_planMonthlyCost
 
     Kirigami.FormLayout {
         anchors.left: parent.left
@@ -38,6 +39,24 @@ KCM.SimpleKCM {
             ]
             currentIndex: Math.max(0, indexOfValue(page.cfg_language))
             onActivated: page.cfg_language = currentValue
+        }
+
+        QQC2.SpinBox {
+            Kirigami.FormData.label: "Plan cost per month:"
+            from: 0
+            to: 100000
+            stepSize: 10
+            editable: true
+            value: page.cfg_planMonthlyCost
+            onValueModified: page.cfg_planMonthlyCost = value
+            textFromValue: function (v) { return v === 0 ? "not set" : String(v) }
+        }
+
+        QQC2.Label {
+            Kirigami.FormData.label: ""
+            text: "Leave at zero to hide the payback figure."
+            opacity: 0.6
+            font.italic: true
         }
 
         QQC2.Label {

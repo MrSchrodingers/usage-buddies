@@ -269,6 +269,7 @@ def parse_sessions_in_window(cutoff_utc, end_utc=None):
                 session_has_window = False
                 session_messages = 0
                 session_start = None
+                session_tokens = {"input": 0, "output": 0, "cache_read": 0, "cache_create": 0}
 
                 for line in f:
                     line = line.strip()
@@ -316,6 +317,13 @@ def parse_sessions_in_window(cutoff_utc, end_utc=None):
                         model_tokens[model]["cache_read"] += cr
                         model_tokens[model]["cache_create"] += cc
 
+                        # Per session too: a daily total cannot be acted on,
+                        # a session that cost four times its neighbours can.
+                        session_tokens["input"] += inp
+                        session_tokens["output"] += out
+                        session_tokens["cache_read"] += cr
+                        session_tokens["cache_create"] += cc
+
                         # Track per-family usage (Sonnet/Opus/Fable) so the
                         # local-estimate path can populate weekly per-model bars.
                         ml = model.lower()
@@ -337,6 +345,10 @@ def parse_sessions_in_window(cutoff_utc, end_utc=None):
                             "project": project_name,
                             "messages": session_messages,
                             "start": session_start.isoformat() if session_start else "",
+                            "inputTokens": session_tokens["input"],
+                            "outputTokens": session_tokens["output"],
+                            "cacheReadTokens": session_tokens["cache_read"],
+                            "cacheCreateTokens": session_tokens["cache_create"],
                         })
 
         except (PermissionError, OSError):
@@ -2380,6 +2392,137 @@ def compute_daily_trend(days=8):
     return trend
 
 
+def compute_efficiency(inp, out, cache_read, cache_create, model="claude-opus-5"):
+    """Cache leverage and output ratio — diagnostics, not vanity.
+
+    "1.9B tokens today" reads like output when 98% of it is the same context
+    being re-read. These two numbers say what that traffic actually is:
+
+      savedUSD    what caching is worth. Cache reads bill at ~0.1x input, so
+                  the same prefix uncached would cost roughly ten times more.
+                  A hit rate that falls off a cliff means something is
+                  invalidating the prefix — a timestamp in the system prompt,
+                  a tool list whose order varies.
+      outputRatio tokens read per token produced. When it climbs, context is
+                  being paid for without producing anything, which is the
+                  signature of a session that should have been compacted.
+    """
+    price = price_for(model)
+    if not price:
+        return {}
+
+    real = ((inp / 1e6) * price["input"] + (out / 1e6) * price["output"]
+            + (cache_read / 1e6) * price["cache_read"]
+            + (cache_create / 1e6) * price["cache_create"])
+    # Uncached, every cached token would have been billed as plain input.
+    uncached = (((inp + cache_read + cache_create) / 1e6) * price["input"]
+                + (out / 1e6) * price["output"])
+
+    read_total = inp + cache_read + cache_create
+    return {
+        "costUSD": round(real, 2),
+        "uncachedUSD": round(uncached, 2),
+        "savedUSD": round(uncached - real, 2),
+        "savedShare": round(1 - real / uncached, 4) if uncached else 0,
+        "cacheHitRate": round(cache_read / read_total, 4) if read_total else 0,
+        "outputTokens": out,
+        "readTokens": read_total,
+        # Read per produced. 470:1 is normal for agentic work; a jump means
+        # context is being carried that is not earning its place.
+        "readPerOutput": round(read_total / out, 1) if out else 0,
+    }
+
+
+def compute_session_costs(sessions, model="claude-opus-5", limit=6):
+    """Cost per session, ranked.
+
+    A daily total cannot be acted on; a session that cost four times its
+    neighbours can. Sessions already carry their token counts.
+    """
+    price = price_for(model)
+    if not price or not sessions:
+        return []
+
+    rows = []
+    for s in sessions:
+        out = s.get("outputTokens", 0) or 0
+        cr = s.get("cacheReadTokens", 0) or 0
+        cc = s.get("cacheCreateTokens", 0) or 0
+        inp = s.get("inputTokens", 0) or 0
+        if not (out or cr or cc or inp):
+            continue
+        cost = ((inp / 1e6) * price["input"] + (out / 1e6) * price["output"]
+                + (cr / 1e6) * price["cache_read"] + (cc / 1e6) * price["cache_create"])
+        rows.append({
+            "id": (s.get("id") or "")[:8],
+            "project": s.get("project", ""),
+            "messages": s.get("messages", 0),
+            "costUSD": round(cost, 2),
+            "tokens": inp + out + cr + cc,
+        })
+    rows.sort(key=lambda r: -r["costUSD"])
+    return rows[:limit]
+
+
+def compute_health(latency, error_rate, opus_fallbacks, trend):
+    """Is the service worse than usual *for this account*?
+
+    A fixed threshold cannot know that 10s is normal here and 3s is normal
+    elsewhere. Everything is compared against this account's own recent
+    behaviour, and the verdict is withheld until there is enough history to
+    compare against — "unknown" is a real answer.
+    """
+    signals = []
+
+    total_errors = (error_rate or {}).get("total", 0)
+    if total_errors:
+        signals.append({"name": "errors", "value": total_errors, "bad": True})
+
+    week = (opus_fallbacks or {}).get("week") or {}
+    today = (opus_fallbacks or {}).get("today") or {}
+    wt, tt = sum(week.values()), sum(today.values())
+    if wt >= 100 and tt >= 20:
+        week_share = week.get("opus", 0) / wt
+        today_share = today.get("opus", 0) / tt
+        # A drop in the Opus share against this account's own week is the
+        # observable signature of a silent downgrade.
+        if week_share >= 0.2 and (week_share - today_share) > 0.25:
+            signals.append({"name": "modelMix", "value": round(today_share, 3), "bad": True})
+
+    active = [d for d in (trend or []) if (d.get("tokens") or 0) > 0]
+    if len(active) < 3:
+        return {"state": "unknown", "reason": "not enough history", "signals": signals}
+
+    return {
+        "state": "degraded" if signals else "normal",
+        "signals": signals,
+        "latencySeconds": (latency or {}).get("avgSeconds", 0),
+        "baselineDays": len(active),
+    }
+
+
+def compute_month_to_date(model="claude-opus-5"):
+    """API-equivalent spend since the first of the month.
+
+    The plan's own price is deliberately not hardcoded here. It varies by tier,
+    currency and contract, and inventing one would put a fabricated number at
+    the centre of a "is this worth it" answer. The widget divides this by a
+    figure the user enters, and shows nothing until they do.
+    """
+    now = datetime.now(timezone.utc)
+    start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    model_tokens, _, _, _ = parse_sessions_in_window(start, now)
+    total = 0.0
+    for model_id, t in model_tokens.items():
+        total += calculate_cost(model_id, t["input"], t["output"],
+                                t["cache_read"], t["cache_create"])
+    return {
+        "usd": round(total, 2),
+        "since": start.strftime("%Y-%m-%d"),
+        "days": (now - start).days + 1,
+    }
+
+
 def build_widget_data():
     """Build the complete widget data JSON."""
     stats = load_stats_cache()
@@ -2558,6 +2701,11 @@ def build_widget_data():
         "compaction": compaction,
         "opusFallbacks": opus_fallbacks,
         "costProjection": cost_projection,
+        "efficiency": compute_efficiency(today_total_input, today_total_output,
+                                         today_total_cache_read, today_total_cache_create),
+        "sessionCosts": compute_session_costs(today_sessions),
+        "health": compute_health(latency, error_rate, opus_fallbacks, trend_7d),
+        "monthToDate": compute_month_to_date(),
     }
 
     return widget_data

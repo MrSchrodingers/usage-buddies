@@ -54,6 +54,10 @@ TOP_N = 6
 # file sitting in it is a candidate orphan the moment their scan widens.
 OUT_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "usage-buddies"
 OUT_FILE = OUT_DIR / "tollens.json"
+# Conformance history, ours to write. Tollens' own heartbeat only records
+# session starts, so a trend needs its own series.
+TREND_FILE = OUT_DIR / "tollens-trend.jsonl"
+TREND_KEEP_DAYS = 14
 
 VERIFY_EVERY_SECONDS = 300
 VERIFY_TIMEOUT = 20
@@ -280,6 +284,7 @@ def conformance() -> dict:
         "exitCode": rc,
         "user": _summary_line(out, "PROJECAO USUARIO:"),
         "userCounts": _numbers(_summary_line(out, "PROJECAO USUARIO:")),
+        "details": _details(out),
         "checkedAt": time.time(),
     }
 
@@ -291,6 +296,111 @@ def conformance() -> dict:
 
     result["tookSeconds"] = round(time.monotonic() - started, 3)
     return result
+
+
+# verify.sh prints one line per offending component before its summary.
+# Knowing "10 divergent" is not actionable; knowing *which* ten is.
+DETAIL_PREFIXES = {
+    "DIVERGE": "divergent",
+    "AUSENTE": "missing",
+    "ORFAO": "orphan",
+    "REPO-DRIFT": "repoDrift",
+}
+
+
+def _details(text, limit=12):
+    """Component names behind the counters, with their kind."""
+    rows = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        for prefix, kind in DETAIL_PREFIXES.items():
+            if stripped.startswith(prefix):
+                rest = stripped[len(prefix):].strip()
+                # the trailing "(reason)" is the same for every row of a kind
+                name = rest.split("  ")[0].strip()
+                if name:
+                    rows.append({"name": name, "kind": kind})
+                break
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def record_trend(result) -> None:
+    """Append one conformance sample to our own series.
+
+    Deduped to one entry per hour: the probe may run every five minutes, and a
+    fortnight of that is 4000 points to render a sparkline nobody reads at that
+    resolution.
+    """
+    if not result.get("available"):
+        return
+    stamp = time.strftime("%Y-%m-%dT%H", time.gmtime())
+    try:
+        existing = []
+        if TREND_FILE.exists():
+            with open(TREND_FILE, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    try:
+                        existing.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        if existing and existing[-1].get("h") == stamp:
+            existing[-1] = {"h": stamp, "ok": result.get("state") == "conformant",
+                            "n": (result.get("userCounts") or {}).get("ok", 0),
+                            "t": (result.get("userCounts") or {}).get("total", 0)}
+        else:
+            existing.append({"h": stamp, "ok": result.get("state") == "conformant",
+                             "n": (result.get("userCounts") or {}).get("ok", 0),
+                             "t": (result.get("userCounts") or {}).get("total", 0)})
+
+        cutoff = time.strftime("%Y-%m-%dT%H",
+                               time.gmtime(time.time() - TREND_KEEP_DAYS * 86400))
+        existing = [e for e in existing if e.get("h", "") >= cutoff]
+
+        OUT_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+        tmp = TREND_FILE.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            for e in existing:
+                f.write(json.dumps(e, separators=(",", ":")) + "\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, TREND_FILE)
+    except OSError as error:
+        print(f"warn: could not write trend: {type(error).__name__}", file=sys.stderr)
+
+
+def read_trend(days=7) -> list:
+    """Hourly samples collapsed to one point per day: the worst reading of that
+    day, because a day that was ever broken was a broken day."""
+    if not TREND_FILE.exists():
+        return []
+    per_day = {}
+    try:
+        with open(TREND_FILE, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                day = (e.get("h") or "")[:10]
+                if not day:
+                    continue
+                share = (e["n"] / e["t"]) if e.get("t") else 0
+                prev = per_day.get(day)
+                if prev is None or share < prev["share"]:
+                    per_day[day] = {"date": day, "ok": bool(e.get("ok")), "share": round(share, 4)}
+    except OSError:
+        return []
+
+    out = []
+    for i in range(days - 1, -1, -1):
+        day = time.strftime("%Y-%m-%d", time.gmtime(time.time() - i * 86400))
+        out.append(per_day.get(day) or {"date": day, "ok": None, "share": None})
+    return out
 
 
 def heartbeat() -> dict:
@@ -330,10 +440,15 @@ def collect() -> dict:
     age = time.time() - (prior.get("checkedAt") or 0)
     if age >= VERIFY_EVERY_SECONDS or "--now" in sys.argv:
         data["conformance"] = conformance()
+        record_trend(data["conformance"])
         data["gate"] = gate()
     else:
         data["conformance"] = prior
         data["gate"] = previous.get("gate") or {}
+
+    # After record_trend, so a fresh install still shows the sample it just took
+    # instead of an empty series.
+    data["trend"] = read_trend()
 
     # Tollens records no hook timings anywhere — searched evidence/, execution/,
     # control/ and orchestration/. Stated rather than left as an empty chart.
