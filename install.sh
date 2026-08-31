@@ -292,6 +292,15 @@ install_collector() {
         fail "Failed to copy collector to $COLLECTOR" "Check write permissions on ~/.local/bin/"
     fi
 
+    # Optional harness probe. Installed unconditionally and inert without
+    # Tollens: it reports {"present": false} and the widget hides the page.
+    step_desc "Copying tollens-probe.py to ~/.local/bin/"
+    if cp "$REPO_DIR/scripts/tollens-probe.py" "$HOME/.local/bin/" && chmod +x "$HOME/.local/bin/tollens-probe.py"; then
+        ok "Harness probe installed: ~/.local/bin/tollens-probe.py"
+    else
+        warn "Failed to copy tollens-probe.py" "The harness page will not appear"
+    fi
+
     # The Codex collector is always installed; it only produces data when the
     # widget instance is switched to the Codex provider (or ~/.codex exists).
     step_desc "Copying codex-usage-collector.py to ~/.local/bin/"

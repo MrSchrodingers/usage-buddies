@@ -282,6 +282,49 @@ The widget then lives as a **tray icon** — left-click to toggle the popup (doc
 
 ---
 
+## Harness page (Tollens)
+
+If [Tollens](https://github.com/MrSchrodingers/tollens) governs this machine's
+Claude Code configuration, a second page appears behind the gear button in the
+popup header. Without it the button does not exist — a dead tab for an absent
+integration is worse than no tab.
+
+Tollens' own thesis is **INSTALLED ≠ ENFORCED ≠ ACTIVATED**, so the page shows
+those as three separate lights rather than one: a policy can be deployed and
+not enforced, and enforced while the installed tree has drifted from the
+manifest it claims to enforce.
+
+`scripts/tollens-probe.py` collects it in two layers, because they cost
+different amounts:
+
+| Layer | What | Cost | Cadence |
+|---|---|---|---|
+| A | presence, enforcement, hook map, manifest inventory — pure file reads | ~35 ms | every run |
+| B | `install/verify.sh` + `apply-managed.sh --verify` | ~750 ms | every 5 min |
+
+Both verifiers are read-only and need no root; that was established by
+snapshotting mtime and size across 6443 entries before and after running them.
+
+**The SessionStart heartbeat is history, not state.** Tollens writes
+`session-integrity.jsonl` once per session start; it was measured two hours
+stale with a verdict inverted against a live run (`drift` recorded,
+`49/49 ok` live). The page renders it with its own timestamp attached and
+never as current conformance — the live number comes from layer B.
+
+**Not collected, deliberately.** `~/.claude/logs/subagent-probe.jsonl` carries
+`last_assistant_message` and `cwd`, and its own header states the payload must
+not leave the machine. `/var/log/tollens-activation.jsonl` carries project file
+paths that name clients. Neither belongs in a JSON a desktop widget reads.
+
+**Not available.** Tollens records no hook execution timings anywhere, so the
+page says so rather than showing an empty chart.
+
+Output goes to `~/.cache/usage-buddies/tollens.json` (0600), outside `~/.claude`
+— that tree is what Tollens audits, and a widget file inside it is a candidate
+orphan the moment their scan widens.
+
+---
+
 ## Browser Support
 
 | Browser | Linux path | macOS |

@@ -134,6 +134,45 @@ PlasmoidItem {
         return (status && status !== "All Systems Operational") ? base + "\n⚠ " + status : base;
     }
 
+    // ─── Tollens (optional second page) ───
+    //
+    // Tollens governs the global Claude Code configuration. Its own thesis is
+    // INSTALLED != ENFORCED != ACTIVATED, so the page shows those separately
+    // instead of collapsing them into one light.
+    //
+    // The probe writes to ~/.cache, not ~/.claude: that tree is what Tollens
+    // audits, and a widget file inside it is a candidate orphan the moment
+    // their scan widens.
+    property var tollens: ({})
+    readonly property bool hasTollens: (tollens.present ?? false) === true
+    property int page: 0
+
+    Timer {
+        interval: root.refreshInterval
+        running: true; repeat: true; triggeredOnStart: true
+        onTriggered: tollensLoader.readData()
+    }
+
+    P5Support.DataSource {
+        id: tollensLoader
+        engine: "executable"
+        connectedSources: []
+        function readData() {
+            connectSource("$HOME/.local/bin/tollens-probe.py 2>/dev/null; " +
+                          "cat \"${XDG_CACHE_HOME:-$HOME/.cache}\"/usage-buddies/tollens.json 2>/dev/null");
+        }
+        onNewData: function(source, data) {
+            if (data["exit code"] === 0 && data.stdout) {
+                try {
+                    root.tollens = JSON.parse(data.stdout.trim());
+                } catch(e) {
+                    console.warn("usage-buddies: bad tollens.json:", e);
+                }
+            }
+            disconnectSource(source);
+        }
+    }
+
     // ─── Data ───
     Timer {
         interval: root.refreshInterval
@@ -805,6 +844,272 @@ PlasmoidItem {
     }
 
     // ─── Popup (Full) ───
+    // ─── Harness page ───
+    //
+    // Tollens' own thesis is INSTALLED != ENFORCED != ACTIVATED. Three lights,
+    // not one: a policy can be deployed and not enforced, and enforced while
+    // the installed tree has drifted from the manifest it claims to enforce.
+    Component {
+        id: harnessPage
+
+        ColumnLayout {
+            spacing: Kirigami.Units.mediumSpacing
+
+            readonly property var t: root.tollens
+            readonly property var conf: t.conformance ?? ({})
+            readonly property bool conformant: (conf.state ?? "") === "conformant"
+
+            // ── The three states ──
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: stateCol.implicitHeight + Kirigami.Units.mediumSpacing * 2
+                radius: 10
+                color: root.cardBg
+
+                ColumnLayout {
+                    id: stateCol
+                    anchors.fill: parent
+                    anchors.margins: Kirigami.Units.mediumSpacing
+                    spacing: 8
+
+                    PlasmaComponents3.Label {
+                        text: "Harness"
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.85
+                        font.weight: Font.DemiBold; opacity: 0.5
+                    }
+
+                    Repeater {
+                        model: [
+                            { label: "Installed", ok: true,
+                              note: (t.inventory?.total ?? 0) + " components in the manifest" },
+                            { label: "Enforced", ok: t.enforced === true,
+                              note: t.enforced === true
+                                    ? "managed policy wins the precedence chain"
+                                    : "policy present but not enforced" },
+                            { label: "Conformant", ok: conformant,
+                              note: conf.detail ?? "not checked yet" }
+                        ]
+                        delegate: RowLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            spacing: Kirigami.Units.smallSpacing
+
+                            Rectangle {
+                                width: 9; height: 9; radius: 4.5
+                                Layout.alignment: Qt.AlignVCenter
+                                color: modelData.ok ? root.greenAccent : root.claudeAmberLight
+                            }
+                            PlasmaComponents3.Label {
+                                text: modelData.label
+                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.9
+                            }
+                            PlasmaComponents3.Label {
+                                Layout.fillWidth: true
+                                horizontalAlignment: Text.AlignRight
+                                text: modelData.note
+                                elide: Text.ElideRight
+                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.78
+                                opacity: 0.45
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Conformance, live ──
+            Rectangle {
+                Layout.fillWidth: true
+                visible: (conf.available ?? false) === true
+                implicitHeight: confCol.implicitHeight + Kirigami.Units.mediumSpacing * 2
+                radius: 10
+                color: root.cardBg
+                border.width: 2
+                border.color: conformant ? "transparent"
+                            : Qt.rgba(root.claudeAmberLight.r, root.claudeAmberLight.g,
+                                      root.claudeAmberLight.b, 0.45)
+
+                ColumnLayout {
+                    id: confCol
+                    anchors.fill: parent
+                    anchors.margins: Kirigami.Units.mediumSpacing
+                    spacing: 5
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        PlasmaComponents3.Label {
+                            text: "Conformance"
+                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.85
+                            font.weight: Font.DemiBold; opacity: 0.5
+                        }
+                        Item { Layout.fillWidth: true }
+                        PlasmaComponents3.Label {
+                            text: (conf.tookSeconds ?? 0) + "s"
+                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.72
+                            font.features: ({ "tnum": 1 })
+                            opacity: 0.3
+                        }
+                    }
+
+                    PlasmaComponents3.Label {
+                        Layout.fillWidth: true
+                        text: conf.user ?? ""
+                        visible: text !== ""
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.8
+                        font.features: ({ "tnum": 1 })
+                        color: conformant ? Kirigami.Theme.textColor : root.claudeAmberLight
+                    }
+                    PlasmaComponents3.Label {
+                        Layout.fillWidth: true
+                        text: conf.managed ?? ""
+                        visible: text !== ""
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.8
+                        font.features: ({ "tnum": 1 })
+                        opacity: 0.6
+                    }
+                }
+            }
+
+            // ── Hook map ──
+            Rectangle {
+                Layout.fillWidth: true
+                visible: (t.hooks?.total ?? 0) > 0
+                implicitHeight: hookCol.implicitHeight + Kirigami.Units.mediumSpacing * 2
+                radius: 10
+                color: root.cardBg
+
+                ColumnLayout {
+                    id: hookCol
+                    anchors.fill: parent
+                    anchors.margins: Kirigami.Units.mediumSpacing
+                    spacing: 5
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        PlasmaComponents3.Label {
+                            text: "Hooks"
+                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.85
+                            font.weight: Font.DemiBold; opacity: 0.5
+                        }
+                        Item { Layout.fillWidth: true }
+                        PlasmaComponents3.Label {
+                            text: (t.hooks?.total ?? 0) + " across " +
+                                  Object.keys(t.hooks?.byEvent ?? ({})).length + " events"
+                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.78
+                            font.features: ({ "tnum": 1 })
+                            opacity: 0.45
+                        }
+                    }
+
+                    Repeater {
+                        model: {
+                            var by = t.hooks?.byEvent ?? ({});
+                            var rows = [];
+                            for (var k in by) rows.push({ event: k, count: by[k] });
+                            rows.sort(function (a, b) { return b.count - a.count; });
+                            return rows;
+                        }
+                        delegate: RowLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            spacing: Kirigami.Units.smallSpacing
+
+                            PlasmaComponents3.Label {
+                                text: modelData.event
+                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.78
+                                opacity: 0.7
+                            }
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.alignment: Qt.AlignVCenter
+                                height: 4; radius: 2
+                                color: root.subtleBorder
+                                Rectangle {
+                                    width: parent.width * Math.min(1, modelData.count / 6)
+                                    height: parent.height; radius: 2
+                                    color: root.calmFill
+                                }
+                            }
+                            PlasmaComponents3.Label {
+                                text: modelData.count
+                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.78
+                                font.features: ({ "tnum": 1 })
+                                font.weight: Font.Bold
+                                opacity: 0.6
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Inventory ──
+            Flow {
+                Layout.fillWidth: true
+                visible: (t.inventory?.total ?? 0) > 0
+                spacing: Kirigami.Units.smallSpacing
+
+                Repeater {
+                    model: {
+                        var by = t.inventory?.byType ?? ({});
+                        var rows = [];
+                        for (var k in by) rows.push({ kind: k, count: by[k] });
+                        rows.sort(function (a, b) { return b.count - a.count; });
+                        return rows;
+                    }
+                    delegate: Rectangle {
+                        required property var modelData
+                        radius: height / 2
+                        color: root.subtleBorder
+                        implicitWidth: invRow.implicitWidth + 14
+                        implicitHeight: invRow.implicitHeight + 6
+                        RowLayout {
+                            id: invRow
+                            anchors.centerIn: parent
+                            spacing: 5
+                            PlasmaComponents3.Label {
+                                text: modelData.count
+                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.8
+                                font.weight: Font.Bold
+                                font.features: ({ "tnum": 1 })
+                            }
+                            PlasmaComponents3.Label {
+                                text: modelData.kind
+                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.78
+                                opacity: 0.55
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── History, explicitly dated ──
+            //
+            // The heartbeat is written once per session start. Measured two
+            // hours stale with a verdict inverted against a live run, so it is
+            // shown as history with its own timestamp and never as state.
+            PlasmaComponents3.Label {
+                Layout.fillWidth: true
+                visible: (t.heartbeat?.at ?? "") !== ""
+                text: "Last session start: " + (t.heartbeat?.result ?? "?") +
+                      " · " + (t.heartbeat?.at ?? "")
+                wrapMode: Text.WordWrap
+                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.72
+                opacity: 0.35
+            }
+
+            // Stated rather than shown as an empty chart: Tollens records no
+            // hook timings anywhere, so there is no performance data to plot.
+            PlasmaComponents3.Label {
+                Layout.fillWidth: true
+                text: "Hook timings: " + (t.notes?.hookTimings ?? "unknown")
+                wrapMode: Text.WordWrap
+                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.72
+                opacity: 0.3
+            }
+        }
+    }
+
     fullRepresentation: PlasmaExtras.Representation {
         Layout.preferredWidth: Kirigami.Units.gridUnit * 24
         Layout.preferredHeight: Kirigami.Units.gridUnit * 40
@@ -826,6 +1131,24 @@ PlasmoidItem {
                 y: Kirigami.Units.largeSpacing
                 width: popupFlick.width - Kirigami.Units.largeSpacing * 2
                 spacing: Kirigami.Units.mediumSpacing
+
+                // ══════════════════════════════════
+                // ── Harness page (Tollens) ──
+                // ══════════════════════════════════
+                Loader {
+                    Layout.fillWidth: true
+                    active: root.hasTollens && root.page === 1
+                    visible: active
+                    sourceComponent: harnessPage
+                }
+
+                // Provider cards. Hidden rather than unloaded on page 1, so
+                // returning to page 0 does not re-run every binding.
+                ColumnLayout {
+                    id: providerPage
+                    Layout.fillWidth: true
+                    spacing: Kirigami.Units.mediumSpacing
+                    visible: root.page === 0
 
             // ══════════════════════════════════
             // ── Header with mascot ──
@@ -1107,6 +1430,18 @@ PlasmoidItem {
                 }
 
                 Item { Layout.fillWidth: true }
+
+                // Only exists when Tollens does. A dead tab for an absent
+                // integration is worse than no tab.
+                PlasmaComponents3.ToolButton {
+                    visible: root.hasTollens
+                    icon.name: root.page === 0 ? "settings-configure" : "go-previous"
+                    checked: root.page === 1
+                    onClicked: root.page = root.page === 0 ? 1 : 0
+                    PlasmaComponents3.ToolTip {
+                        text: root.page === 0 ? "Harness (Tollens)" : "Back to usage"
+                    }
+                }
 
                 PlasmaComponents3.ToolButton {
                     icon.name: "view-refresh"
@@ -2678,6 +3013,7 @@ PlasmoidItem {
                 }
             }
 
+                }
         }
         } // Flickable
     }
