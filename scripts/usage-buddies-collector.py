@@ -36,47 +36,55 @@ USAGE_ALERT_AT = 90
 SYSTEM_SOUNDS = frozenset({"Asterisk", "Beep", "Exclamation", "Hand", "Question"})
 
 USAGE_EVENT_DEFAULTS = {
-    "sessionEnded": {"sound": "dialog-warning",
+    "sessionEnded": {"headline": "esgotada",
+                     "sound": "dialog-warning",
                      "winSound": "Exclamation",
                      "urgency": "normal",
                      "title": "Sessão Claude esgotada",
-                     "body": "A janela de 5h atingiu 100%."},
-    "sessionReset": {"sound": "complete",
+                     "body": "A janela de 5h chegou ao limite."},
+    "sessionReset": {"headline": "renovada",
+                     "sound": "complete",
                      "winSound": "Asterisk",
                      "urgency": "low",
                      "title": "Sessão Claude renovada",
                      "body": "A janela de 5h foi resetada."},
-    "weeklyEnded":  {"sound": "phone-outgoing-busy",
+    "weeklyEnded":  {"headline": "esgotada",
+                     "sound": "phone-outgoing-busy",
                      "winSound": "Hand",
                      "urgency": "critical",
                      "title": "Limite semanal Claude esgotado",
-                     "body": "A janela de 7 dias atingiu 100%."},
-    "weeklyReset":  {"sound": "service-login",
+                     "body": "A janela de 7 dias chegou ao limite."},
+    "weeklyReset":  {"headline": "renovada",
+                     "sound": "service-login",
                      "winSound": "Asterisk",
                      "urgency": "normal",
                      "title": "Limite semanal Claude renovado",
                      "body": "A janela de 7 dias foi resetada."},
     # Limiares: avisam enquanto ainda há o que fazer a respeito.
-    "sessionWarn":  {"sound": "message",
+    "sessionWarn":  {"headline": "três quartos",
+                     "sound": "message",
                      "winSound": "Asterisk",
                      "urgency": "low",
                      "title": f"Sessão em {USAGE_WARN_AT}%",
-                     "body": "A janela de 5h passou de três quartos."},
-    "sessionAlert": {"sound": "dialog-warning",
+                     "body": "Ainda dá tempo de desacelerar antes do reset."},
+    "sessionAlert": {"headline": "quase no limite",
+                     "sound": "dialog-warning",
                      "winSound": "Exclamation",
                      "urgency": "normal",
                      "title": f"Sessão em {USAGE_ALERT_AT}%",
-                     "body": "Pouco resta na janela de 5h."},
-    "weeklyWarn":   {"sound": "message",
+                     "body": "Guarde o que resta para o que importa."},
+    "weeklyWarn":   {"headline": "três quartos",
+                     "sound": "message",
                      "winSound": "Asterisk",
-                     "urgency": "normal",
+                     "urgency": "low",
                      "title": f"Semanal em {USAGE_WARN_AT}%",
-                     "body": "A janela de 7 dias passou de três quartos."},
-    "weeklyAlert":  {"sound": "dialog-warning",
+                     "body": "Ainda dá tempo de desacelerar antes do reset."},
+    "weeklyAlert":  {"headline": "quase no limite",
+                     "sound": "dialog-warning",
                      "winSound": "Exclamation",
-                     "urgency": "critical",
+                     "urgency": "normal",
                      "title": f"Semanal em {USAGE_ALERT_AT}%",
-                     "body": "Pouco resta na janela de 7 dias."},
+                     "body": "Guarde o que resta para o que importa."},
 }
 
 # Anthropic pricing (per 1M tokens) — May 2025 public prices
@@ -1061,73 +1069,145 @@ def _save_events_state(state):
         print(f"warn: falha ao gravar events state: {e}", file=sys.stderr)
 
 
+def _window_id(resets_at):
+    """Identity of a rate-limit window, robust to the API's sub-second noise.
+
+    The endpoint returns the same reset instant with a different fraction on
+    every call — 04:59:59.340221, then .087415, then .884651, all for the same
+    window. Comparing the raw strings makes every poll look like a new window,
+    which re-arms the thresholds every 30 seconds and turns one alert into a
+    permanent stream. Truncating to the minute keeps a genuine roll-over
+    detectable while ignoring the noise.
+    """
+    d = parse_timestamp(resets_at) if resets_at else None
+    return d.strftime("%Y-%m-%dT%H:%M") if d else ""
+
+
+# Scopes worth alerting on, and the name to use when talking about them.
+# Per-model quotas are included so an alert can say which one ran out instead
+# of just "weekly".
+ALERT_SCOPES = {
+    "session":      "Sessão (5h)",
+    "weeklyAll":    "Semanal (todos os modelos)",
+    "weeklyOpus":   "Semanal Opus",
+    "weeklySonnet": "Semanal Sonnet",
+    "weeklyFable":  "Semanal Fable",
+    "weeklyHaiku":  "Semanal Haiku",
+    "weeklyScoped": "Semanal por modelo",
+}
+
+
+def scope_label(scope_key, block):
+    """Prefer the model name the API itself reported over our static table."""
+    name = (block or {}).get("modelName")
+    if name:
+        return f"Semanal {name}"
+    return ALERT_SCOPES.get(scope_key, scope_key)
+
+
 def detect_usage_transitions(prev_state, curr_data):
-    """Função pura: compara snapshot anterior com dados atuais e retorna
-    a lista de IDs de eventos disparados ('sessionEnded', 'sessionReset',
-    'weeklyEnded', 'weeklyReset'). Também devolve o snapshot novo."""
+    """Função pura: compara snapshot anterior com dados atuais e devolve a lista
+    de eventos disparados e o snapshot novo.
+
+    Cada evento é um dict com 'id' (para som/config) e o contexto necessário
+    para escrever uma mensagem específica: qual escopo e em que percentual.
+
+    Só dispara sobre dado MEDIDO. O ramo local_estimate divide tokens por um
+    limite fixo e satura em 100% para qualquer usuário de volume alto, então
+    uma única falha de API anunciava "limite semanal esgotado" com a semana
+    inteira pela frente. Um palpite não avisa que a cota acabou.
+    """
     rate_limits = curr_data.get("rateLimits") or {}
-    scopes = {
-        "session":   ("sessionEnded",  "sessionReset",  "sessionWarn",  "sessionAlert"),
-        "weeklyAll": ("weeklyEnded",   "weeklyReset",   "weeklyWarn",   "weeklyAlert"),
-    }
+    measured = rate_limits.get("source") == "api"
 
     events = []
-    new_snapshot = {"lastRun": datetime.now(timezone.utc).isoformat()}
+    new_snapshot = {"lastRun": datetime.now(timezone.utc).isoformat(),
+                    "measured": measured}
 
-    for scope_key, (ended_id, reset_id, warn_id, alert_id) in scopes.items():
-        curr = rate_limits.get(scope_key) or {}
+    prev_measured = (prev_state or {}).get("measured", True)
+
+    for scope_key in ALERT_SCOPES:
+        curr = rate_limits.get(scope_key)
+        if curr is None:
+            # Carry the previous snapshot forward: a scope the API stopped
+            # reporting must not look like a fresh window when it returns.
+            old = (prev_state or {}).get(scope_key)
+            if old:
+                new_snapshot[scope_key] = old
+            continue
+
         curr_pct = curr.get("percentUsed")
         curr_reset = curr.get("resetsAt") or ""
+        label = scope_label(scope_key, curr)
 
         prev_scope = (prev_state or {}).get(scope_key) or {}
         prev_pct = prev_scope.get("percentUsed")
         prev_reset = prev_scope.get("resetsAt") or ""
-        # Thresholds already announced for the window that is still running.
         fired = list(prev_scope.get("fired") or [])
-        # A new window re-arms them; without this a quota that is warned about
-        # once is never warned about again.
-        if curr_reset and prev_reset and curr_reset != prev_reset:
+
+        # A new window re-arms the thresholds. Compared at minute granularity:
+        # the raw strings differ on every poll (see _window_id). Comparing only
+        # when both sides are non-empty also left `fired` stuck after any pass
+        # through the estimate branch, which reports no resetsAt at all.
+        curr_window = _window_id(curr_reset)
+        prev_window = _window_id(prev_reset)
+        if curr_window != prev_window and (curr_window or prev_window):
             fired = []
 
-        # ACABOU: 1ª execução já em 100%, ou transição de <100 para >=100
-        if curr_pct is not None and curr_pct >= 100:
-            if prev_pct is None or prev_pct < 100:
-                events.append(ended_id)
+        if measured:
+            is_weekly = scope_key != "session"
+            ended_id = "weeklyEnded" if is_weekly else "sessionEnded"
+            reset_id = "weeklyReset" if is_weekly else "sessionReset"
+            warn_id = "weeklyWarn" if is_weekly else "sessionWarn"
+            alert_id = "weeklyAlert" if is_weekly else "sessionAlert"
 
-        # Limiares intermediários: avisam enquanto ainda dá para desacelerar.
-        # Disparam uma vez por janela, na subida, e o de 90% suprime o de 75%
-        # quando os dois são cruzados na mesma execução — dois toasts seguidos
-        # dizendo a mesma coisa é ruído.
-        if curr_pct is not None:
-            crossed = []
-            for threshold, event_id in ((USAGE_ALERT_AT, alert_id),
-                                        (USAGE_WARN_AT, warn_id)):
-                if curr_pct >= threshold and threshold not in fired:
-                    crossed.append((threshold, event_id))
-            if crossed:
-                # highest threshold first; announce only that one
-                threshold, event_id = crossed[0]
-                if curr_pct < 100:
-                    events.append(event_id)
-                for t, _ in crossed:
-                    fired.append(t)
+            def emit(event_id):
+                events.append({"id": event_id, "scope": scope_key,
+                               "label": label, "percent": curr_pct})
 
-        # RESETOU: resetsAt avançou claramente E havia uso significativo antes
-        if prev_reset and curr_reset:
-            try:
-                p = parse_timestamp(prev_reset)
-                c = parse_timestamp(curr_reset)
-                if p and c and (c - p) > timedelta(hours=1) and (prev_pct or 0) > 5:
-                    events.append(reset_id)
-                    fired = []
-            except Exception:
-                pass
+            # ACABOU: 1ª execução já em 100%, ou transição de <100 para >=100.
+            # Só conta como primeira execução se a anterior também foi medida.
+            if curr_pct is not None and curr_pct >= 100:
+                if (prev_pct is None and not prev_scope) or (
+                        prev_pct is not None and prev_pct < 100):
+                    if prev_measured or prev_scope:
+                        emit(ended_id)
 
-        new_snapshot[scope_key] = {
-            "percentUsed": curr_pct,
-            "resetsAt": curr_reset,
-            "fired": sorted(set(fired)),
-        }
+            # Limiares: avisam enquanto ainda dá para desacelerar. Uma vez por
+            # janela, na subida; o de 90% suprime o de 75% quando os dois são
+            # cruzados na mesma execução.
+            if curr_pct is not None and curr_pct < 100:
+                crossed = [(t, e) for t, e in ((USAGE_ALERT_AT, alert_id),
+                                               (USAGE_WARN_AT, warn_id))
+                           if curr_pct >= t and t not in fired]
+                if crossed:
+                    emit(crossed[0][1])
+                    fired.extend(t for t, _ in crossed)
+            elif curr_pct is not None and curr_pct >= 100:
+                fired.extend(t for t in (USAGE_WARN_AT, USAGE_ALERT_AT)
+                             if t not in fired)
+
+            # RESETOU: resetsAt avançou claramente E havia uso significativo.
+            if prev_reset and curr_reset:
+                try:
+                    pv = parse_timestamp(prev_reset)
+                    cv = parse_timestamp(curr_reset)
+                    if pv and cv and (cv - pv) > timedelta(hours=1) and (prev_pct or 0) > 5:
+                        emit(reset_id)
+                        fired = []
+                except Exception:
+                    pass
+
+            new_snapshot[scope_key] = {
+                "percentUsed": curr_pct,
+                "resetsAt": curr_reset,
+                "fired": sorted(set(fired)),
+            }
+        else:
+            # Unmeasured: remember nothing new, so the estimate cannot mark a
+            # threshold as already announced and silence the real one later.
+            new_snapshot[scope_key] = prev_scope or {
+                "percentUsed": None, "resetsAt": "", "fired": []}
 
     return events, new_snapshot
 
@@ -1192,18 +1272,36 @@ def _notify_desktop(title, body, urgency, icon="claude-logo", app_name="Usage Bu
             print(f"warn: notificação macOS falhou: {e}", file=sys.stderr)
 
 
-def notify_usage_event(event_id, config):
-    """Dispara som + notificação visual para um evento de uso."""
+def notify_usage_event(event, config):
+    """Dispara som + notificação visual para um evento de uso.
+
+    `event` é o dict devolvido por detect_usage_transitions(). O título nomeia
+    a cota e o corpo traz o número: com quotas por modelo coexistindo, "Limite
+    semanal esgotado" não diz qual das quatro acabou.
+    """
+    event_id = event["id"] if isinstance(event, dict) else event
     defaults = USAGE_EVENT_DEFAULTS.get(event_id)
     if not defaults:
         return
+
+    label = event.get("label") if isinstance(event, dict) else None
+    percent = event.get("percent") if isinstance(event, dict) else None
+
+    if label:
+        title = f"{label} — {defaults['headline']}"
+    else:
+        title = defaults["title"]
+
+    body = defaults["body"]
+    if percent is not None:
+        body = f"{round(percent)}% usado. {body}"
 
     sounds_cfg = (config.get("notifications") or {}).get("sounds") or {}
     sound = sounds_cfg.get(event_id, defaults["sound"])
     win_sound = sounds_cfg.get(event_id + "Win", defaults.get("winSound"))
 
     _play_event_sound(sound, win_sound=win_sound)
-    _notify_desktop(defaults["title"], defaults["body"], defaults["urgency"])
+    _notify_desktop(title, body, defaults["urgency"])
 
 
 def process_usage_events(curr_data, config):

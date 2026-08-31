@@ -89,10 +89,13 @@ def test_session_and_weekly_emit_resets_at(limits_of):
                                          ("weeklyAll", "weeklyReset")])
 def test_reset_event_fires_when_window_rolls_over(collector, scope, event):
     """End-to-end on the pure function: a reset window plus prior usage fires."""
-    prev = {scope: {"percentUsed": 80, "resetsAt": "2026-08-31T10:00:00Z"}}
-    curr = {"rateLimits": {scope: {"percentUsed": 3, "resetsAt": "2026-08-31T20:00:00Z"}}}
+    prev = {"measured": True,
+            scope: {"percentUsed": 80, "resetsAt": "2026-08-31T10:00:00Z", "fired": []}}
+    curr = {"rateLimits": {"source": "api",
+                           scope: {"percentUsed": 3, "resetsAt": "2026-08-31T20:00:00Z"}}}
     events, _ = collector.detect_usage_transitions(prev, curr)
-    assert event in events, f"{event} did not fire on a rolled-over window"
+    ids = [e["id"] if isinstance(e, dict) else e for e in events]
+    assert event in ids, f"{event} did not fire on a rolled-over window: {ids}"
 
 
 # ── Coexistence of the legacy seven_day_* fields with the new limits[] array ──
