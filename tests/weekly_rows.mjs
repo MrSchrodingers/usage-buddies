@@ -55,5 +55,29 @@ console.log("\n=== ordem estavel entre chamadas ===");
 const a = run(live).map(r=>r.label).join("|"), b = run(live).map(r=>r.label).join("|");
 check("ordem identica", a === b, `${a} vs ${b}`);
 
+// ── windowPace: a marca de ritmo do anel e das barras ──
+const pm = src.match(/function windowPace\(resetsAtIso, windowHours\) \{\n([\s\S]*?)\n    \}\n/);
+if (!pm) { console.error("FALHA: nao achei windowPace no QML"); process.exit(2); }
+const windowPace = new Function("resetsAtIso", "windowHours", pm[1]);
+
+console.log("\n=== windowPace ===");
+const H = 3600000, now = Date.now();
+const iso = ms => new Date(now + ms).toISOString();
+const near = (a, b) => Math.abs(a - b) < 0.02;
+
+check("janela inteira pela frente -> 0", near(windowPace(iso(5 * H), 5), 0),
+      String(windowPace(iso(5 * H), 5)));
+check("metade da janela -> ~0.5", near(windowPace(iso(2.5 * H), 5), 0.5),
+      String(windowPace(iso(2.5 * H), 5)));
+check("quase no fim -> ~0.9", near(windowPace(iso(0.5 * H), 5), 0.9),
+      String(windowPace(iso(0.5 * H), 5)));
+check("reset ja passou -> 1", windowPace(iso(-H), 5) === 1);
+check("janela semanal de 168h", near(windowPace(iso(84 * H), 168), 0.5),
+      String(windowPace(iso(84 * H), 168)));
+check("sem resetsAt -> -1 (nao inventa ritmo)", windowPace("", 5) === -1);
+check("resetsAt invalido -> -1", windowPace("nao-e-data", 5) === -1);
+check("windowHours zero -> -1", windowPace(iso(H), 0) === -1);
+check("resetsAt alem da janela -> 0 (nao extrapola)", windowPace(iso(99 * H), 5) === 0);
+
 console.log(fail ? `\n${fail} FALHA(S)` : "\nTODAS PASSARAM");
 process.exit(fail ? 1 : 0);

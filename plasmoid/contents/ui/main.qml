@@ -157,6 +157,49 @@ PlasmoidItem {
         return n.toString();
     }
 
+    // ── Pace ──────────────────────────────────────────────
+    //
+    // A rolling window has two coordinates: how much of the quota is spent, and
+    // how far through the window you are. 60% spent in the first hour of a 5h
+    // window is trouble; the same 60% in the fifth hour is fine. Showing usage
+    // alone cannot tell those apart, so every gauge here also carries where
+    // even burn would have put you by now.
+    //
+    // Returns 0..1, or -1 when the window boundary is unknown (offline
+    // estimates carry no reset timestamp) so callers can fall back to
+    // threshold-only colouring instead of inventing a pace.
+    function windowPace(resetsAtIso, windowHours) {
+        if (!resetsAtIso || windowHours <= 0) return -1;
+        var reset = Date.parse(resetsAtIso);
+        if (isNaN(reset)) return -1;
+        var span = windowHours * 3600000;
+        var remaining = reset - Date.now();
+        if (remaining < 0) return 1;
+        if (remaining > span) return 0;
+        return 1 - (remaining / span);
+    }
+
+    // Ahead of pace by this many points before the gauge warms up. Below it the
+    // difference is noise: a burst at the start of a window is normal.
+    readonly property real paceTolerance: 15
+
+    // One meaning per channel. Identity lives in the row's dot; the fill only
+    // ever says how close this quota is to being a problem, so a warm bar is
+    // always worth looking at and a cool one never is.
+    function paceFill(pct, pace) {
+        if (pct > 85) return redAlert;
+        if (pace >= 0 && (pct - pace * 100) > paceTolerance) return claudeAmberLight;
+        if (pace < 0 && pct > 50) return claudeAmberLight;
+        return Kirigami.Theme.highlightColor;
+    }
+
+    function paceTextColor(pct, pace) {
+        if (pct > 85) return redAlert;
+        if (pace >= 0 && (pct - pace * 100) > paceTolerance) return claudeAmberLight;
+        if (pace < 0 && pct > 50) return claudeAmberLight;
+        return Kirigami.Theme.textColor;
+    }
+
     function limitColor(pct) {
         if (pct > 80) return redAlert;
         if (pct > 50) return claudeAmberLight;
@@ -196,7 +239,8 @@ PlasmoidItem {
                 label: spec.label,
                 accent: spec.accent,
                 pct: block.percentUsed ?? 0,
-                resetsLabel: block.resetsLabel ?? ""
+                resetsLabel: block.resetsLabel ?? "",
+                resetsAt: block.resetsAt ?? ""
             });
         }
 
@@ -209,7 +253,8 @@ PlasmoidItem {
                 label: scoped.modelName,
                 accent: claudeAmberLight,
                 pct: scoped.percentUsed ?? 0,
-                resetsLabel: scoped.resetsLabel ?? ""
+                resetsLabel: scoped.resetsLabel ?? "",
+                resetsAt: scoped.resetsAt ?? ""
             });
         }
         return rows;
@@ -793,17 +838,22 @@ PlasmoidItem {
                             opacity: 0.7
                         }
                         Item { Layout.fillWidth: true }
+                        // The countdown now lives inside the ring, so this slot
+                        // carries the reading the ring's tick makes possible:
+                        // spending faster or slower than the window refills.
                         PlasmaComponents3.Label {
+                            property real pct: root.usageData.rateLimits?.session?.percentUsed ?? 0
+                            property real pace: progressRing.pace
+                            visible: pace >= 0
                             text: {
-                                var m = root.countdownMinutes;
-                                var s = root.countdownSeconds;
-                                if (m > 60) return "Resets in " + Math.floor(m/60) + "h " + (m%60) + "m";
-                                if (m > 0) return "Resets in " + m + "m " + s + "s";
-                                if (s > 0) return "Resets in " + s + "s";
-                                return "Rolling 5h";
+                                var d = pct - pace * 100;
+                                if (d > root.paceTolerance) return "ahead of pace";
+                                if (d < -root.paceTolerance) return "under pace";
+                                return "on pace";
                             }
                             font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.8
-                            opacity: 0.4
+                            color: root.paceTextColor(pct, pace)
+                            opacity: 0.75
                         }
                     }
 
@@ -821,37 +871,83 @@ PlasmoidItem {
                             onPctChanged: requestPaint()
                             onWidthChanged: requestPaint()
 
+                            property real pace: root.windowPace(
+                                root.usageData.rateLimits?.session?.resetsAt ?? "",
+                                root.usageData.rateLimits?.session?.windowHours ?? 5)
+                            onPaceChanged: requestPaint()
+
                             onPaint: {
                                 var ctx = getContext("2d");
                                 ctx.clearRect(0, 0, width, height);
                                 var cx = width / 2, cy = height / 2;
-                                var r = Math.min(cx, cy) - 6;
-                                // Background ring
+                                var lw = 10;
+                                var r = Math.min(cx, cy) - lw;
+                                var start = -Math.PI / 2;
+
+                                // Track
                                 ctx.beginPath();
                                 ctx.arc(cx, cy, r, 0, 2 * Math.PI);
                                 ctx.strokeStyle = root.subtleBorder.toString();
-                                ctx.lineWidth = 8;
+                                ctx.lineWidth = lw;
                                 ctx.stroke();
-                                // Progress arc
-                                var startAngle = -Math.PI / 2;
-                                var endAngle = startAngle + (2 * Math.PI * Math.min(1, pct / 100));
+
+                                // Usage arc
                                 ctx.beginPath();
-                                ctx.arc(cx, cy, r, startAngle, endAngle);
-                                ctx.strokeStyle = barFill(pct, root.claudeAmber).toString();
-                                ctx.lineWidth = 8;
+                                ctx.arc(cx, cy, r, start,
+                                        start + 2 * Math.PI * Math.min(1, pct / 100));
+                                ctx.strokeStyle = root.paceFill(pct, pace).toString();
+                                ctx.lineWidth = lw;
                                 ctx.lineCap = "round";
                                 ctx.stroke();
+
+                                // Pace tick: where even burn would have reached by now.
+                                // Arc short of it means the window is refilling faster
+                                // than it is being spent.
+                                if (pace >= 0 && pace < 1) {
+                                    var a = start + 2 * Math.PI * pace;
+                                    ctx.beginPath();
+                                    ctx.arc(cx, cy, r, a - 0.012, a + 0.012);
+                                    ctx.strokeStyle = Kirigami.Theme.textColor.toString();
+                                    ctx.lineWidth = lw + 5;
+                                    ctx.lineCap = "butt";
+                                    ctx.globalAlpha = 0.35;
+                                    ctx.stroke();
+                                    ctx.globalAlpha = 1;
+                                }
                             }
                         }
 
-                        PlasmaComponents3.Label {
+                        // Percentage and time-left together: on their own, "3%"
+                        // and "4h49m" each answer half the question the widget
+                        // is opened to answer.
+                        ColumnLayout {
                             anchors.centerIn: parent
-                            property real pct: root.usageData.rateLimits?.session?.percentUsed ?? 0
-                            Behavior on pct { NumberAnimation { duration: 800; easing.type: Easing.OutCubic } }
-                            text: Math.round(pct) + "%"
-                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 2.5
-                            font.weight: Font.Bold
-                            color: limitColor(pct)
+                            spacing: 0
+
+                            PlasmaComponents3.Label {
+                                Layout.alignment: Qt.AlignHCenter
+                                property real pct: root.usageData.rateLimits?.session?.percentUsed ?? 0
+                                property real pace: progressRing.pace
+                                Behavior on pct { NumberAnimation { duration: 800; easing.type: Easing.OutCubic } }
+                                text: Math.round(pct) + "%"
+                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 2.4
+                                font.weight: Font.Bold
+                                font.features: ({ "tnum": 1 })
+                                color: root.paceTextColor(pct, pace)
+                            }
+                            PlasmaComponents3.Label {
+                                Layout.alignment: Qt.AlignHCenter
+                                text: {
+                                    var m = root.countdownMinutes, sec = root.countdownSeconds;
+                                    if (m >= 60) return Math.floor(m / 60) + "h " + (m % 60) + "m left";
+                                    if (m > 0) return m + "m " + sec + "s left";
+                                    if (sec > 0) return sec + "s left";
+                                    return "rolling 5h";
+                                }
+                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.8
+                                font.features: ({ "tnum": 1 })
+                                opacity: 0.55
+                            }
                         }
                     }
 
@@ -908,9 +1004,13 @@ PlasmoidItem {
                         model: root.weeklyRows
 
                         delegate: ColumnLayout {
+                            id: weeklyRow
                             required property var modelData
                             Layout.fillWidth: true
                             spacing: 4
+
+                            // 7-day window, so pace is measured against 168h.
+                            property real pace: root.windowPace(modelData.resetsAt, 168)
 
                             RowLayout {
                                 Layout.fillWidth: true
@@ -926,26 +1026,41 @@ PlasmoidItem {
                                 Item { Layout.fillWidth: true }
                                 PlasmaComponents3.Label {
                                     visible: modelData.resetsLabel !== ""
-                                    text: "Resets " + modelData.resetsLabel
+                                    text: modelData.resetsLabel
                                     font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
+                                    font.features: ({ "tnum": 1 })
                                     opacity: 0.35
                                 }
                                 PlasmaComponents3.Label {
                                     text: Math.round(modelData.pct) + "%"
                                     font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 1.1
                                     font.weight: Font.Bold
-                                    color: root.limitColor(modelData.pct)
+                                    font.features: ({ "tnum": 1 })
+                                    color: root.paceTextColor(modelData.pct, weeklyRow.pace)
                                 }
                             }
 
                             Rectangle {
-                                Layout.fillWidth: true; height: 6; radius: 3
+                                id: track
+                                Layout.fillWidth: true; height: 8; radius: 4
                                 color: root.subtleBorder
+
                                 Rectangle {
-                                    width: parent.width * Math.min(1, modelData.pct / 100)
-                                    height: parent.height; radius: 3
-                                    color: root.barFill(modelData.pct, modelData.accent)
+                                    width: track.width * Math.min(1, modelData.pct / 100)
+                                    height: parent.height; radius: 4
+                                    color: root.paceFill(modelData.pct, weeklyRow.pace)
                                     Behavior on width { NumberAnimation { duration: 600; easing.type: Easing.OutCubic } }
+                                }
+
+                                // Same tick as the session ring: where even burn
+                                // through the week would have reached by now.
+                                Rectangle {
+                                    visible: weeklyRow.pace >= 0 && weeklyRow.pace < 1
+                                    x: Math.round(track.width * weeklyRow.pace) - width / 2
+                                    width: 2; height: parent.height + 4
+                                    y: -2; radius: 1
+                                    color: Kirigami.Theme.textColor
+                                    opacity: 0.35
                                 }
                             }
                         }
