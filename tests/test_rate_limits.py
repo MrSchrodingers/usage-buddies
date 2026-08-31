@@ -143,3 +143,55 @@ def test_family_match_is_positional_not_dict_order(limits_of, display, expected)
         assert not named, f"{display!r} should match no family, matched {named}"
     else:
         assert named == {expected}, f"{display!r} -> {named}, expected {expected}"
+
+
+# ── Shape observed on the live endpoint, 2026-08-31 ──
+#
+# Captured by calling fetch_usage_from_api() against claude.ai with a real
+# session. Recorded because both PRs coded against this shape from assumption,
+# not observation, and one field contradicted every synthetic payload here:
+# a weekly_scoped entry can carry resets_at = None.
+#
+#   limits: [
+#     {kind: "session",       percent: 1,  resets_at: "...+00:00", scope: {...}},
+#     {kind: "weekly_all",    percent: 32, resets_at: "...+00:00", scope: {...}},
+#     {kind: "weekly_scoped", percent: 0,  resets_at: None,
+#      scope: {model: {id: None, display_name: "Fable"}, surface: ...}},
+#   ]
+#   seven_day_opus: null, seven_day_sonnet: null   (legacy fields deprecating)
+#   percent is an int on 0-100, same scale as seven_day.utilization.
+
+LIVE_LIMITS = [
+    {"kind": "session", "percent": 1, "resets_at": "2026-08-31T23:30:00.920335+00:00",
+     "scope": {}, "group": None, "is_active": True, "severity": None},
+    {"kind": "weekly_all", "percent": 32, "resets_at": "2026-09-04T04:59:59.920362+00:00",
+     "scope": {}, "group": None, "is_active": True, "severity": None},
+    {"kind": "weekly_scoped", "percent": 0, "resets_at": None,
+     "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None},
+     "group": None, "is_active": True, "severity": None},
+]
+
+
+def test_live_shape_populates_both_contracts(limits_of):
+    """The one scoped entry must reach the plasmoid (weeklyFable) and
+    win-widget (weeklyScoped) at once — that is what the merge resolution is."""
+    r = limits_of(LIVE_LIMITS, seven_day_opus=None, seven_day_sonnet=None)
+    assert r["weeklyFable"]["modelName"] == "Fable"
+    assert r["weeklyScoped"]["modelName"] == "Fable"
+    assert r["weeklyFable"]["percentUsed"] == 0
+
+
+def test_null_resets_at_does_not_crash(limits_of):
+    """The live weekly_scoped entry has resets_at = None. parse_timestamp
+    tolerates it; the emitted block must degrade to empty strings, not None."""
+    r = limits_of(LIVE_LIMITS)
+    assert r["weeklyFable"]["resetsLabel"] == ""
+    assert r["weeklyFable"]["resetsAt"] == ""
+
+
+def test_percent_scale_matches_utilization(limits_of):
+    """percent is 0-100, like seven_day.utilization. A 0-1 scale would render
+    every per-model bar at ~0% while the account is near its cap."""
+    r = limits_of([_scoped(32, "Fable")],
+                  seven_day={"utilization": 32, "resets_at": "2026-09-04T04:59:59+00:00"})
+    assert r["weeklyFable"]["percentUsed"] == r["weeklyAll"]["percentUsed"] == 32
