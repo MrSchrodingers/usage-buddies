@@ -484,22 +484,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "usage-buddies-tray"
-version = "1.0.0"
-dependencies = [
- "dirs",
- "notify",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-clipboard-manager",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-notification",
- "tauri-plugin-shell",
-]
-
-[[package]]
 name = "clipboard-win"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4846,6 +4830,22 @@ dependencies = [
  "serde",
  "unic-ucd-ident",
  "url",
+]
+
+[[package]]
+name = "usage-buddies-tray"
+version = "1.0.0"
+dependencies = [
+ "dirs",
+ "notify",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-clipboard-manager",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-notification",
+ "tauri-plugin-shell",
 ]
 
 [[package]]

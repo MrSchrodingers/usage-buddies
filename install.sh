@@ -61,16 +61,22 @@ header() {
     echo ""
 }
 
-# Detect an install made under the old project name (usage-buddies-*) and offer
-# to clear it. Leaving it in place means two collectors on two systemd timers
-# writing the same ~/.claude/widget-data.json, and a stale plasmoid in the panel.
+# Detect an install made under the OLD project name and offer to clear it.
+# Leaving it in place means two collectors on two systemd timers writing the
+# same ~/.claude/widget-data.json, and a stale plasmoid in the panel.
+#
+# The claude-usage-* / claudeusage strings below are LOAD-BEARING: they are what
+# an old install is actually called on disk. A rename sweep over this file must
+# not touch them — it already happened once and silently turned this function
+# into a detector for the *new* install. tests/test_install_migration.py pins
+# them.
 migrate_legacy_install() {
     local found=()
-    [ -f "$HOME/.local/bin/usage-buddies-collector.py" ] && found+=("~/.local/bin/usage-buddies-collector.py")
-    [ -f "$HOME/.local/bin/usage-buddies-tray" ] && found+=("~/.local/bin/usage-buddies-tray")
-    [ -f "$HOME/.config/systemd/user/usage-buddies-collector.timer" ] && found+=("systemd timer usage-buddies-collector.timer")
-    [ -d "$HOME/.local/share/plasma/plasmoids/org.kde.plasma.usagebuddies" ] && found+=("plasmoid org.kde.plasma.usagebuddies")
-    [ -f "$HOME/.config/autostart/usage-buddies-tray.desktop" ] && found+=("autostart usage-buddies-tray.desktop")
+    [ -f "$HOME/.local/bin/claude-usage-collector.py" ] && found+=("~/.local/bin/claude-usage-collector.py")
+    [ -f "$HOME/.local/bin/claude-usage-tray" ] && found+=("~/.local/bin/claude-usage-tray")
+    [ -f "$HOME/.config/systemd/user/claude-usage-collector.timer" ] && found+=("systemd timer claude-usage-collector.timer")
+    [ -d "$HOME/.local/share/plasma/plasmoids/org.kde.plasma.claudeusage" ] && found+=("plasmoid org.kde.plasma.claudeusage")
+    [ -f "$HOME/.config/autostart/claude-usage-tray.desktop" ] && found+=("autostart claude-usage-tray.desktop")
 
     [ ${#found[@]} -eq 0 ] && return 0
 
@@ -78,9 +84,9 @@ migrate_legacy_install() {
     echo -e "${AMBER}Previous install found under the old name:${NC}"
     for f in "${found[@]}"; do echo -e "  ${DIM}- $f${NC}"; done
     echo ""
-    echo -e "  This project was renamed ${BOLD}usage-buddies${NC} -> ${BOLD}usage-buddies${NC}."
+    echo -e "  This project was renamed ${BOLD}claude-usage-widget${NC} -> ${BOLD}usage-buddies${NC}."
     echo -e "  Keeping both means two collectors on two timers writing the same"
-    echo -e "  ~/.claude/widget-data.json. Your data files are not touched either way."
+    echo -e "  ~/.claude/widget-data.json."
     echo ""
 
     if [ ! -t 0 ]; then
@@ -94,16 +100,41 @@ migrate_legacy_install() {
         [Nn]*)
             warn "Old install left in place" \
                  "Run later: bash \"$REPO_DIR/legacy/uninstall.sh\""
-            ;;
-        *)
-            if [ -x "$REPO_DIR/legacy/uninstall.sh" ]; then
-                bash "$REPO_DIR/legacy/uninstall.sh"
-                ok "Old install removed"
-            else
-                warn "legacy/uninstall.sh not found" "Remove the paths above by hand"
-            fi
+            return 0
             ;;
     esac
+
+    if [ ! -x "$REPO_DIR/legacy/uninstall.sh" ]; then
+        warn "legacy/uninstall.sh not found" "Remove the paths above by hand"
+        return 0
+    fi
+
+    # legacy/uninstall.sh is a real uninstaller: it deletes widget-config.json
+    # and widget-status-prev.json. That is right when removing the widget and
+    # wrong when migrating to it — widget-config.json holds the org id and the
+    # notification/sound settings, and nothing in install.sh recreates it. Carry
+    # them across.
+    local keep
+    keep="$(mktemp -d)"
+    local preserved=()
+    for f in widget-config.json widget-status-prev.json; do
+        if [ -f "$HOME/.claude/$f" ]; then
+            cp -p "$HOME/.claude/$f" "$keep/$f" && preserved+=("$f")
+        fi
+    done
+
+    bash "$REPO_DIR/legacy/uninstall.sh"
+
+    for f in "${preserved[@]+"${preserved[@]}"}"; do
+        if [ ! -f "$HOME/.claude/$f" ] && [ -f "$keep/$f" ]; then
+            mkdir -p "$HOME/.claude"
+            cp -p "$keep/$f" "$HOME/.claude/$f"
+            step_desc "Kept $f across the migration"
+        fi
+    done
+    rm -rf "$keep"
+
+    ok "Old install removed"
 }
 
 # Choose Arch package manager: prefer AUR helper if user installed one,

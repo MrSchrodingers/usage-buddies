@@ -92,3 +92,54 @@ def test_reset_event_fires_when_window_rolls_over(collector, scope, event):
     curr = {"rateLimits": {scope: {"percentUsed": 3, "resetsAt": "2026-08-31T20:00:00Z"}}}
     events, _ = collector.detect_usage_transitions(prev, curr)
     assert event in events, f"{event} did not fire on a rolled-over window"
+
+
+# ── Coexistence of the legacy seven_day_* fields with the new limits[] array ──
+
+def test_null_percent_does_not_erase_a_real_legacy_value(limits_of):
+    """`percent: null` means the API has no number, not zero. Writing 0 over a
+    real seven_day_sonnet reading shows "0% used" on a quota that may be spent."""
+    r = limits_of([_scoped(None, "Claude Sonnet 5")],
+                  seven_day_sonnet={"utilization": 87, "resets_at": "2026-09-05T04:59:00Z"})
+    assert r["weeklySonnet"]["percentUsed"] == 87, (
+        f"legacy value overwritten by a null percent: {r['weeklySonnet']}"
+    )
+
+
+def test_zero_percent_is_kept(limits_of):
+    """0 is a real reading and must not be confused with null."""
+    r = limits_of([_scoped(0, "Fable")])
+    assert r["weeklyFable"]["percentUsed"] == 0
+
+
+def test_unknown_model_wins_scoped_over_a_known_one(limits_of):
+    """weeklyScoped is the only place an unrecognised model can appear, so it
+    must not be spent on a model that already has its own field."""
+    r = limits_of([_scoped(55, "Claude Opus 5"), _scoped(88, "Quasar")])
+    assert r["weeklyOpus"]["percentUsed"] == 55
+    assert r["weeklyScoped"]["modelName"] == "Quasar", (
+        f"unknown model dropped; weeklyScoped went to {r['weeklyScoped']['modelName']!r}"
+    )
+
+
+def test_scoped_mirrors_first_when_all_known(limits_of):
+    r = limits_of([_scoped(55, "Claude Opus 5"), _scoped(71, "Fable")])
+    assert r["weeklyScoped"]["modelName"] == "Claude Opus 5"
+
+
+@pytest.mark.parametrize("display,expected", [
+    ("Claude Haiku 5 (Opus-distilled)", "weeklyHaiku"),
+    ("Claude Opus 4.6 (Haiku-speed preview)", "weeklyOpus"),
+    ("Corpus 1", None),
+    ("Claude Sonnet 5", "weeklySonnet"),
+])
+def test_family_match_is_positional_not_dict_order(limits_of, display, expected):
+    """Dict order must not decide which family a name belongs to: filing a Haiku
+    cap under weeklyOpus would overwrite the real Opus quota."""
+    r = limits_of([_scoped(42, display)])
+    named = {k for k in r if k.startswith("weekly") and k not in ("weeklyAll", "weeklyScoped")}
+    named = {k for k in named if r[k].get("modelName") == display}
+    if expected is None:
+        assert not named, f"{display!r} should match no family, matched {named}"
+    else:
+        assert named == {expected}, f"{display!r} -> {named}, expected {expected}"

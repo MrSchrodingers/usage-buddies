@@ -6,6 +6,7 @@ Runs periodically via systemd timer or called directly.
 """
 
 import json
+import re
 import os
 import glob
 import sys
@@ -150,7 +151,14 @@ def parse_sessions_in_window(cutoff_utc, end_utc=None):
 
     projects_dir = CLAUDE_DIR / "projects"
     if not projects_dir.exists():
-        return model_tokens, sessions, total_messages, sonnet_tokens
+        # Same shape as the normal return below: plain dicts, not defaultdicts,
+        # so callers cannot accidentally grow the result by reading a key.
+        return (
+            dict(model_tokens),
+            sessions,
+            total_messages,
+            {family: dict(buckets) for family, buckets in per_model_tokens.items()},
+        )
 
     for jsonl_file in projects_dir.rglob("*.jsonl"):
         # Skip old files
@@ -1705,6 +1713,24 @@ def get_claude_code_version():
     return ""
 
 
+
+def _weekly_model_field(display_name, model_field):
+    """Map an API display_name onto a rateLimits.weekly<Model> key.
+
+    Picks the family that appears *earliest* in the name rather than the first
+    key in the table: "Claude Haiku 5 (Opus-distilled)" is a Haiku cap, and
+    letting dict order decide would file it under Opus and overwrite the real
+    Opus quota. Word boundaries keep "Corpus" from matching "opus".
+    """
+    name = (display_name or "").lower()
+    best_pos, best_field = None, None
+    for family, field in model_field.items():
+        m = re.search(rf"\b{re.escape(family)}", name)
+        if m and (best_pos is None or m.start() < best_pos):
+            best_pos, best_field = m.start(), field
+    return best_field
+
+
 def build_rate_limits():
     """Fetch rate limits from Claude.ai API (real data).
 
@@ -1792,35 +1818,49 @@ def build_rate_limits():
         # caps now arrive as entries with kind "weekly_scoped" carrying
         # scope.model.display_name.
         #
-        # Two consumers with different needs, so each entry feeds both:
+        # Two consumers with different needs, so each entry can feed both:
         #  - rateLimits.weekly<Model> — UIs that bind a widget to a fixed model
         #    family (the QML plasmoid's fableBarOnly mode reads weeklyFable).
-        #    Covers N models per response.
         #  - rateLimits.weeklyScoped — model-agnostic, labelled by the API
         #    itself, so a model we have no field for still surfaces instead of
-        #    being dropped. Holds the first scoped entry.
+        #    being dropped (win-widget binds here).
         MODEL_FIELD = {"opus": "weeklyOpus", "sonnet": "weeklySonnet",
                        "fable": "weeklyFable", "haiku": "weeklyHaiku"}
+        unmatched = []
+        first_scoped = None
         for entry in (api_data.get("limits") or []):
             if entry.get("kind") != "weekly_scoped":
+                continue
+            pct = entry.get("percent")
+            if pct is None:
+                # The API reports the cap but not its usage. Writing 0 here
+                # would overwrite a real seven_day_* value with a false "0%",
+                # which reads as "plenty left" on a quota that may be spent.
                 continue
             model = ((entry.get("scope") or {}).get("model") or {})
             display = (model.get("display_name") or "").strip()
             d = parse_timestamp(entry.get("resets_at", ""))
             block = {
-                "percentUsed": entry.get("percent", 0) or 0,
+                "percentUsed": pct,
                 "modelName": display,
                 "resetsLabel": d.strftime("%a %I:%M %p") if d else "",
                 "resetsAt": entry.get("resets_at", "") or "",
             }
-            # Substring match: display_name may be the bare family ("Fable")
-            # or a full model name ("Claude Fable 5") depending on API version.
-            name = display.lower()
-            field = next((f for k, f in MODEL_FIELD.items() if k in name), None)
+            field = _weekly_model_field(display, MODEL_FIELD)
             if field:
                 result[field] = block
-            # First scoped entry wins; later ones keep their named field only.
-            result.setdefault("weeklyScoped", block)
+            else:
+                unmatched.append(block)
+            if first_scoped is None:
+                first_scoped = block
+
+        # weeklyScoped exists to rescue what no named field can hold, so an
+        # unrecognised model wins it. With everything recognised it just
+        # mirrors the first entry, which is what win-widget expects to show.
+        if unmatched:
+            result["weeklyScoped"] = unmatched[0]
+        elif first_scoped is not None:
+            result["weeklyScoped"] = first_scoped
 
         # Inline extra_usage summary (the `usage` endpoint also carries a quick
         # snapshot; the full shape lives under overage_spend_limit below).
@@ -1877,6 +1917,12 @@ def build_rate_limits():
     def _weekly_pct(output_tokens, limit):
         return round(min(100, output_tokens / limit * 100), 1)
 
+    # No resetsAt in this branch, deliberately. resetsInMinutes below is a
+    # constant, not a real window boundary: local estimates have no reset
+    # timestamp to report. Synthesising one would make detect_usage_transitions()
+    # fire sessionReset/weeklyReset off a guess — and reliably so after any gap
+    # longer than an hour in collector runs, since the fake timestamp always
+    # tracks "now". Offline therefore means no reset events, which is honest.
     return {
         "session": {
             "percentUsed": round(min(100, five_h_output / SESSION_LIMIT * 100), 1),
@@ -2180,7 +2226,11 @@ def run_health_check():
         Path.home() / ".var" / "app" / "org.mozilla.firefox" / ".mozilla" / "firefox",
     ]
     if platform.system() == "Windows":
-        firefox_dirs.insert(0, Path(os.environ.get("APPDATA", Path.home())) / "Mozilla" / "Firefox" / "Profiles")
+        # Same fallback as _get_firefox_cookies(); with APPDATA unset the two
+        # used to disagree, so the report could claim "no Firefox profile" while
+        # the collector was reading cookies out of one.
+        appdata = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+        firefox_dirs.insert(0, appdata / "Mozilla" / "Firefox" / "Profiles")
     elif platform.system() == "Darwin":
         firefox_dirs.insert(0, Path.home() / "Library" / "Application Support" / "Firefox" / "Profiles")
 

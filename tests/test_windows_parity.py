@@ -5,13 +5,7 @@ layers stayed in this Python collector. These tests pin the Windows branches
 that were removed alongside the old UI: the collector is the only thing that
 can read cookies or raise a toast on Windows, and win-widget does neither.
 """
-import os
-
-
-def _force_windows(monkeypatch, collector, home):
-    monkeypatch.setattr(collector.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(collector.Path, "home", staticmethod(lambda: home))
-    monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
+import pytest
 
 
 def test_firefox_profile_found_on_windows(collector, monkeypatch, tmp_path):
@@ -82,14 +76,27 @@ def test_event_defaults_carry_win_sound(collector):
         assert cfg.get("winSound"), f"{event} lost its winSound default"
 
 
-def test_health_check_probes_windows_firefox(collector):
-    """run_health_check must look where Firefox actually lives on Windows,
-    otherwise it reports 'no browser profile' to a logged-in user."""
-    src = collector.__file__
-    import inspect
-    body = inspect.getsource(collector.run_health_check)
-    assert 'APPDATA' in body and 'Firefox' in body, (
-        "health check has no Windows Firefox path; it will misreport on Windows"
+def test_health_check_finds_windows_firefox(collector, monkeypatch, tmp_path, capsys):
+    """run_health_check must look where Firefox lives on Windows. Asserting on
+    the source text is not enough: the string survives even when the branch is
+    dead, so this drives the function and reads its verdict."""
+    import platform as _p
+    profiles = tmp_path / "AppData" / "Roaming" / "Mozilla" / "Firefox" / "Profiles"
+    profiles.mkdir(parents=True)
+    monkeypatch.setattr(_p, "system", lambda: "Windows")
+    monkeypatch.setattr(collector.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
+    monkeypatch.setattr(collector, "_get_firefox_cookies", lambda: "")
+    monkeypatch.setattr(collector, "_get_chrome_cookies", lambda *a, **k: "")
+    monkeypatch.setattr(collector, "_get_manual_cookies", lambda *a, **k: "", raising=False)
+
+    with pytest.raises(SystemExit):
+        collector.run_health_check()
+    out = capsys.readouterr().out
+
+    assert "No supported browser profile found" not in out, (
+        "health check reports no browser profile while a Windows Firefox "
+        f"profile exists at {profiles}:\n{out}"
     )
 
 
@@ -120,7 +127,8 @@ def test_known_sounds_still_pass_through(collector, monkeypatch):
 
     for cfg in collector.USAGE_EVENT_DEFAULTS.values():
         launched = []
-        monkeypatch.setattr(_sp, "Popen", lambda cmd, **kw: launched.append(cmd) or None)
+        monkeypatch.setattr(_sp, "Popen",
+                            lambda cmd, _sink=launched, **kw: _sink.append(cmd) or None)
         collector._play_event_sound("x", win_sound=cfg["winSound"])
         assert cfg["winSound"] in launched[0][-1], (
             f"allowlist rejected its own default {cfg['winSound']!r}"
