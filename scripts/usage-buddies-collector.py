@@ -25,6 +25,9 @@ CONFIG_FILE = CLAUDE_DIR / "widget-config.json"
 # Defaults para os 4 eventos de uso.
 # - sound: nome freedesktop (Linux/macOS via paplay) ou caminho absoluto.
 # - winSound: System.Media.SystemSounds equivalente no Windows.
+# Membros de System.Media.SystemSounds. Allowlist: ver _play_event_sound().
+SYSTEM_SOUNDS = frozenset({"Asterisk", "Beep", "Exclamation", "Hand", "Question"})
+
 USAGE_EVENT_DEFAULTS = {
     "sessionEnded": {"sound": "dialog-warning",
                      "winSound": "Exclamation",
@@ -904,8 +907,15 @@ def _play_event_sound(sound_spec, win_sound=None):
     system = platform.system()
 
     if system == "Windows":
-        # PowerShell + System.Media.SystemSounds (sempre disponível)
-        win_name = win_sound or "Asterisk"
+        # PowerShell + System.Media.SystemSounds (sempre disponível).
+        # win_sound vem de ~/.claude/widget-config.json (sounds.<evento>Win) e é
+        # interpolado num comando PowerShell, então só nomes conhecidos passam:
+        # um valor arbitrário aqui seria execução de comando a partir de um
+        # arquivo de dados. Valor desconhecido cai no padrão, nunca é concatenado.
+        win_name = win_sound if win_sound in SYSTEM_SOUNDS else "Asterisk"
+        if win_sound and win_name != win_sound:
+            print(f"warn: som Windows desconhecido {win_sound!r}, usando Asterisk",
+                  file=sys.stderr)
         ps_cmd = f"[System.Media.SystemSounds]::{win_name}.Play(); Start-Sleep -Milliseconds 600"
         try:
             subprocess.Popen(

@@ -91,3 +91,37 @@ def test_health_check_probes_windows_firefox(collector):
     assert 'APPDATA' in body and 'Firefox' in body, (
         "health check has no Windows Firefox path; it will misreport on Windows"
     )
+
+
+def test_win_sound_cannot_inject_powershell(collector, monkeypatch):
+    """sounds.<event>Win comes from ~/.claude/widget-config.json and is
+    interpolated into a PowerShell command. Only known SystemSounds members may
+    reach it — otherwise a data file becomes a code-execution primitive."""
+    import platform as _p
+    import subprocess as _sp
+    monkeypatch.setattr(_p, "system", lambda: "Windows")
+
+    launched = []
+    monkeypatch.setattr(_sp, "Popen", lambda cmd, **kw: launched.append(cmd) or None)
+
+    collector._play_event_sound("dialog-warning",
+                                win_sound="Asterisk.Play(); Start-Process calc.exe; #")
+
+    cmd = launched[0][-1]
+    assert "Start-Process" not in cmd, f"PowerShell injection reached the command: {cmd}"
+    assert cmd == "[System.Media.SystemSounds]::Asterisk.Play(); Start-Sleep -Milliseconds 600"
+
+
+def test_known_sounds_still_pass_through(collector, monkeypatch):
+    """The allowlist must not break the defaults it is guarding."""
+    import platform as _p
+    import subprocess as _sp
+    monkeypatch.setattr(_p, "system", lambda: "Windows")
+
+    for cfg in collector.USAGE_EVENT_DEFAULTS.values():
+        launched = []
+        monkeypatch.setattr(_sp, "Popen", lambda cmd, **kw: launched.append(cmd) or None)
+        collector._play_event_sound("x", win_sound=cfg["winSound"])
+        assert cfg["winSound"] in launched[0][-1], (
+            f"allowlist rejected its own default {cfg['winSound']!r}"
+        )
