@@ -184,6 +184,9 @@ PlasmoidItem {
             "switchTo": "Switch to", "followingLocale": "currently following the desktop locale",
             "justNow": "just now", "minutesAgo": "m ago", "hoursAgo": "h ago", "daysAgo": "d ago",
             "stale": "stale",
+            "buddy": "Buddy", "buddy_off": "silent", "buddy_alerts": "alerts only", "buddy_chatty": "chatty",
+            "liveSessions": "Live sessions", "goThere": "go there",
+            "st_asking": "asking you", "st_waiting": "done", "st_idle": "idle", "st_working": "working",
             "cacheSaved": "Cache saved", "hit": "hit", "readPerOutput": "Read per output",
             "produced": "produced", "planPayback": "Plan paid back", "thisMonth": "This month",
             "daysShort": "d", "efficiency": "Efficiency", "costliestSessions": "Costliest sessions",
@@ -230,6 +233,9 @@ PlasmoidItem {
             "switchTo": "Mudar para", "followingLocale": "seguindo o locale da área de trabalho",
             "justNow": "agora", "minutesAgo": "min atrás", "hoursAgo": "h atrás", "daysAgo": "d atrás",
             "stale": "desatualizado",
+            "buddy": "Buddy", "buddy_off": "calado", "buddy_alerts": "só alertas", "buddy_chatty": "tagarela",
+            "liveSessions": "Sessões vivas", "goThere": "ir para lá",
+            "st_asking": "perguntou", "st_waiting": "terminou", "st_idle": "ocioso", "st_working": "trabalhando",
             "cacheSaved": "Cache economizou", "hit": "de acerto", "readPerOutput": "Lido por produzido",
             "produced": "produzidos", "planPayback": "Plano se pagou", "thisMonth": "Este mês",
             "daysShort": "d", "efficiency": "Eficiência", "costliestSessions": "Sessões mais caras",
@@ -264,6 +270,170 @@ PlasmoidItem {
     function tr(key) {
         var table = strings[lang] ?? strings["en"];
         return table[key] ?? strings["en"][key] ?? key;
+    }
+
+    // ─── The buddy talks ───
+    //
+    // What ruined Clippy was speaking without having anything to say. Every
+    // line here is bound to a measured trigger and reports a real number; if
+    // nothing crosses a threshold, the buddy stays quiet.
+    //
+    // Off by default, three settings: off / alerts only / chatty. "alerts"
+    // fires solely on states that need the human, which is the mode worth
+    // leaving on.
+    readonly property string buddyMode: Plasmoid.configuration.buddyMode || "off"
+
+    property var sessionsData: ({})
+    readonly property var attentionSession: sessionsData.attention ?? null
+
+    Timer {
+        interval: 20000
+        running: root.buddyMode !== "off"
+        repeat: true; triggeredOnStart: true
+        onTriggered: sessionsLoader.readData()
+    }
+
+    P5Support.DataSource {
+        id: focusHelper
+        engine: "executable"
+        connectedSources: []
+        onNewData: function(source, data) { disconnectSource(source); }
+    }
+
+    P5Support.DataSource {
+        id: sessionsLoader
+        engine: "executable"
+        connectedSources: []
+        function readData() {
+            // --announce lets the probe raise a desktop notification for a
+            // session that needs attention; the widget being open is not the
+            // same as the user looking at it.
+            connectSource("$HOME/.local/bin/sessions-probe.py --announce" +
+                          (root.lang === "pt" ? " --pt" : "") +
+                          " 2>/dev/null; cat \"${XDG_CACHE_HOME:-$HOME/.cache}\"/usage-buddies/sessions.json 2>/dev/null");
+        }
+        onNewData: function(source, data) {
+            if (data["exit code"] === 0 && data.stdout) {
+                try {
+                    root.sessionsData = JSON.parse(data.stdout.trim());
+                } catch(e) {
+                    console.warn("usage-buddies: bad sessions.json:", e);
+                }
+            }
+            disconnectSource(source);
+        }
+    }
+
+    // Lines, worst-first. `when` is evaluated in order and the first match
+    // wins, so an idle session outranks a joke about bash.
+    readonly property var buddyLines: ({
+        "en": {
+            "asking":      ["{name} asked you something and is just sitting there.",
+                            "{name} needs a decision. It will wait forever, which is the problem."],
+            "waiting":     ["{name} finished. Go look before you forget it existed.",
+                            "{name} is done and idling. Your move.",
+                            "{name} wrapped up {idle} ago. Still waiting."],
+            "idle":        ["{name} has done nothing for {idle}. Existential, really.",
+                            "{name} is idle. Contemplating the void, presumably."],
+            "twoRed":      ["Two quotas in the red. This is fine.",
+                            "Both limits are burning. Bold strategy."],
+            "compaction":  ["{n} compactions today. You keep forgetting things and calling it progress.",
+                            "Memory wiped {n} times. Ship of Theseus, but worse."],
+            "readRatio":   ["{n}:1 read per output. Reading a library to write a postcard.",
+                            "{n} tokens in, one out. Efficient is not the word."],
+            "bashHeavy":   ["{n}% of your calls are Bash. There are other tools. Allegedly.",
+                            "{n}% Bash. The other tools are right there, unused."],
+            "cacheDrop":   ["Cache hit down to {n}%. Something is invalidating the prefix.",
+                            "{n}% cache hit. Your prefix is leaking somewhere."],
+            "nightOwl":    ["It is late. The commit will still be broken tomorrow.",
+                            "Past midnight. Nothing good gets merged at this hour."],
+            "reset":       ["Window reset. A clean slate, briefly.",
+                            "Fresh limits. Try to make them last past lunch."],
+            "allQuiet":    ["Everything is fine. Suspiciously so.",
+                            "Nothing needs you. Enjoy it while it lasts."]
+        },
+        "pt": {
+            "asking":      ["{name} te perguntou algo e está lá, parado.",
+                            "{name} precisa de uma decisão. Ele espera pra sempre — esse é o problema."],
+            "waiting":     ["{name} terminou. Vai lá conferir antes de esquecer que existe.",
+                            "{name} acabou e está de bobeira. É sua vez.",
+                            "{name} fechou há {idle}. Continua esperando."],
+            "idle":        ["{name} não faz nada há {idle}. Existencial, no fundo.",
+                            "{name} está ocioso. Contemplando o vazio, presumo."],
+            "twoRed":      ["Duas cotas no vermelho. This is fine.",
+                            "Os dois limites queimando. Estratégia ousada."],
+            "compaction":  ["{n} compactações hoje. Você esquece tudo e chama de progresso.",
+                            "Memória apagada {n} vezes. Barco de Teseu, só que pior."],
+            "readRatio":   ["{n}:1 de leitura por saída. Lendo uma biblioteca pra escrever um bilhete.",
+                            "{n} tokens entram, um sai. Eficiente não é a palavra."],
+            "bashHeavy":   ["{n}% das suas chamadas são Bash. Existem outras ferramentas. Dizem.",
+                            "{n}% Bash. As outras ferramentas estão bem ali, intactas."],
+            "cacheDrop":   ["Cache caiu pra {n}%. Alguma coisa está invalidando o prefixo.",
+                            "{n}% de acerto no cache. Seu prefixo está vazando."],
+            "nightOwl":    ["Tá tarde. O commit vai continuar quebrado amanhã.",
+                            "Passou da meia-noite. Nada bom entra em produção nessa hora."],
+            "reset":       ["Janela renovada. Página em branco, por pouco tempo.",
+                            "Limites novos. Tenta fazer durar até o almoço."],
+            "allQuiet":    ["Tudo certo. Suspeitamente certo.",
+                            "Ninguém precisa de você. Aproveita."]
+        }
+    })
+
+    function _fmtIdle(seconds) {
+        if (seconds < 60) return seconds + "s";
+        if (seconds < 3600) return Math.floor(seconds / 60) + "min";
+        return Math.floor(seconds / 3600) + "h";
+    }
+
+    // The current thing worth saying, or null. Ordered by how much it matters,
+    // not by how funny it is.
+    readonly property var buddySays: {
+        if (buddyMode === "off") return null;
+
+        var alertsOnly = buddyMode === "alerts";
+        var a = attentionSession;
+        var pick = function (key, vars) {
+            var table = (buddyLines[lang] ?? buddyLines["en"])[key] ?? [];
+            if (!table.length) return null;
+            // Stable within a minute so the text does not flicker on refresh.
+            var idx = Math.floor(Date.now() / 60000) % table.length;
+            var text = table[idx];
+            for (var k in vars) text = text.replace("{" + k + "}", vars[k]);
+            return { key: key, text: text };
+        };
+
+        if (a && a.state === "asking")
+            return pick("asking", { name: a.name });
+        if (a && a.state === "waiting")
+            return pick("waiting", { name: a.name, idle: _fmtIdle(a.idleSeconds) });
+
+        var idle = (sessionsData.sessions ?? []).filter(function (s) { return s.state === "idle"; });
+        if (idle.length)
+            return pick("idle", { name: idle[0].name, idle: _fmtIdle(idle[0].idleSeconds) });
+
+        if (quotasInAlert >= 2) return pick("twoRed", {});
+        if (alertsOnly) return null;
+
+        var eff = usageData.efficiency ?? {};
+        var hit = eff.cacheHitRate ?? 1;
+        if (hit > 0 && hit < 0.3) return pick("cacheDrop", { n: Math.round(hit * 100) });
+
+        var comp = usageData.compaction?.count ?? 0;
+        if (comp >= 5) return pick("compaction", { n: comp });
+
+        var ratio = eff.readPerOutput ?? 0;
+        if (ratio >= 300) return pick("readRatio", { n: Math.round(ratio) });
+
+        var tools = usageData.toolUse?.byTool ?? ({});
+        var total = 0, top = 0, topName = "";
+        for (var k in tools) { total += tools[k]; if (tools[k] > top) { top = tools[k]; topName = k; } }
+        if (total > 200 && top / total > 0.7 && topName === "Bash")
+            return pick("bashHeavy", { n: Math.round(100 * top / total) });
+
+        var hour = new Date().getHours();
+        if (hour >= 0 && hour < 5) return pick("nightOwl", {});
+
+        return pick("allQuiet", {});
     }
 
     // ─── Tollens (optional second page) ───
@@ -1915,6 +2085,67 @@ PlasmoidItem {
                         }
                     }
 
+                    // Speech bubble. Anchored to the buddy so the line reads as
+                    // coming from it, and clipped to nothing when there is
+                    // nothing to say — silence is the default state.
+                    Rectangle {
+                        id: bubble
+                        visible: root.buddySays !== null
+                        z: 20
+                        anchors.left: parent.right
+                        anchors.leftMargin: 6
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: Math.min(bubbleText.implicitWidth + 18,
+                                        Kirigami.Units.gridUnit * 13)
+                        height: bubbleText.implicitHeight + 12
+                        radius: 8
+                        color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g,
+                                       Kirigami.Theme.textColor.b, 0.09)
+
+                        // Little tail toward the buddy.
+                        Rectangle {
+                            width: 7; height: 7
+                            rotation: 45
+                            anchors.right: parent.left
+                            anchors.rightMargin: -3
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: parent.color
+                        }
+
+                        PlasmaComponents3.Label {
+                            id: bubbleText
+                            anchors.fill: parent
+                            anchors.margins: 6
+                            text: root.buddySays?.text ?? ""
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.72
+                            opacity: 0.8
+                        }
+
+                        // Fades in rather than appearing, so a line that
+                        // changes on refresh does not read as a flicker.
+                        opacity: 0
+                        states: State {
+                            when: bubble.visible
+                            PropertyChanges { target: bubble; opacity: 1 }
+                        }
+                        transitions: Transition {
+                            NumberAnimation { property: "opacity"; duration: 500
+                                              easing.type: Easing.OutCubic }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: root.attentionSession ? Qt.PointingHandCursor : Qt.ArrowCursor
+                            onClicked: {
+                                // Clicking a line about a session goes to it.
+                                var a = root.attentionSession;
+                                if (a) focusHelper.connectSource(
+                                    "$HOME/.local/bin/focus-session.sh " + a.pid);
+                            }
+                        }
+                    }
+
                     // === ALL OVERLAYS ON TOP OF CLAWD ===
                     // DUMB: Fire
                     Image {
@@ -2062,6 +2293,30 @@ PlasmoidItem {
                 }
 
                 Item { Layout.fillWidth: true }
+
+                // Buddy chatter: off / alerts / chatty. Three states because
+                // "alerts" — speak only when a session needs the human — is
+                // the one worth leaving on, and it does not exist as a
+                // checkbox.
+                PlasmaComponents3.ToolButton {
+                    id: buddyBtn
+                    readonly property var modes: ["off", "alerts", "chatty"]
+                    readonly property var icons: ({
+                        "off":    "dialog-messages",
+                        "alerts": "dialog-warning",
+                        "chatty": "dialog-information"
+                    })
+                    icon.name: icons[root.buddyMode] ?? "dialog-messages"
+                    opacity: root.buddyMode === "off" ? 0.4 : 1.0
+                    onClicked: {
+                        var i = modes.indexOf(root.buddyMode);
+                        Plasmoid.configuration.buddyMode = modes[(i + 1) % modes.length];
+                    }
+                    PlasmaComponents3.ToolTip {
+                        text: root.tr("buddy") + ": " + root.tr("buddy_" + root.buddyMode) +
+                              "\n" + root.tr("clickToCycle")
+                    }
+                }
 
                 // Language, in the header rather than buried in the config
                 // dialog. Two languages is a toggle, not a setting: making
@@ -3119,6 +3374,136 @@ PlasmoidItem {
                                     font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.72
                                     font.features: ({ "tnum": 1 })
                                     opacity: 0.45
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Live sessions ──
+            // Several Claude sessions run at once across different repos and
+            // nothing on the desktop says which finished, which is blocked on
+            // an answer, and which has been idle for an hour. The repo name is
+            // what identifies them to their owner, so it leads each row.
+            Rectangle {
+                Layout.fillWidth: true
+                visible: (root.sessionsData.total ?? 0) > 0
+                implicitHeight: liveCol.implicitHeight + Kirigami.Units.mediumSpacing * 2
+                radius: 10
+                color: root.cardBg
+                border.width: 2
+                border.color: root.attentionSession
+                            ? Qt.rgba(root.claudeAmberLight.r, root.claudeAmberLight.g,
+                                      root.claudeAmberLight.b, 0.35)
+                            : "transparent"
+
+                ColumnLayout {
+                    id: liveCol
+                    anchors.fill: parent
+                    anchors.margins: Kirigami.Units.mediumSpacing
+                    spacing: 4
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        PlasmaComponents3.Label {
+                            text: root.tr("liveSessions")
+                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
+                            font.weight: Font.DemiBold; opacity: 0.45
+                        }
+                        Item { Layout.fillWidth: true }
+                        PlasmaComponents3.Label {
+                            text: root.sessionsData.total ?? 0
+                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.8
+                            font.weight: Font.Bold
+                            font.features: ({ "tnum": 1 })
+                            opacity: 0.5
+                        }
+                    }
+
+                    Repeater {
+                        model: root.sessionsData.sessions ?? []
+                        delegate: Rectangle {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            implicitHeight: rowLay.implicitHeight + 8
+                            radius: 6
+                            color: rowMouse.containsMouse
+                                   ? Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g,
+                                             Kirigami.Theme.textColor.b, 0.05)
+                                   : "transparent"
+
+                            MouseArea {
+                                id: rowMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                // Clicking a session raises the terminal it is
+                                // running in. Knowing which one is done is only
+                                // half of it; getting there is the other half.
+                                onClicked: focusHelper.connectSource(
+                                    "$HOME/.local/bin/focus-session.sh " + modelData.pid)
+                            }
+
+                            RowLayout {
+                                id: rowLay
+                                anchors.fill: parent
+                                anchors.leftMargin: 4
+                                anchors.rightMargin: 4
+                                spacing: Kirigami.Units.smallSpacing
+
+                                Rectangle {
+                                    width: 8; height: 8; radius: 4
+                                    Layout.alignment: Qt.AlignVCenter
+                                    color: modelData.state === "asking" ? root.redAlert
+                                         : modelData.state === "waiting" ? root.claudeAmberLight
+                                         : modelData.state === "idle" ? root.subtleBorder
+                                         : root.greenAccent
+
+                                    // Only the states that need a human pulse.
+                                    SequentialAnimation on opacity {
+                                        running: modelData.state === "asking"
+                                        loops: Animation.Infinite
+                                        NumberAnimation { to: 0.3; duration: 600 }
+                                        NumberAnimation { to: 1.0; duration: 600 }
+                                    }
+                                }
+
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 0
+                                    PlasmaComponents3.Label {
+                                        Layout.fillWidth: true
+                                        text: modelData.name
+                                        elide: Text.ElideMiddle
+                                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.8
+                                        font.weight: modelData.state === "asking" ? Font.Bold : Font.Normal
+                                    }
+                                    PlasmaComponents3.Label {
+                                        Layout.fillWidth: true
+                                        visible: (modelData.branch ?? "") !== ""
+                                        text: modelData.branch
+                                        elide: Text.ElideRight
+                                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.68
+                                        opacity: 0.35
+                                    }
+                                }
+
+                                PlasmaComponents3.Label {
+                                    text: root.tr("st_" + modelData.state)
+                                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.72
+                                    color: modelData.state === "asking" ? root.redAlert
+                                         : modelData.state === "waiting" ? root.claudeAmberLight
+                                         : Kirigami.Theme.textColor
+                                    opacity: modelData.state === "working" ? 0.35 : 0.85
+                                }
+                                PlasmaComponents3.Label {
+                                    Layout.preferredWidth: Kirigami.Units.gridUnit * 2.2
+                                    horizontalAlignment: Text.AlignRight
+                                    text: root._fmtIdle(modelData.idleSeconds ?? 0)
+                                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.72
+                                    font.features: ({ "tnum": 1 })
+                                    opacity: 0.35
                                 }
                             }
                         }

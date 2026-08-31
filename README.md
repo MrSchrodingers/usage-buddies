@@ -282,6 +282,54 @@ The widget then lives as a **tray icon** — left-click to toggle the popup (doc
 
 ---
 
+## The buddy talks
+
+Off by default. The header button cycles **silent → alerts only → chatty**;
+"alerts only" is the mode worth leaving on — it speaks solely when a session
+needs you.
+
+What ruined Clippy was speaking without having anything to say. Every line here
+is bound to a measured trigger and carries a real number, and when nothing
+crosses a threshold the buddy is quiet.
+
+### Live sessions
+
+Several Claude Code sessions run at once across different repositories, and
+nothing on the desktop says which finished, which is blocked on an answer, and
+which has been idle for an hour. `scripts/sessions-probe.py` crosses two
+sources:
+
+- `pgrep -x claude` plus `/proc/<pid>/cwd` — which sessions are actually alive
+  and in which repository. A transcript on disk proves a session existed, not
+  that it is running.
+- the newest transcript under `~/.claude/projects/<slugged-cwd>/` — its last
+  records say what the session is doing, its mtime says for how long.
+
+States, most urgent first: **asking** (blocked on `AskUserQuestion`), **done**
+(turn ended and settled), **idle** (no writes for ten minutes), **working**.
+
+Classification reads the last ~25 records, not the last one: a finished turn is
+followed by bookkeeping — `attachment`, then `stop_hook_summary`,
+`turn_duration`, `away_summary` — none of which carries a stop reason, so
+reading only the final line makes every settled session look busy.
+
+Only record types, stop reasons, tool names and timestamps are inspected. No
+message text is read.
+
+### Notification and focus
+
+With chatter enabled, a session entering **asking** or **done** raises a
+desktop notification carrying a *Go there* action, deduped per session and
+state so an hour of waiting does not re-announce every cycle. Clicking it — or
+clicking the session in the popup — raises the terminal that session runs in.
+
+`scripts/focus-session.sh` walks the process tree up from the Claude pid
+(claude → shell → terminal emulator; only the last owns a window) and asks KWin
+to activate the matching window. KWin scripting is the only route that works
+under Wayland: `xdotool` and `wmctrl` talk X11 and silently do nothing.
+
+---
+
 ## Harness page (Tollens)
 
 If [Tollens](https://github.com/MrSchrodingers/tollens) governs this machine's

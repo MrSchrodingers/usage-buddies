@@ -23,6 +23,11 @@
     <entry name="planMonthlyCost" type="Double">
       <default>0</default>
     </entry>
+    <!-- Buddy chatter: off | alerts | chatty. Off by default — an assistant
+         that talks unprompted is the failure mode this is modelled on. -->
+    <entry name="buddyMode" type="String">
+      <default>off</default>
+    </entry>
     <entry name="displayMode" type="String">
       <default>full</default>
     </entry>

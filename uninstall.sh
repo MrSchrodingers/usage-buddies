@@ -66,6 +66,8 @@ fi
 for f in "$HOME/.local/bin/usage-buddies-collector.py" \
          "$HOME/.local/bin/codex-usage-collector.py" \
          "$HOME/.local/bin/tollens-probe.py" \
+         "$HOME/.local/bin/sessions-probe.py" \
+         "$HOME/.local/bin/focus-session.sh" \
          "$HOME/.local/bin/usage-buddies-tray"; do
     if [ -f "$f" ]; then
         rm -f "$f"
