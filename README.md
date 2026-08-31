@@ -199,6 +199,30 @@ The installer will:
 3. Search for **"Claude Usage Monitor"**
 4. Drag it to your panel
 
+#### Codex (OpenAI) mode
+
+The same applet also tracks **Codex CLI / ChatGPT** usage. Right-click the
+widget -> **Configure...** -> **Usage source** -> *Codex*. Nothing else changes:
+same layout, same panel bars, same popup sections.
+
+| | Claude mode (default) | Codex mode |
+|---|---|---|
+| Collector | `~/.local/bin/claude-usage-collector.py` | `~/.local/bin/codex-usage-collector.py` |
+| Cache file | `~/.claude/widget-data.json` | `~/.codex/widget-data.json` |
+| Local log | `~/.claude/**.jsonl` | `~/.codex/sessions/**.jsonl` |
+| Remote API | claude.ai | `chatgpt.com/backend-api/wham/*` |
+| systemd timer | `claude-usage-collector.timer` | `codex-usage-collector.timer` (enabled only when `~/.codex` exists) |
+
+`install.sh` installs both collectors; each applet instance picks one, so a
+panel can hold one widget per provider side by side.
+
+Codex reports two rate-limit windows (a short rolling one and a 7-day one), and
+the collector picks them **by duration** rather than by position in the
+response, which survives the endpoint adding or reordering windows. Sections
+Codex does not report - per-model weekly rows, cost projection, tool use,
+latency - stay hidden instead of rendering empty bars. Bars appear once Codex
+has written one `token_count` event, i.e. after one completed interaction.
+
 ### Tauri Tray App (Windows, macOS, Ubuntu GNOME)
 
 On Linux, `install.sh` handles Tauri automatically. On Windows, use `install.ps1` (builds Tauri via Cargo and registers a Scheduled Task for the collector). To build manually:
@@ -312,6 +336,16 @@ The widget reads session cookies from your browser. No API keys or passwords sto
 | Dumbness score | Composite | Combined |
 | 7-day chart | Local JSONL | This machine |
 | Peak hours | Local stats-cache | This machine |
+
+Codex mode (see [Codex (OpenAI) mode](#codex-openai-mode)):
+
+| Data | Source | Scope |
+|------|--------|-------|
+| Session (rolling window) | `chatgpt.com/backend-api/wham/usage` (`rate_limit`) | All devices |
+| Weekly (7-day window) | `chatgpt.com/backend-api/wham/usage` (`rate_limit`) | All devices |
+| Plan tier / credits | `chatgpt.com/backend-api/wham/usage`, `rate-limit-reset-credits` | Account |
+| Session / weekly fallback | `~/.codex/sessions/**.jsonl` (`token_count.rate_limits`) | This machine |
+| 7-day chart, sessions, turns | `~/.codex/sessions/**.jsonl` | This machine |
 
 ---
 

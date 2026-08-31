@@ -2,7 +2,7 @@
     "KPlugin": {
         "Id": "org.kde.plasma.claudeusage",
         "Name": "Claude Usage Monitor",
-        "Description": "Real-time Claude AI usage limits, session tracking, weekly quotas, and prepaid balance from claude.ai API. Shows live data directly in your KDE Plasma panel.",
+        "Description": "Real-time Claude AI usage limits, session tracking, weekly quotas, and prepaid balance from claude.ai API. Switchable to OpenAI Codex (Codex CLI / chatgpt.com) per widget instance. Shows live data directly in your KDE Plasma panel.",
         "Category": "System Information",
         "Icon": "claude-logo",
         "Authors": [

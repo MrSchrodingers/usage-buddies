@@ -25,13 +25,16 @@ fi
 
 # ── Remove systemd timer (only if systemd available) ──
 if command -v systemctl &>/dev/null && systemctl --user status &>/dev/null 2>&1; then
-    if systemctl --user is-enabled claude-usage-collector.timer &>/dev/null 2>&1; then
-        systemctl --user disable --now claude-usage-collector.timer 2>/dev/null
-        echo -e "  ${GREEN}✓${NC} Disabled systemd timer"
-        ((REMOVED++))
-    fi
+    for t in claude-usage-collector.timer codex-usage-collector.timer; do
+        if systemctl --user is-enabled "$t" &>/dev/null 2>&1; then
+            systemctl --user disable --now "$t" 2>/dev/null
+            echo -e "  ${GREEN}✓${NC} Disabled systemd timer ($t)"
+            ((REMOVED++))
+        fi
+    done
     # Only remove our specific service files
-    for f in claude-usage-collector.service claude-usage-collector.timer; do
+    for f in claude-usage-collector.service claude-usage-collector.timer \
+             codex-usage-collector.service codex-usage-collector.timer; do
         if [ -f "$HOME/.config/systemd/user/$f" ]; then
             rm -f "$HOME/.config/systemd/user/$f"
         fi
@@ -57,7 +60,7 @@ if [ -f "$ICON_PATH" ]; then
 fi
 
 # ── Remove our binaries (exact paths only) ──
-for f in "$HOME/.local/bin/claude-usage-collector.py" "$HOME/.local/bin/claude-usage-tray"; do
+for f in "$HOME/.local/bin/claude-usage-collector.py" "$HOME/.local/bin/codex-usage-collector.py" "$HOME/.local/bin/claude-usage-tray"; do
     if [ -f "$f" ]; then
         rm -f "$f"
         echo -e "  ${GREEN}✓${NC} Removed $(basename "$f")"
@@ -83,6 +86,8 @@ for f in widget-data.json widget-config.json widget-status-prev.json; do
         rm -f "$HOME/.claude/$f"
     fi
 done
+# Same for the Codex side - only the file this widget writes.
+rm -f "$HOME/.codex/widget-data.json"
 echo -e "  ${GREEN}✓${NC} Removed widget data files"
 
 # ── Remove temp cookie files (only our specific pattern) ──

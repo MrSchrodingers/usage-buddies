@@ -1,0 +1,9 @@
+[Unit]
+Description=Codex Usage Data Collector
+Documentation=https://github.com/MrSchrodingers/claude-usage-widget
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.local/bin/codex-usage-collector.py
+StandardOutput=journal
+StandardError=journal
