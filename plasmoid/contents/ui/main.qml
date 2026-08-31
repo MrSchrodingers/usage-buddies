@@ -180,7 +180,10 @@ PlasmoidItem {
             "managedMissing": "managed policy is not deployed",
             "managedWritable": "managed policy is writable by the actor",
             "managedDrift": "managed policy diverges from the manifest",
-            "history": "history", "live": "live"
+            "history": "history", "live": "live",
+            "switchTo": "Switch to", "followingLocale": "currently following the desktop locale",
+            "justNow": "just now", "minutesAgo": "m ago", "hoursAgo": "h ago", "daysAgo": "d ago",
+            "stale": "stale"
         },
         "pt": {
             "rolling5h": "janela de 5h",
@@ -212,9 +215,27 @@ PlasmoidItem {
             "managedMissing": "a política managed não está implantada",
             "managedWritable": "a política managed é gravável pelo ator",
             "managedDrift": "a política managed diverge do manifesto",
-            "history": "histórico", "live": "ao vivo"
+            "history": "histórico", "live": "ao vivo",
+            "switchTo": "Mudar para", "followingLocale": "seguindo o locale da área de trabalho",
+            "justNow": "agora", "minutesAgo": "min atrás", "hoursAgo": "h atrás", "daysAgo": "d atrás",
+            "stale": "desatualizado"
         }
     })
+
+    // Age of a timestamp, in words. The heartbeat's whole point is that it can
+    // be old; "2026-08-31T19:23:20Z" does not say that and "2h ago" does. The
+    // absolute value stays available in the tooltip.
+    function relativeAge(iso) {
+        if (!iso) return "";
+        var t = Date.parse(iso);
+        if (isNaN(t)) return iso;
+        var mins = Math.max(0, Math.floor((Date.now() - t) / 60000));
+        if (mins < 1) return tr("justNow");
+        if (mins < 60) return mins + tr("minutesAgo");
+        var hours = Math.floor(mins / 60);
+        if (hours < 24) return hours + tr("hoursAgo");
+        return Math.floor(hours / 24) + tr("daysAgo");
+    }
 
     // Falls back to English, then to the key itself — a missing translation
     // should show something legible, not an empty label.
@@ -1048,10 +1069,12 @@ PlasmoidItem {
                 implicitHeight: confCol.implicitHeight + Kirigami.Units.mediumSpacing * 2
                 radius: 10
                 color: root.cardBg
-                border.width: 2
+                // The ladder above already names the failing state, so this
+                // border only needs to tie the two together, not shout.
+                border.width: 1
                 border.color: conformant ? "transparent"
                             : Qt.rgba(root.claudeAmberLight.r, root.claudeAmberLight.g,
-                                      root.claudeAmberLight.b, 0.4)
+                                      root.claudeAmberLight.b, 0.22)
 
                 ColumnLayout {
                     id: confCol
@@ -1308,10 +1331,12 @@ PlasmoidItem {
                 PlasmaComponents3.Label {
                     Layout.fillWidth: true
                     text: root.tr("lastSessionStart") + ": " + (t.heartbeat?.result ?? "?") +
-                          " · " + (t.heartbeat?.at ?? "")
+                          " · " + root.relativeAge(t.heartbeat?.at ?? "")
                     elide: Text.ElideRight
                     font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.7
-                    opacity: 0.35
+                    opacity: 0.4
+
+                    PlasmaComponents3.ToolTip { text: t.heartbeat?.at ?? "" }
                 }
             }
 
@@ -1349,16 +1374,6 @@ PlasmoidItem {
                 y: Kirigami.Units.largeSpacing
                 width: popupFlick.width - Kirigami.Units.largeSpacing * 2
                 spacing: Kirigami.Units.mediumSpacing
-
-                // ══════════════════════════════════
-                // ── Harness page (Tollens) ──
-                // ══════════════════════════════════
-                Loader {
-                    Layout.fillWidth: true
-                    active: root.hasTollens && root.page === 1
-                    visible: active
-                    sourceComponent: harnessPage
-                }
 
             // ══════════════════════════════════
             // ── Header with mascot ──
@@ -1641,6 +1656,43 @@ PlasmoidItem {
 
                 Item { Layout.fillWidth: true }
 
+                // Language, in the header rather than buried in the config
+                // dialog. Two languages is a toggle, not a setting: making
+                // someone open Configure to read the widget in their own
+                // language is a worse trade than one small button.
+                //
+                // Clicking pins an explicit choice, so it stops following the
+                // desktop locale; long-press returns to "auto".
+                PlasmaComponents3.ToolButton {
+                    id: langBtn
+                    implicitWidth: Kirigami.Units.gridUnit * 1.9
+                    onClicked: Plasmoid.configuration.language = root.lang === "pt" ? "en" : "pt"
+
+                    contentItem: PlasmaComponents3.Label {
+                        text: root.lang.toUpperCase()
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.72
+                        font.weight: Font.Bold
+                        // Dimmed while following the locale, solid once pinned,
+                        // so the button also reports which of the two it is.
+                        opacity: root.langSetting === "auto" ? 0.45 : 0.85
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        acceptedButtons: Qt.NoButton
+                        onPressAndHold: Plasmoid.configuration.language = "auto"
+                    }
+
+                    PlasmaComponents3.ToolTip {
+                        text: root.tr("switchTo") + " " +
+                              (root.lang === "pt" ? "English" : "Português") +
+                              (root.langSetting === "auto"
+                               ? "\n" + root.tr("followingLocale") : "")
+                    }
+                }
+
                 // Only exists when Tollens does. A dead tab for an absent
                 // integration is worse than no tab.
                 PlasmaComponents3.ToolButton {
@@ -1695,6 +1747,17 @@ PlasmoidItem {
                     }
                 }
             }
+
+                // ══════════════════════════════════
+                // ── Harness page (Tollens) ──
+                // ══════════════════════════════════
+                Loader {
+                    Layout.fillWidth: true
+                    active: root.hasTollens && root.page === 1
+                    visible: active
+                    sourceComponent: harnessPage
+                }
+
 
                 // Provider cards. Hidden rather than unloaded on page 1, so
                 // returning to page 0 does not re-run every binding.

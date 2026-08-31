@@ -166,7 +166,9 @@ check("madrugada so conta com volume",
 
 
 // ── i18n: tabela de traducao e resolucao de idioma ──
-const sm = src.match(/readonly property var strings: \(([\s\S]*?)\)\n\n    \/\/ Falls back/);
+// Anchored on the table's own closing brace, not on whatever comment happens
+// to follow it — inserting a function between the two broke the previous form.
+const sm = src.match(/readonly property var strings: \(([\s\S]*?\n    \})\)\n/);
 if (!sm) { console.error("FALHA: nao achei a tabela strings no QML"); process.exit(2); }
 const STRINGS = new Function("return " + sm[1])();
 
@@ -209,6 +211,27 @@ check("auto + en_US -> en", resolve("auto", "en_US") === "en", resolve("auto", "
 check("auto + de_DE -> en", resolve("auto", "de_DE") === "en", resolve("auto", "de_DE"));
 check("escolha explicita vence o locale",
       resolve("en", "pt_BR") === "en" && resolve("pt", "en_US") === "pt");
+
+
+// ── relativeAge: a razao de ser da pagina e mostrar que o heartbeat envelhece ──
+const rm = src.match(/function relativeAge\(iso\) \{\n([\s\S]*?)\n    \}\n/);
+if (!rm) { console.error("FALHA: nao achei relativeAge no QML"); process.exit(2); }
+const mkAge = lang => new Function("iso",
+  `const strings=${JSON.stringify(STRINGS)}, _l=${JSON.stringify(lang)};` +
+  `function tr(k){return (strings[_l]||strings.en)[k] ?? strings.en[k] ?? k;}` + rm[1]);
+const ageEn = mkAge("en"), agePt = mkAge("pt");
+const ago = mins => new Date(Date.now() - mins * 60000).toISOString();
+
+console.log("\n=== relativeAge ===");
+check("agora", ageEn(ago(0)) === "just now", ageEn(ago(0)));
+check("5 minutos", ageEn(ago(5)) === "5m ago", ageEn(ago(5)));
+check("2 horas (o caso do heartbeat)", ageEn(ago(125)) === "2h ago", ageEn(ago(125)));
+check("3 dias", ageEn(ago(60 * 24 * 3)) === "3d ago", ageEn(ago(60 * 24 * 3)));
+check("traduz", agePt(ago(125)) === "2h atrás", agePt(ago(125)));
+check("vazio nao vira NaN", ageEn("") === "", JSON.stringify(ageEn("")));
+check("data invalida devolve o original",
+      ageEn("nao-e-data") === "nao-e-data", ageEn("nao-e-data"));
+check("futuro nao vira negativo", ageEn(ago(-30)) === "just now", ageEn(ago(-30)));
 
 console.log(fail ? `\n${fail} FALHA(S)` : "\nTODAS PASSARAM");
 process.exit(fail ? 1 : 0);

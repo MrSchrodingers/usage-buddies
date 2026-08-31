@@ -88,3 +88,31 @@ def test_page_defaults_to_zero():
     hatch if a future change breaks navigation again."""
     body = QML.read_text()
     assert re.search(r"property int page:\s*0", body), "page does not default to 0"
+
+
+def test_header_comes_before_every_page():
+    """The header moved out of the wrapper but landed after the harness Loader,
+    so on the harness page it rendered at the bottom of the popup — under the
+    content it is supposed to head."""
+    header = _index_of("── Header with mascot ──")
+    harness = _index_of("sourceComponent: harnessPage")
+    wrapper = _index_of("id: providerPage")
+    assert header < harness, "header renders after the harness page content"
+    assert header < wrapper, "header renders after the provider cards"
+
+
+def test_language_toggle_lives_in_the_header():
+    """Two languages is a toggle, not a setting. Making someone open Configure
+    to read the widget in their own language is a worse trade than a button."""
+    body = QML.read_text()
+    assert "id: langBtn" in body, "no language button"
+    header = _index_of("── Header with mascot ──")
+    button = _index_of("id: langBtn")
+    end = _block_end(header + 1)
+    assert header < button < end, "language button is not inside the header"
+
+
+def test_language_toggle_reaches_both_languages():
+    body = QML.read_text()
+    assert 'root.lang === "pt" ? "en" : "pt"' in body, "toggle does not swap both ways"
+    assert 'Plasmoid.configuration.language = "auto"' in body, "no way back to auto"
