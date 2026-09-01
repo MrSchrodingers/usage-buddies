@@ -86,3 +86,136 @@ def test_a_reconnecting_source_disconnects_on_delivery(name):
     assert "disconnectSource(" in handler, (
         f"{name} reconnects the same source but never disconnects it; "
         "it will read once at startup and then never again")
+
+
+# ── scope ──────────────────────────────────────────────────────────────────
+#
+# Verified against Qt rather than recalled. A three-level Item tree, run under
+# `qml`:
+#
+#     root property, unqualified    -> ROOT-OK
+#     middle property, unqualified  -> ReferenceError: fromMiddle is not defined
+#     middle property, qualified    -> MIDDLE-OK
+#
+# So a bare name reaches the object it is written in and the root of its
+# component, and nothing in between. `Component { ... }` starts a new
+# component, which makes its single child a root — that is why the harness
+# page's properties are legitimately readable from everything nested under it,
+# and an earlier version of this check called five of them broken.
+
+
+def _strip_literals(text):
+    """Blank out string contents and comments.
+
+    Without this the check matched property names occurring inside strings —
+    `"../icons/"` was read as a bare use of a property called `icons` — and
+    reported most of the file.
+    """
+    text = re.sub(r"//[^\n]*", "", text)
+    text = re.sub(r'"(?:[^"\\]|\\.)*"', '""', text)
+    return re.sub(r"'(?:[^'\\]|\\.)*'", "''", text)
+
+
+# `[ \t]*`, not `\s*`: \s matches the newline before the header too, so a
+# header preceded by a blank line came out one column deeper than it is and
+# its properties were then looked for at the wrong indent. That silently
+# under-reported on the real file and made the planted case undetectable.
+HEADER = re.compile(r"^([ \t]*)(?:([A-Z][\w.]*)|(\w[\w.]*[ \t]+on[ \t]+\w+))[ \t]*\{[ \t]*$", re.M)
+
+
+def _blocks(text):
+    """Object headers with their indent, type and body span."""
+    out = []
+    for m in HEADER.finditer(text):
+        indent = len(m.group(1))
+        start = m.end()
+        depth, i = 1, start
+        while i < len(text) and depth:
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+            i += 1
+        out.append({"indent": indent, "type": (m.group(2) or m.group(3)),
+                    "start": start, "end": i - 1})
+    return out
+
+
+def test_the_scope_check_can_still_see_a_planted_violation():
+    """A checker this fiddly has to prove it is looking. Two earlier versions
+    passed while watching nothing: one matched inside string literals and
+    reported the whole file, the other counted the document root — the one
+    scope QML actually provides — as an offender."""
+    planted = """
+Item {
+    id: outer
+    property bool flag: false
+    Rectangle {
+        color: flag ? "red" : "blue"
+    }
+}
+"""
+    assert _violations(planted), "the check no longer detects the bug it exists for"
+    clean = planted.replace("color: flag ?", "color: outer.flag ?")
+    assert not _violations(clean), "the check fires on correct code"
+
+
+def _violations(text):
+    text = _strip_literals(text)
+    blocks = _blocks(text)
+    bad = []
+    for b in blocks:
+        body = text[b["start"]:b["end"]]
+        # A Component's child is the root of its own component, so properties
+        # declared on it are in scope everywhere below.
+        if b["type"] == "Component":
+            continue
+        ident = re.search(r"^\s*id:\s*(\w+)", body, re.M)
+        if not ident:
+            continue
+        # Only this block's own declarations: the body contains its children's
+        # too, and attributing those here blamed the wrong object.
+        own = set(re.findall(r"^ {%d}(?:readonly )?property \w[\w.<>]* (\w+)"
+                             % (b["indent"] + 4), body, re.M))
+        if not own:
+            continue
+        parent_is_component = any(
+            o["type"] == "Component" and o["start"] <= b["start"] and b["end"] <= o["end"]
+            and o["indent"] == b["indent"] - 4 for o in blocks)
+        if parent_is_component:
+            continue
+        for child in _blocks(body):
+            if child["indent"] <= b["indent"]:
+                continue
+            inner = body[child["start"]:child["end"]]
+            for prop in own:
+                # Three legitimate shadows, each of which this reported as a
+                # bug before it knew about them: the child redeclaring the
+                # property, a local `var` of the same name inside a binding,
+                # and a function that happens to share the name.
+                shadowed = (
+                    re.search(r"^\s*(?:readonly )?property \w+ %s\b" % prop, inner, re.M)
+                    or re.search(r"\bvar\s+%s\s*=" % prop, inner)
+                    or re.search(r"\bfunction\s+%s\s*\(" % prop, inner))
+                if shadowed:
+                    continue
+                if re.search(r"(?<![\w.])%s\b" % prop, inner):
+                    bad.append(f"{ident.group(1)}.{prop} read bare inside a nested "
+                               f"{child['type']}")
+    return sorted(set(bad))
+
+
+def test_no_nested_object_reads_an_enclosing_property_unqualified():
+    """QML resolves a bare name against the object it is written in and the
+    root of its component — never against the object that merely encloses it.
+
+    So `NumberAnimation { duration: sweptIn ? 800 : 1100 }` inside a Canvas
+    that declares `sweptIn` does not see it. It is not a build error: the name
+    comes back undefined, the expression quietly takes the falsy branch, and
+    the only trace is a ReferenceError in the shell's log. That one made the
+    progress ring animate as though it had already drawn itself in, every
+    time the popup opened.
+    """
+    offenders = _violations(QML.read_text())
+    assert not offenders, "unqualified reads of an enclosing property:\n  " + \
+        "\n  ".join(offenders)

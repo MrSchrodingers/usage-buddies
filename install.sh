@@ -304,8 +304,13 @@ install_collector() {
     # it has to land next to it. It is a library, not a command: no +x.
     # tests/test_sprites.py pins this — a companion installed without it dies
     # on the import, and the only symptom is a character that never appears.
+    # Named one per line, not looped over a variable: tests/test_sprites.py
+    # checks that every module the companion imports is copied, and it can only
+    # see a filename that is actually written on a cp line.
     cp "$REPO_DIR/scripts/buddy_sprites.py" "$HOME/.local/bin/" \
         || warn "Failed to copy buddy_sprites.py" "The companion will not start"
+    cp "$REPO_DIR/scripts/repo_brief.py" "$HOME/.local/bin/" \
+        || warn "Failed to copy repo_brief.py" "The companion will not start"
     ok "Session monitor installed"
 
     # Optional harness probe. Installed unconditionally and inert without

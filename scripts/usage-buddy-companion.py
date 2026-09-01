@@ -29,13 +29,15 @@ from pathlib import Path
 # Must be set before QtGui is imported, or the platform is already chosen.
 os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
-from PySide6.QtCore import Qt, QTimer, QPointF, QRectF, Signal, QObject          # noqa: E402
+from PySide6.QtCore import (Qt, QTimer, QPointF, QRectF, Signal, QObject,        # noqa: E402
+                            QProcess, QProcessEnvironment)
 from PySide6.QtGui import (QAction, QColor, QCursor, QFont, QFontMetrics,        # noqa: E402
                            QPainter, QPainterPath, QPen)
 from PySide6.QtWidgets import QApplication, QMenu, QWidget                       # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import buddy_sprites as sprites                                                  # noqa: E402
+import repo_brief                                                                # noqa: E402
 
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "usage-buddies"
 SESSIONS_FILE = CACHE / "sessions.json"
@@ -445,6 +447,9 @@ class Companion(QWidget):
         self.frame = "stand_open"
         self.alert_until = 0.0
         self.settled_at = time.monotonic()
+        # One at a time. A menu that can start six of these leaves six
+        # subscription-billed calls in flight for one impatient click.
+        self.asking = None
 
         self.brain = Brain(lang, alerts_only)
         self.lang = lang
@@ -717,6 +722,7 @@ class Companion(QWidget):
                 free = QAction(self._t("roam"), self)
                 free.triggered.connect(self._undock)
                 menu.addAction(free)
+            self._add_repo_menu(menu)
             quit_action = QAction(self._t("quit"), self)
             quit_action.triggered.connect(QApplication.quit)
             menu.addAction(quit_action)
@@ -802,9 +808,80 @@ class Companion(QWidget):
         except (OSError, subprocess.SubprocessError):
             pass
 
+    # ── asking about a repository ──
+
+    def _add_repo_menu(self, menu):
+        """One entry per live session. User-initiated only: nothing here runs
+        on a timer, because a read costs real tokens and unasked-for spending
+        is not a feature."""
+        sessions = (self.brain.sessions or {}).get("sessions") or []
+        if not sessions:
+            return
+        sub = menu.addMenu(self._t("askAbout"))
+        for session in sessions[:8]:
+            action = QAction(session.get("name") or "?", self)
+            action.setEnabled(self.asking is None)
+            action.triggered.connect(
+                lambda _checked=False, s=session: self._ask_about(s))
+            sub.addAction(action)
+        menu.addSeparator()
+
+    def _ask_about(self, session):
+        """Run `claude -p` for a read on this repository, without blocking.
+
+        QProcess rather than subprocess: this is the UI thread, and a call that
+        takes tens of seconds would freeze the character mid-step. The answer
+        arrives on a signal.
+        """
+        if self.asking is not None:
+            return
+        facts = repo_brief.gather(session.get("cwd") or ".", session)
+        prompt = (("Estado de " if self.lang == "pt" else "State of ")
+                  + f"{facts['repo']}:\n"
+                  + json.dumps(facts, indent=1, ensure_ascii=False))
+        command = repo_brief.build_command(prompt, lang=self.lang)
+
+        environment = QProcessEnvironment()
+        for key, value in repo_brief.clean_env().items():
+            environment.insert(key, value)
+
+        process = QProcess(self)
+        process.setWorkingDirectory(session.get("cwd") or ".")
+        process.setProcessEnvironment(environment)
+        process.finished.connect(
+            lambda _code=0, _status=0, p=process: self._answered(p))
+        process.errorOccurred.connect(lambda _e, p=process: self._answered(p))
+        self.asking = process
+        self._say(self._t("thinking").replace("{name}", session.get("name") or "?"))
+        process.start(command[0], command[1:])
+
+    def _answered(self, process):
+        if process is not self.asking:
+            return
+        self.asking = None
+        raw = bytes(process.readAllStandardOutput()).decode("utf-8", "replace")
+        text, _meta = repo_brief.parse(raw)
+        self._say(text or self._t("noAnswer"))
+
+    def _say(self, text):
+        """Put words in the bubble now, outside the poll cycle."""
+        self.said = text
+        self.bubble = text
+        self.bubble_until = time.monotonic() + SPEAK_SECONDS * 2
+        self._resize_for_bubble()
+        self._wake()
+
     def _t(self, key):
-        table = {"en": {"quit": "Quit companion", "roam": "Let it roam again"},
-                 "pt": {"quit": "Fechar o companion", "roam": "Deixar passear de novo"}}
+        table = {
+            "en": {"quit": "Quit companion", "roam": "Let it roam again",
+                   "askAbout": "How is it going in...",
+                   "thinking": "Looking at {name}...",
+                   "noAnswer": "No answer came back. It happens."},
+            "pt": {"quit": "Fechar o companion", "roam": "Deixar passear de novo",
+                   "askAbout": "Como vai o...",
+                   "thinking": "Deixa eu ver o {name}...",
+                   "noAnswer": "Não veio resposta. Acontece."},
+        }
         return table.get(self.lang, table["en"])[key]
 
 

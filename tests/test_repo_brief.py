@@ -105,3 +105,58 @@ def test_the_variables_that_hang_a_nested_call_are_stripped():
         "CLAUDE_CODE_MESSAGING_SOCKET": "/tmp/s", "CLAUDECODE": "1",
     })
     assert env == {"PATH": "/usr/bin", "HOME": "/home/x"}
+
+
+# ── the menu ───────────────────────────────────────────────────────────────
+
+def _companion(monkeypatch):
+    import importlib.util
+    import os
+    if not os.environ.get("DISPLAY"):
+        import pytest
+        pytest.skip("no X display")
+    os.environ["QT_QPA_PLATFORM"] = "xcb"
+    spec = importlib.util.spec_from_file_location(
+        "companion_menu", REPO / "scripts" / "usage-buddy-companion.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["companion_menu"] = mod
+    spec.loader.exec_module(mod)
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    c = mod.Companion()
+    c.poll_timer.stop()
+    c._poll = lambda: None
+    return mod, c
+
+
+def test_only_one_reading_runs_at_a_time(monkeypatch):
+    """The menu is one click away from six subscription-billed calls in
+    flight. A second ask while one is running is dropped, not queued."""
+    _mod, c = _companion(monkeypatch)
+    started = []
+    monkeypatch.setattr(type(c), "_say", lambda self, text: None)
+
+    class _Fake:
+        def start(self, *a):
+            started.append(a)
+
+        def state(self):
+            return 2
+    c.asking = _Fake()
+    c._ask_about({"cwd": str(REPO), "name": "widget"})
+    assert not started, "a second reading was started while one was running"
+
+
+def test_a_failed_call_says_so_instead_of_going_silent(monkeypatch):
+    """A menu item that produces nothing reads as broken."""
+    _mod, c = _companion(monkeypatch)
+    said = []
+    monkeypatch.setattr(type(c), "_say", lambda self, text: said.append(text))
+
+    class _Empty:
+        def readAllStandardOutput(self):
+            return b""
+    c.asking = _Empty()
+    c._answered(c.asking)
+    assert said and said[-1], "said nothing after a call that returned nothing"
+    assert c.asking is None, "the slot stayed occupied after a failure"

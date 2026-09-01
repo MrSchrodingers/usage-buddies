@@ -323,7 +323,19 @@ PlasmoidItem {
 
     onBuddyModeChanged: syncCompanion()
     onLangChanged: if (buddyMode !== "off") syncCompanion()
-    Component.onCompleted: if (buddyMode !== "off") syncCompanion()
+    // One handler, because QML rejects a second assignment to the same property
+    // with "Property value set multiple times" — and it rejects it by refusing
+    // to load the applet at all, which is a blank panel rather than a warning.
+    //
+    // The readData call is here as well as on the timer: the timer's
+    // triggeredOnStart fires during creation, when brand is not yet readable,
+    // and readData's guard turns that into a skipped read. Skipped, the widget
+    // would stay empty for a whole refresh interval. onCompleted runs after
+    // every property is set, so this is the read certain to find a provider.
+    Component.onCompleted: {
+        if (buddyMode !== "off") syncCompanion();
+        dataLoader.readData();
+    }
 
     P5Support.DataSource {
         id: focusHelper
@@ -514,6 +526,7 @@ PlasmoidItem {
         onTriggered: dataLoader.readData()
     }
 
+
     // Polled by the Timer above rather than by DataSource.interval, because the
     // command itself depends on the selected provider. Each read connects a
     // fresh source and disconnects it on delivery, so nothing accumulates.
@@ -529,8 +542,15 @@ PlasmoidItem {
         // source is connected per read instead of being a static binding.
         connectedSources: []
         function readData() {
-            connectSource("$HOME/.local/bin/" + root.brand.collector +
-                          " 1>/dev/null 2>/dev/null; cat " + root.brand.dataFile);
+            // brand resolves through Plasmoid.configuration, which is not
+            // readable when the timer's triggeredOnStart fires during component
+            // creation. Dereferencing it there threw
+            // "Cannot read property 'collector' of undefined" and the first read
+            // was lost — so the widget showed nothing until the next tick.
+            var b = root.brand || root.providers["claude"];
+            if (!b || !b.collector) return;
+            connectSource("$HOME/.local/bin/" + b.collector +
+                          " 1>/dev/null 2>/dev/null; cat " + b.dataFile);
         }
         onNewData: function(source, data) {
             if (data["exit code"] === 0 && data.stdout) {
@@ -2501,9 +2521,20 @@ PlasmoidItem {
                             // pct on every update.
                             property real pct: root.usageData.rateLimits?.session?.percentUsed ?? 0
                             property real drawn: 0
+                            // progressRing., not bare sweptIn: an unqualified
+                            // name inside a nested object resolves against that
+                            // object and the file's root, never against the
+                            // object that encloses it. Bare, this logged
+                            // "ReferenceError: sweptIn is not defined" twice on
+                            // every popup and silently used undefined — which is
+                            // falsy, so the ring always animated as if it had
+                            // already swept in.
                             Behavior on drawn {
-                                NumberAnimation { duration: sweptIn ? 800 : 1100
-                                                  easing.type: sweptIn ? Easing.OutCubic : Easing.OutQuart }
+                                NumberAnimation {
+                                    duration: progressRing.sweptIn ? 800 : 1100
+                                    easing.type: progressRing.sweptIn ? Easing.OutCubic
+                                                                      : Easing.OutQuart
+                                }
                             }
                             property bool sweptIn: false
                             onPctChanged: {
