@@ -268,48 +268,53 @@ CLAUDE_LEGS = {
         "......oo..oo....oo..oooo....",
         "............................",
     ],
-    # Waving without an arm, because Clawd has none. A front leg leaves the
-    # floor and reaches up and forward while the body leans back — the lean is
-    # the half of it that reads at this size, since a lifted leg on its own is
-    # a limp. The raised foot is drawn on the band's first row, level with the
-    # body's base and clear of its edge, so it ends up higher than every other
-    # foot; drawn a row lower it was a twig sticking out of the side.
+    # Waving without an arm, because Clawd has none. The gesture is the body
+    # swinging over its feet; the leg is the accent on it, not the gesture.
     #
-    # The three legs still down do not move at all. That is what keeps the
-    # gesture attached to a body instead of floating in front of one.
+    # The first version reached a leg out sideways along the floor row. On a
+    # creature whose legs are two-pixel stubs that is not a limb in the air, it
+    # is a skid mark: a horizontal bar at ground level reads as something being
+    # dragged. What says "off the ground" at this size is the gap underneath. So
+    # the raised leg loses its lower two rows entirely and leaves them empty,
+    # and it is drawn one column forward of where it stands, so the pair of
+    # frames reads as one leg going up and coming down in the same place rather
+    # than as two different legs.
     "wave0": [
-        "......oooooooooooooooo..oo..",
-        "......ss..ss....ss..ssss....",
+        "......oooooooooooooooo......",
+        "......ss..ss....ss...ss.....",
         "......ss..ss....ss..........",
         "......oo..oo....oo..........",
     ],
     "wave1": [
         "......oooooooooooooooo......",
-        "......ss..ss....ss..ssss....",
-        "......ss..ss....ss......oo..",
-        "......oo..oo....oo..........",
+        "......ss..ss....ss...ss.....",
+        "......ss..ss....ss...ss.....",
+        "......oo..oo....oo...oo.....",
     ],
-    # Pointing. Same trick as the wave and a different word: the leg goes out
-    # straight and low rather than up, and it is held there instead of beating.
-    # It comes down on its foot at the far end, so the pose has weight on it —
-    # a limb held in the air with nothing under it reads as a stick.
+    # Pointing. The whole animal aims: the body leans hard forward, the rearmost
+    # leg curls up off the floor with the weight leaving it, and the front leg
+    # goes out ahead with a bend in it and its foot a row clear of the ground.
+    # Two legs stay planted under the middle, which is what stops a lunge from
+    # reading as a fall.
+    #
+    # The foot being a row up is the whole difference. Drawn on the floor row
+    # the same leg was a line coming out of the body — it pointed at nothing,
+    # because a limb touching the ground is a limb standing on it.
     "point": [
         "......oooooooooooooooo......",
         "......ss..ss....ss..ss......",
-        "......ss..ss....ss..ssssss..",
-        "......oo..oo....oo......oo..",
+        "..........ss....ss...ssoo...",
+        "..........oo....oo..........",
     ],
-    # Reading. The thing being read is drawn into the leg band rather than
-    # given a grid of its own: it stands on the same floor row and it only ever
-    # appears with this pose, so a separate image would be one more thing to
-    # keep aligned with the feet. It is filled with accent rather than left
-    # hollow, because the flood fill would otherwise pour base colour into it
-    # and a book in body colour is not visible.
+    # Reading: hunched over the thing being read. The legs fold by a row and the
+    # body comes down onto them, and the object itself is not in this band at
+    # all — see POSE_PROP. It used to be drawn down here beside the feet, where
+    # a four-pixel block detached from the body read as a dropped crumb.
     "read": [
         "......oooooooooooooooo......",
-        "......ss..ss....ss..ss.oooo.",
-        "......ss..ss....ss..ss.oaao.",
-        "......oo..oo....oo..oo.oaao.",
+        "......ss..ss....ss..ss......",
+        "......oo..oo....oo..oo......",
+        "............................",
     ],
     # Braced. The outer legs splay away from the body and the inner pair stays
     # under it, so the stance widens without the legs crossing — at four
@@ -559,41 +564,48 @@ CODEX_LEGS = {
         ".........aa......aa.........",
         "............................",
     ],
-    # Sat down: the body drops a row and the front foot goes out in front of
-    # it. Asymmetric, because the front foot of a perched bird is the one you
-    # see; a symmetric pair of talons is a bird standing, not sitting.
+    # Sat down: the body drops a row onto two folded talons. Both of them, and
+    # the same length. The first attempt ran the front one out into a six-pixel
+    # bar to say "perched", and an orange bar along the floor beside a normal
+    # foot reads as the bird having slipped, not as it having sat.
     "sit": [
         "......oooooooooooooooo......",
         "..........aa....aa..........",
-        ".........aaa....aaaaaa......",
+        ".........aaa....aaa.........",
         "............................",
     ],
-    # One talon up and reaching, the other planted with its toe still down.
-    # With two legs there is no spare weight to shift, so the planted one keeps
-    # every pixel it had — moving both is how a wave turns into a hop.
+    # One talon up, one planted. Two legs mean the planted one keeps every pixel
+    # it had — lifting both is a hop — and mean the raised one has to be
+    # unmistakable, so it loses its lower two rows and stands one column forward
+    # of where it lands in the other frame. The gap under it is the gesture.
     "wave0": [
-        "......oooooooooooooooo..aa..",
-        "..........aa....aaaaaa......",
+        "......oooooooooooooooo......",
+        "..........aa.....aa.........",
         "..........aa................",
         ".........aaa................",
     ],
     "wave1": [
         "......oooooooooooooooo......",
-        "..........aa....aaaaaa......",
-        "..........aa..........aa....",
-        ".........aaa................",
+        "..........aa.....aa.........",
+        "..........aa.....aa.........",
+        ".........aaa....aaa.........",
     ],
+    # Aiming. The rear talon stays down and keeps the whole bird up — there is
+    # no third leg to spare — and the front one goes out ahead of it with its
+    # foot a row clear of the floor.
     "point": [
         "......oooooooooooooooo......",
         "..........aa....aa..........",
-        "..........aa....aaaaaa......",
-        ".........aaa..........aa....",
+        "..........aa.....aaaa.......",
+        ".........aaa................",
     ],
+    # Hunched over the page. The talons fold in under the body by a row and the
+    # object has left this band entirely — see POSE_PROP.
     "read": [
         "......oooooooooooooooo......",
-        "..........aa....aa.....oooo.",
-        "..........aa....aa.....oaao.",
-        ".........aaa....aaa....oaao.",
+        "..........aa....aa..........",
+        "..........aaa..aaa..........",
+        "............................",
     ],
     # Braced: both talons step outward and the toes spread. An owl that panics
     # widens its stance; it has no fifth leg to put down.
@@ -807,6 +819,25 @@ def sway(rows, lean):
     return list(reversed(shear(list(reversed(rows)), lean)))
 
 
+def sway_shift(rows, lean, row):
+    """How far sway moves one particular row.
+
+    So that a rigid part of a drawing can be placed onto a leaned body instead
+    of being leaned with it. A shear moves every row by a different amount, and
+    anything small that straddles the row where the amount changes comes apart:
+    Rex's three-pixel beak leaned into two pieces with a step between them, and
+    a square eye leaned into two half-eyes. Bodies shear; faces do not.
+
+    Matches sway exactly, which is why it is written from the same numbers
+    rather than measured off the result.
+    """
+    filled = [i for i, r in enumerate(rows) if set(r) != {"."}]
+    if not filled or lean == 0:
+        return 0
+    top, bottom = filled[0], filled[-1]
+    return round(lean * (bottom - row) / max(1, bottom - top))
+
+
 def cut_off(rows, at):
     """Everything from row `at` down removed, and the opening sealed.
 
@@ -854,6 +885,19 @@ def squeeze(rows, cols):
     return out
 
 
+def add_prop(rows, prop):
+    """Paste a rigid object onto a finished frame.
+
+    After the flood fill, so it cannot change what the body's interior is, and
+    after the lean, so that the thing being held keeps its own shape while the
+    creature holding it bends.
+    """
+    top, left, band = prop
+    grid = [list(row) for row in rows]
+    _paste(grid, top, left, band)
+    return ["".join(row) for row in grid]
+
+
 def mirror(rows):
     """Horizontal flip on the grid rather than with a painter scale.
     Mirroring is the one exact transform on a pixel grid, and doing it here
@@ -879,7 +923,7 @@ def _eye_bands(eyes):
     return eyes, mirror(eyes)
 
 
-def compose(brand, body, legs, eyes, body_dy=0, eye_dy=0):
+def compose(brand, body, legs, eyes, body_dy=0, eye_dy=0, tilt=0):
     """One frame: body, legs, face, all shifted together by the bob.
 
     The legs move with the body rather than staying pinned to the floor. Pinned
@@ -888,23 +932,43 @@ def compose(brand, body, legs, eyes, body_dy=0, eye_dy=0):
     twice, one row apart, and the character grows a two-pixel black bar across
     its base on every other frame. Letting the whole creature rise is also what
     a walk actually does — feet leave the ground.
+
+    `tilt` leans the body and only the body. The legs go on straight, because a
+    lean is weight travelling forward over feet that stay where they were, and
+    the face goes on afterwards at the column the head moved to rather than
+    being leaned with it: a shear moves every row by its own amount, and a beak
+    or a square eye that straddles the row where the amount changes comes apart
+    into two offset halves.
+
+    The order below is the whole trick and it was arrived at by getting it
+    wrong. Filling first and leaning the solid body is safe; leaning the drawing
+    and filling afterwards is not. The `h` and `s` hints seal steps of two
+    columns, and a shear changes the offset between one row and the next, so a
+    step the hints were closing opens by a column somewhere along the body and
+    the flood walks in. The result is a hollow outline of a leaning creature.
+    Once the interior is filled there is nothing left to leak into.
     """
-    grid = [list(row) for row in _shift(body, body_dy)]
+    filled = ["".join(row) for row
+              in _fill_interior([list(row) for row in _shift(body, body_dy)])]
+    leaned = sway(filled, tilt) if tilt else filled
+    grid = [list(row) for row in leaned]
     if brand == "codex":
         leg_row, er, ec, gap = CODEX_LEG_ROW, CODEX_EYE_ROW, CODEX_EYE_COL, CODEX_EYE_GAP
     else:
         leg_row, er, ec, gap = LEG_ROW, EYE_ROW, EYE_COL, EYE_GAP
     if legs is not None:
         _paste(grid, leg_row + body_dy, 0, legs)
-    _fill_interior(grid)
     if brand == "codex":
         btop, bleft, band = CODEX_BEAK
-        _paste(grid, btop + body_dy + eye_dy, bleft, band)
+        beak_row = btop + body_dy + eye_dy
+        _paste(grid, beak_row, bleft + sway_shift(filled, tilt, beak_row), band)
     if eyes is not None:
         left, right = _eye_bands(eyes)
         width = len(left[0])
-        _paste(grid, er + body_dy + eye_dy, ec, left)
-        _paste(grid, er + body_dy + eye_dy, ec + width + gap, right)
+        eye_row = er + body_dy + eye_dy
+        dx = sway_shift(filled, tilt, eye_row)
+        _paste(grid, eye_row, ec + dx, left)
+        _paste(grid, eye_row, ec + width + gap + dx, right)
     return ["".join(row) for row in grid]
 
 
@@ -1043,12 +1107,13 @@ FRAME_SPECS = {
     "wave1_open":     ("wave1", "open", 0),
     "point_open":     ("point", "open", 0),
     "point_wide":     ("point", "wide", 0),
-    # The reading frames differ by the eyes alone. A one-row bob would lift the
-    # book with them — it is drawn into the leg band, and the band travels with
-    # the body — and a book that breathes is worse than a still one.
-    "read_half":      ("read", "half", 0),
-    "read_open":      ("read", "open", 0),
-    "read_side":      ("read", "side", 0),
+    # Reading is hunched: the body drops a row onto a leg band drawn a row
+    # shorter, the same way sitting does, and leans out over the page. The three
+    # frames differ by the eyes alone — the book is a rigid object pasted after
+    # the lean, and a book that bobs with the reader is worse than a still one.
+    "read_half":      ("read", "half", 1),
+    "read_open":      ("read", "open", 1),
+    "read_side":      ("read", "side", 1),
     "panic_wide":     ("panic", "wide", 0),
     "panic_dizzy":    ("panic", "dizzy", 0),
     # Two rows is the whole headroom there is. Rex's ear tufts start on row 2
@@ -1089,10 +1154,58 @@ _BODIES = {
 #                 Rex's beak runs to row 14, so his cut has to fall below it or
 #                 the peek is an owl with the front of its face missing.
 
-POSE_TILT = {"wave0": -2, "wave1": -1, "point": 3, "read": 3,
+# The wave is the only place a tilt does the whole job. Its two frames lean
+# opposite ways, five columns apart at the head, which is what makes them tell
+# themselves apart across a room; two frames leaning the same way by one column
+# were a creature standing still with a leg problem.
+POSE_TILT = {"wave0": -3, "wave1": 2, "point": 3, "read": 3,
              "type0": 1, "type1": 2}
 POSE_SQUEEZE = {"turn": 4}
 POSE_CUT = {"peek": {"claude": 14, "codex": 15}}
+
+# A prop is an object the character holds: its own small grid, pasted onto the
+# finished frame. Three things it has to do, each of them learned by doing the
+# opposite first.
+#
+#   It needs an outline of its own. Without one it is a coloured smudge, and at
+#   four pixels across a smudge is not a thing, it is a mistake.
+#
+#   It is in the accent hue in both brands. Drawn in the body's own colours it
+#   disappeared into Rex completely — the same shape, the same blue, no edge.
+#
+#   It touches the body. An object floating beside a character is not held by
+#   it; on Clawd the first version read as a crumb dropped on the floor.
+#
+# It is pasted after the lean rather than before, which is the whole difference
+# between something held and something painted on: the creature shears when it
+# leans, and a rigid thing in front of it does not.
+
+PROP_BOOK = [
+    "ooooo",
+    "oaaao",
+    "oaaao",
+    "ooooo",
+]
+
+# Held against the chest, under the face and over the front edge of the body,
+# with its outline crossing the body's own. That crossing is what says "in
+# front of"; placed clear of the body it was a gold square floating beside the
+# hip, and placed down by the feet it was something the creature had dropped.
+POSE_PROP = {"read": {"claude": (15, 23, PROP_BOOK),
+                      "codex": (14, 23, PROP_BOOK)}}
+
+# The leg each pose lifts, as the columns it stands on when it is down. Legs
+# this short cannot gesture by reaching: a two-pixel stub stretched out along
+# the floor row reads as a skid, not as a limb in the air. What reads is the
+# gap underneath, so a raised leg has to leave the floor row empty across its
+# whole width — which is a thing a test can check, and does.
+#
+# Poses that lift everything at once are not here; they are in
+# OFF_GROUND_POSES, because nothing is left standing to compare them against.
+RAISED_LEGS = {
+    "claude": {"wave0": [(21, 22)], "point": [(6, 7), (20, 24)]},
+    "codex":  {"wave0": [(17, 18)], "point": [(16, 20)]},
+}
 
 # Poses whose silhouette does not reach the floor, and why. Everything else is
 # expected to stand on it — a pose that floats without saying so here reads as
@@ -1135,12 +1248,13 @@ def build_frames(brand):
         leg_key = pose if pose in legs else "stand"
         eye_dy = POSE_EYE_DY[key].get(pose, 0)
         grid = compose(brand, body, legs[leg_key], EYES[eye],
-                       body_dy=body_dy, eye_dy=eye_dy)
-        # Lean and foreshortening are applied to the finished frame rather than
-        # to the body. The flood fill has already run on a closed shape by
-        # then, so neither can leak, and pivoting the lean at the feet leaves
-        # the legs where they were planted while the head travels.
-        grid = sway(grid, POSE_TILT.get(pose, 0))
+                       body_dy=body_dy, eye_dy=eye_dy,
+                       tilt=POSE_TILT.get(pose, 0))
+        # Held objects go on after the lean, and the foreshortening of a turn
+        # goes on after everything: dropping columns out of a finished frame
+        # cannot leak, because the flood fill has already run on a closed shape.
+        if pose in POSE_PROP:
+            grid = add_prop(grid, POSE_PROP[pose][key])
         out[name] = squeeze(grid, POSE_SQUEEZE.get(pose, 0))
 
     # Swing poses are the dangle sheared, not redrawn: the shape is identical

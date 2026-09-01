@@ -39,9 +39,14 @@ def _ink(grid):
 # rather than twenty-eight and its two characters are deliberately outside the
 # body alphabet, because a character cannot mean a body colour in one grid and
 # a shadow colour in another. It has its own test below.
+#
+# PROP_* excluded because a prop is a small band like the eye and leg bands,
+# not a body: it is four rows square and it is pasted at an offset. The bands
+# inside the dictionaries are not swept here either, for the same reason.
 @pytest.mark.parametrize("name", [n for n in dir(sprites)
                                   if n.isupper() and not n.startswith("CAR_")
                                   and not n.startswith("SHADOW")
+                                  and not n.startswith("PROP_")
                                   and isinstance(getattr(sprites, n), list)
                                   and getattr(sprites, n)
                                   and isinstance(getattr(sprites, n)[0], str)])
@@ -161,6 +166,69 @@ def test_no_frame_lifts_the_body_off_the_top_of_the_grid(brand):
         body = sprites.pose_body(brand, pose)
         lost = _ink(body) - _ink(sprites._shift(body, body_dy))
         assert lost == 0, f"{brand}/{name}: {lost} pixels shifted off the grid"
+
+
+@pytest.mark.parametrize("brand", BRANDS)
+def test_a_lean_does_not_shave_the_far_side_off_the_body(brand):
+    """The horizontal twin of the clipping test above.
+
+    A shear pads one side and truncates the other at the edge of the grid, so a
+    tilt one column too large does not raise or warn: it takes a strip off the
+    far side of the creature. Rex is two columns from the edge and leans by
+    three, which is as much as fits, and the amount that fits is not something
+    to keep in anyone's head.
+
+    Composed twice, once flat and once leaning, and the pixels are counted.
+    """
+    legs = sprites.CODEX_LEGS if brand == "codex" else sprites.CLAUDE_LEGS
+    for name, (pose, eye, body_dy) in sprites.FRAME_SPECS.items():
+        tilt = sprites.POSE_TILT.get(pose, 0)
+        if not tilt:
+            continue
+        body = sprites.pose_body(brand, pose)
+        band = legs[pose] if pose in legs else legs["stand"]
+        eye_dy = sprites.POSE_EYE_DY[brand].get(pose, 0)
+        flat = sprites.compose(brand, body, band, sprites.EYES[eye],
+                               body_dy, eye_dy, 0)
+        leaning = sprites.compose(brand, body, band, sprites.EYES[eye],
+                                  body_dy, eye_dy, tilt)
+        lost = _ink(flat) - _ink(leaning)
+        assert lost == 0, \
+            f"{brand}/{name}: leaning by {tilt} pushed {lost} pixels off the grid"
+
+
+@pytest.mark.parametrize("brand", BRANDS)
+def test_a_raised_leg_never_touches_the_floor(brand):
+    """A creature with two-pixel legs cannot gesture by reaching.
+
+    The wave, the point and the read were all drawn first as a leg stretched
+    out sideways along the floor row, four or five pixels of it, and all three
+    read the same way: as a skid mark. A limb touching the ground is a limb
+    standing on the ground, however long it is. What says "in the air" at this
+    size is the gap underneath it, and nothing else does.
+
+    So the poses that lift a leg declare which columns it stands on, and the
+    floor row has to be empty across all of them. Both halves are checked: the
+    leg also has to be drawn somewhere above the floor, or the declaration is
+    describing a leg that is not there and the real assertion is vacuous.
+
+    Poses that lift everything at once are not here — they are in
+    OFF_GROUND_POSES, checked by the floor test above, because there is nothing
+    left standing to compare them against.
+    """
+    legs = sprites.CODEX_LEGS if brand == "codex" else sprites.CLAUDE_LEGS
+    for pose, spans in sprites.RAISED_LEGS[brand].items():
+        band = legs[pose]
+        drawn = [i for i, row in enumerate(band) if set(row) != {"."}]
+        seam, floor = drawn[0], drawn[-1]
+        assert floor - seam >= 2, f"{brand}/{pose}: this band has no legs in it"
+        for lo, hi in spans:
+            above = [band[i][lo:hi + 1] for i in range(seam + 1, floor)]
+            assert any(set(part) != {"."} for part in above), \
+                f"{brand}/{pose}: nothing drawn in columns {lo}-{hi} to be raised"
+            assert set(band[floor][lo:hi + 1]) == {"."}, \
+                (f"{brand}/{pose}: the leg declared raised is standing on the "
+                 f"floor row at columns {lo}-{hi}")
 
 
 @pytest.mark.parametrize("brand", BRANDS)
