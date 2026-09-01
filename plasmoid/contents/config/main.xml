@@ -28,6 +28,12 @@
     <entry name="buddyMode" type="String">
       <default>off</default>
     </entry>
+    <!-- Where the companion's lines come from: the written table, or Claude.
+         Off by default because "claude" spends tokens — measured, about
+         $0.0026 a line in batches of twelve. -->
+    <entry name="buddyVoice" type="String">
+      <default>table</default>
+    </entry>
     <entry name="displayMode" type="String">
       <default>full</default>
     </entry>

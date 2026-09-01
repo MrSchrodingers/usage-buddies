@@ -52,6 +52,43 @@ SYSTEM = {
 }
 
 
+# Resolving the binary is not optional. The companion is launched by the panel,
+# which inherits systemd's environment — measured on this machine, its PATH is
+# /home/ti/.cargo/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:
+# /var/lib/snapd/snap/bin, and `claude` lives under ~/.nvm/versions/node/*/bin.
+# Starting it by bare name failed silently and the companion reported "no
+# answer came back", which reads as the model having nothing to say rather
+# than as a program that was never run.
+_SEARCH = (
+    "~/.nvm/versions/node/*/bin/claude",
+    "~/.local/bin/claude",
+    "~/.bun/bin/claude",
+    "~/.local/share/pnpm/claude",
+    "/usr/local/bin/claude",
+    "/opt/homebrew/bin/claude",
+)
+_binary = None
+
+
+def claude_binary():
+    """Absolute path to the claude CLI, or None if it is not installed."""
+    global _binary
+    if _binary is not None:
+        return _binary or None
+    import glob
+    import os
+    import shutil
+    found = shutil.which("claude")
+    if not found:
+        for pattern in _SEARCH:
+            matches = sorted(glob.glob(os.path.expanduser(pattern)))
+            if matches:
+                found = matches[-1]        # newest node version wins
+                break
+    _binary = found or ""
+    return _binary or None
+
+
 def clean_env(base=None):
     """The parent environment without the variables a nested claude chokes on."""
     import os
@@ -101,7 +138,7 @@ def gather(repo, session=None):
 def build_command(prompt, lang="en", model="haiku"):
     """The flags are the whole point; see the measurements in the docstring."""
     return [
-        "claude", "-p", prompt,
+        claude_binary() or "claude", "-p", prompt,
         "--output-format", "json",
         "--model", model,
         # Two sentences over facts already gathered is not a reasoning problem.

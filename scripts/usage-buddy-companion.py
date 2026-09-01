@@ -38,6 +38,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QWidget                      
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import buddy_sprites as sprites                                                  # noqa: E402
 import repo_brief                                                                # noqa: E402
+import buddy_voice                                                               # noqa: E402
 
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "usage-buddies"
 SESSIONS_FILE = CACHE / "sessions.json"
@@ -62,6 +63,16 @@ CLIMB_SPEED = 46.0       # px/s vertically — slower, so diagonals read as effo
 IDLE_MIN, IDLE_MAX = 4.0, 14.0
 SPEAK_SECONDS = 16.0
 SLEEP_AFTER = 45.0       # docked and untouched for this long: it dozes off
+# Being dragged. A short drag is how you put it somewhere; a long one is
+# someone playing with it, and it is allowed to notice.
+DRAG_PATIENCE = 3.5      # seconds of continuous dragging before it complains
+DRAG_MEMORY = 90.0       # window over which repeated drags accumulate
+DRAG_TUG_AFTER = 3       # drags inside that window before it pulls back
+TUG_SECONDS = 6.0        # how long it pulls, hard cap
+TUG_STRENGTH = 0.06      # fraction of the gap closed per frame: a tug, not a
+                         # lock — pull harder and you win, which is the whole
+                         # difference between a joke and a hijacked desktop
+TUG_COOLDOWN = 420.0     # and then it leaves you alone for a while
 ALERT_SECONDS = 1.4      # the double-take when something needs the human
 SNAP_MARGIN = 26         # how close to an edge a drop counts as "put me here"
 
@@ -415,6 +426,31 @@ class Brain(QObject):
         return self._pick(random.choice(("ambient", "philosophy")))
 
 
+def _menu_labels(sessions):
+    """Labels that name one session each.
+
+    Two sessions open on the same directory produce two identical entries and
+    the menu becomes a coin toss. Only the ambiguous ones get a suffix, so the
+    common case stays clean: the branch when it tells them apart, the pid when
+    it does not.
+    """
+    from collections import Counter
+    names = Counter((s.get("name") or "?") for s in sessions)
+    labels = []
+    for session in sessions:
+        name = session.get("name") or "?"
+        if names[name] == 1:
+            labels.append(name)
+            continue
+        branch = session.get("branch") or ""
+        same = [s for s in sessions if (s.get("name") or "?") == name]
+        if branch and len({s.get("branch") or "" for s in same}) == len(same):
+            labels.append(f"{name} · {branch}")
+        else:
+            labels.append(f"{name} · {session.get('pid')}")
+    return labels
+
+
 class Companion(QWidget):
     """The character. Everything here is presentation; Brain decides what it says.
 
@@ -425,7 +461,7 @@ class Companion(QWidget):
     reads as a sprite being dragged, not a thing that moves itself.
     """
 
-    def __init__(self, brand="claude", lang="en", alerts_only=False):
+    def __init__(self, brand="claude", lang="en", alerts_only=False, live=False):
         super().__init__(None)
         # No BypassWindowManagerHint: it is not needed for positioning under
         # XWayland (both were measured placing and moving a window correctly)
@@ -450,6 +486,11 @@ class Companion(QWidget):
         # One at a time. A menu that can start six of these leaves six
         # subscription-billed calls in flight for one impatient click.
         self.asking = None
+        # Lines from Claude when they are ready, the written table when they
+        # are not. The companion never waits on the model: worst case it
+        # sounds exactly like it did before.
+        self.voice = buddy_voice.Voice(lang, time.monotonic()) if live else None
+        self.refilling = None
 
         self.brain = Brain(lang, alerts_only)
         self.lang = lang
@@ -484,6 +525,14 @@ class Companion(QWidget):
         self.dragging = False
         self.drag_offset = QPointF(0, 0)
         self.docked = False
+        # Not 0.0: the drag timer is read as `now - drag_started`, and from
+        # zero that is the age of the monotonic clock — so a companion that has
+        # only just been picked up would start out already exasperated.
+        self.drag_started = time.monotonic()
+        self.drag_complained = False
+        self.recent_drags = []
+        self.tug_until = 0.0
+        self.tugged_at = 0.0
 
         self.resize(BUDDY_PX, BUDDY_PX)
         self._place()
@@ -504,7 +553,15 @@ class Companion(QWidget):
 
     def _poll(self):
         self.brain.refresh()
+        self._maybe_refill()
         line = self.brain.line()
+        if line and self.voice is not None:
+            # Only ever swaps the words. The decision of *whether* to speak
+            # stays with Brain, which is bound to measured triggers; letting
+            # the model decide that too is how a companion becomes noise.
+            spoken = self.voice.take()
+            if spoken:
+                line = spoken
         if line and line != self.said:
             self.said = line
             self.bubble = line
@@ -523,6 +580,41 @@ class Companion(QWidget):
             self._wake()
         elif not line:
             self.said = ""
+
+    def _maybe_refill(self):
+        """Buy another batch of lines, if the desktop has actually changed.
+
+        Runs at most one call at a time and never blocks: the answer arrives on
+        a signal, and until it does the companion keeps talking from the table.
+        """
+        if self.voice is None or self.refilling is not None:
+            return
+        state = buddy_voice.situation(self.brain.sessions or {}, self.brain.usage or {})
+        now = time.monotonic()
+        if not self.voice.should_refill(state, now):
+            return
+        command = buddy_voice.build(state, self.lang)
+
+        environment = QProcessEnvironment()
+        for key, value in repo_brief.clean_env().items():
+            environment.insert(key, value)
+
+        process = QProcess(self)
+        process.setProcessEnvironment(environment)
+        process.finished.connect(
+            lambda _c=0, _st=0, p=process: self._refilled(p))
+        process.errorOccurred.connect(lambda _e, p=process: self._refilled(p))
+        self.refilling = process
+        self.voice.started(state, now)
+        process.start(command[0], command[1:])
+
+    def _refilled(self, process):
+        if process is not self.refilling:
+            return
+        self.refilling = None
+        raw = bytes(process.readAllStandardOutput()).decode("utf-8", "replace")
+        lines, _meta = buddy_voice.harvest(raw)
+        self.voice.delivered(lines)
 
     def _resize_for_bubble(self):
         metrics = QFontMetrics(self._bubble_font())
@@ -646,8 +738,33 @@ class Companion(QWidget):
             self.pos_y = max(self.min_y, min(self.max_y, self.pos_y))
             self._place()
 
+        self._tug(now)
         self._animate(dt, now, moving)
         self.update()
+
+    def _tug(self, now):
+        """Pull the pointer back, briefly, after being dragged around a lot.
+
+        A fraction of the remaining gap per frame, not a setPos to a fixed
+        point: the pointer drifts toward the character and any real movement
+        beats it, so it reads as a small creature tugging at a sleeve rather
+        than as something that has taken the mouse away. Hard time cap, and a
+        long cooldown after.
+
+        Stops early if the pointer is already close, so it never fights over
+        the last few pixels.
+        """
+        if now >= self.tug_until or self.dragging:
+            return
+        pointer = QCursor.pos()
+        target_x = self.x() + BUDDY_PX / 2
+        target_y = self.y() + BUDDY_PX / 2
+        dx, dy = target_x - pointer.x(), target_y - pointer.y()
+        if abs(dx) < 12 and abs(dy) < 12:
+            self.tug_until = 0.0
+            return
+        QCursor.setPos(int(pointer.x() + dx * TUG_STRENGTH),
+                       int(pointer.y() + dy * TUG_STRENGTH))
 
     def _animate(self, dt, now, moving):
         """Pick the clip from what is actually happening, then step the clock.
@@ -657,7 +774,11 @@ class Companion(QWidget):
         sentence is read.
         """
         if self.dragging:
-            clip = "held"
+            held_for = now - self.drag_started
+            clip = "annoyed" if held_for > DRAG_PATIENCE else "held"
+            if held_for > DRAG_PATIENCE and not self.drag_complained:
+                self.drag_complained = True
+                self._say(self._t("stopThat"))
         elif now < self.alert_until:
             clip = "alert"
         elif self.bubble:
@@ -741,6 +862,9 @@ class Companion(QWidget):
         moved = (event.globalPosition() - self.press_pos).manhattanLength()
         if not self.dragging and moved < 6:
             return          # a click with a shaky hand is still a click
+        if not self.dragging:
+            self.drag_started = time.monotonic()
+            self.drag_complained = False
         self.dragging = True
         self.setCursor(Qt.ClosedHandCursor)
         target = event.globalPosition() - self.drag_offset
@@ -752,9 +876,18 @@ class Companion(QWidget):
         self.setCursor(Qt.OpenHandCursor)
         if self.dragging:
             self.dragging = False
-            self.settled_at = time.monotonic()
+            now = time.monotonic()
+            self.settled_at = now
+            self.recent_drags.append(now)
+            self.recent_drags = [t for t in self.recent_drags if now - t <= DRAG_MEMORY]
             self._snap()
             self.anim.play_once("land")
+            if (len(self.recent_drags) >= DRAG_TUG_AFTER
+                    and now - self.tugged_at > TUG_COOLDOWN):
+                self.tug_until = now + random.uniform(TUG_SECONDS - 1, TUG_SECONDS)
+                self.tugged_at = now
+                self.recent_drags = []
+                self._say(self._t("tugging"))
             return
         # A click, not a drag: go to whatever most needs attention.
         self._go_to_session()
@@ -815,11 +948,11 @@ class Companion(QWidget):
         on a timer, because a read costs real tokens and unasked-for spending
         is not a feature."""
         sessions = (self.brain.sessions or {}).get("sessions") or []
-        if not sessions:
-            return
+        if not sessions or repo_brief.claude_binary() is None:
+            return          # nothing to ask about, or nothing to ask with
         sub = menu.addMenu(self._t("askAbout"))
-        for session in sessions[:8]:
-            action = QAction(session.get("name") or "?", self)
+        for session, label in zip(sessions[:8], _menu_labels(sessions[:8])):
+            action = QAction(label, self)
             action.setEnabled(self.asking is None)
             action.triggered.connect(
                 lambda _checked=False, s=session: self._ask_about(s))
@@ -874,10 +1007,14 @@ class Companion(QWidget):
     def _t(self, key):
         table = {
             "en": {"quit": "Quit companion", "roam": "Let it roam again",
+                   "stopThat": "Put me down. I have places to be.",
+                   "tugging": "Fine. My turn.",
                    "askAbout": "How is it going in...",
                    "thinking": "Looking at {name}...",
                    "noAnswer": "No answer came back. It happens."},
             "pt": {"quit": "Fechar o companion", "roam": "Deixar passear de novo",
+                   "stopThat": "Me larga. Tenho compromissos.",
+                   "tugging": "Certo. Agora é a minha vez.",
                    "askAbout": "Como vai o...",
                    "thinking": "Deixa eu ver o {name}...",
                    "noAnswer": "Não veio resposta. Acontece."},
@@ -889,12 +1026,13 @@ def main():
     brand = "codex" if "--codex" in sys.argv else "claude"
     lang = "pt" if "--pt" in sys.argv else "en"
     alerts_only = "--alerts-only" in sys.argv
+    live = "--live" in sys.argv
 
     app = QApplication(sys.argv)
     app.setApplicationName("Usage Buddies Companion")
     app.setQuitOnLastWindowClosed(True)
 
-    companion = Companion(brand, lang, alerts_only)
+    companion = Companion(brand, lang, alerts_only, live)
     companion.show()
 
     if "--self-test" in sys.argv:

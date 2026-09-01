@@ -525,7 +525,16 @@ CLIPS = {
     "alert": {"loop": True,  "frames": [("stretch_wide", 110), ("stand_wide", 90),
                                         ("stretch_wide", 110), ("stand_wide", 520)]},
     "sleep": {"loop": True,  "frames": [("tuck_shut", 1500), ("tuck_half", 1100)]},
-    "held":  {"loop": True,  "frames": [("dangle_wide", 200), ("dangle_wide_up", 200)]},
+    # Held: it swings. Four positions rather than two, so the body reads as
+    # trailing the hand instead of blinking between two poses — the limbs are
+    # already hanging, and what sells weight on a string is that the swing has
+    # a middle.
+    "held":  {"loop": True,  "frames": [("dangle_wide", 150), ("dangle_look", 130),
+                                        ("dangle_wide_up", 150), ("dangle_look", 130)]},
+    # Dragged around for too long. Same pose, angrier face, and fast enough to
+    # read as protest rather than as swinging.
+    "annoyed": {"loop": True, "frames": [("dangle_shut", 110), ("dangle_wide", 90),
+                                         ("dangle_shut", 110), ("dangle_wide_up", 90)]},
     "land":  {"loop": False, "frames": [("squash_shut", 70), ("squash_happy", 90),
                                         ("stand_happy", 110), ("stretch_happy", 90),
                                         ("stand_open", 130)]},
@@ -546,6 +555,8 @@ FRAME_SPECS = {
     "walk3":          ("walk3", "look", -1),
     "dangle_wide":    ("dangle", "wide", 0),
     "dangle_wide_up": ("dangle", "wide", -1),
+    "dangle_look":    ("dangle", "look", 0),
+    "dangle_shut":    ("dangle", "shut", 0),
     "tuck_shut":      ("tuck", "shut", 0),
     "tuck_half":      ("tuck", "half", -1),
     "squash_shut":    ("squash", "shut", 0),

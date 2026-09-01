@@ -282,6 +282,7 @@ PlasmoidItem {
     // fires solely on states that need the human, which is the mode worth
     // leaving on.
     readonly property string buddyMode: Plasmoid.configuration.buddyMode || "off"
+    readonly property string buddyVoice: Plasmoid.configuration.buddyVoice || "table"
 
     property var sessionsData: ({})
     readonly property var attentionSession: sessionsData.attention ?? null
@@ -318,7 +319,8 @@ PlasmoidItem {
         companionCtl.connectSource(ctl + " start" +
             (brand.name === "Codex" ? " --codex" : "") +
             (lang === "pt" ? " --pt" : "") +
-            (buddyMode === "alerts" ? " --alerts-only" : ""));
+            (buddyMode === "alerts" ? " --alerts-only" : "") +
+            (buddyVoice === "claude" ? " --live" : ""));
     }
 
     // Only stop on a real change away from a mode that was on. Unguarded, this
@@ -337,6 +339,7 @@ PlasmoidItem {
         syncCompanion();
     }
     onLangChanged: if (buddyMode !== "off") syncCompanion()
+    onBuddyVoiceChanged: if (buddyMode !== "off") syncCompanion()
 
     // The companion's flags are read once, at startup, so it has to be started
     // with the settings already resolved. Plasmoid.configuration is not

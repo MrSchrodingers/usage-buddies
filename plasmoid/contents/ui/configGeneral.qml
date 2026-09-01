@@ -8,6 +8,7 @@ KCM.SimpleKCM {
 
     property string cfg_provider
     property string cfg_language
+    property string cfg_buddyVoice
     property double cfg_planMonthlyCost
 
     Kirigami.FormLayout {
@@ -39,6 +40,23 @@ KCM.SimpleKCM {
             ]
             currentIndex: Math.max(0, indexOfValue(page.cfg_language))
             onActivated: page.cfg_language = currentValue
+        }
+
+        // The written table costs nothing and never waits. Claude writes lines
+        // about the actual state of the machine, in batches of twelve —
+        // measured at about $0.0026 a line, against a subscription this widget
+        // is already watching. Off by default: it is real spending.
+        QQC2.ComboBox {
+            id: voiceBox
+            Kirigami.FormData.label: "Companion voice:"
+            textRole: "text"
+            valueRole: "value"
+            model: [
+                { value: "table",  text: "Written lines — free, instant" },
+                { value: "claude", text: "Claude — about $0.003 per line" }
+            ]
+            currentIndex: Math.max(0, indexOfValue(page.cfg_buddyVoice))
+            onActivated: page.cfg_buddyVoice = currentValue
         }
 
         QQC2.SpinBox {
