@@ -795,7 +795,14 @@ def to_qimage(grid, palette, scale=SCALE):
     — there is no resampling step to get wrong.
     """
     from PySide6.QtGui import QColor, QImage, QPainter
-    img = QImage(GRID * scale, GRID * scale, QImage.Format_ARGB32_Premultiplied)
+    # Sized from the grid it was handed, not from GRID. Hardcoding the
+    # character's 28 meant the car — 128 by 42 — was rasterised as an 84 by 84
+    # corner of itself, and the corner it kept was the tail. On screen that is
+    # an orange jet towing the cursor with no car attached, which is exactly
+    # what it looked like.
+    rows = len(grid)
+    cols = max((len(row) for row in grid), default=0)
+    img = QImage(cols * scale, rows * scale, QImage.Format_ARGB32_Premultiplied)
     img.fill(0)
     p = QPainter(img)
     for r, row in enumerate(grid):

@@ -729,3 +729,99 @@ def test_the_getaway_stays_on_one_screen(monkeypatch):
                 f"ran off {screen} to x={tx}"
             assert screen.top() <= ty <= screen.bottom(), \
                 f"ran off {screen} to y={ty}"
+
+
+@needs_qt
+def test_the_car_gets_the_window_even_with_a_bubble_up():
+    """The getaway opens by saying something, so there is always a bubble when
+    the car appears. Letting the bubble keep the window left it at 56 by 66
+    with a 384 by 126 car drawn into it from y=-60 — and the only part of the
+    picture inside that rectangle is the burning tyre tracks, so what reached
+    the screen was an orange flame dragging the cursor and nothing else."""
+    mod, c = _companion()
+    c.dragging = False
+    c.bubble = "Certo. Agora é a minha vez."
+    c._resize_for_bubble()
+    bubble_width = c.width()
+
+    c.tug_until = time.monotonic() + 5
+    c._fit_to_car()
+    assert (c.width(), c.height()) == c.car_size, \
+        f"the bubble kept the window at {c.width()}x{c.height()}"
+
+    c.tug_until = 0.0
+    c._fit_to_car()
+    assert c.width() == bubble_width, "did not give the window back to the bubble"
+
+
+@needs_qt
+def test_a_car_that_does_not_fit_is_not_drawn_at_all():
+    """A slice of car is worse than no car. The slice that lands inside a
+    56-pixel window is the jet, so the failure mode was an orange flame towing
+    the cursor with nothing attached to it."""
+    mod, c = _companion()
+    import buddy_sprites as sprites
+    c.dragging = False
+    c.bubble = ""
+    c.tug_until = time.monotonic() + 5
+    c.frame = "stand_open"
+    c.facing = 1
+
+    c.resize(sprites.SIZE, sprites.SIZE)          # far too small for the car
+    cramped = c.grab().toImage()
+    c.resize(*c.car_size)
+    roomy = c.grab().toImage()
+
+    assert cramped != roomy, "drew the same thing at both sizes"
+    # the cramped one has to be the ordinary sprite, which is what a
+    # correctly-sized character window shows
+    c.tug_until = 0.0
+    c.resize(sprites.SIZE, sprites.SIZE)
+    ordinary = c.grab().toImage()
+    assert cramped == ordinary, "drew a slice of car instead of the character"
+
+
+@needs_qt
+def test_the_rasterised_car_is_the_whole_car():
+    """to_qimage used to size the image from GRID — the character's 28 —
+    whatever grid it was handed. The car came out as an 84 by 84 corner of
+    itself, and the corner it kept was the tail, so what reached the screen
+    was an orange jet towing the cursor with no car attached.
+
+    Checked by colour, not by size: an image of the right dimensions
+    containing one flame would still pass a size assertion."""
+    import sys as _sys
+    _sys.path.insert(0, str(REPO / "scripts"))
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    import buddy_sprites as sprites
+
+    image = sprites.build_car_sheet("claude")["car1"]
+    assert image.width() == sprites.CAR_W * sprites.CAR_SCALE
+    assert image.height() == sprites.CAR_H * sprites.CAR_SCALE
+
+    seen = set()
+    for y in range(0, image.height(), 2):
+        for x in range(0, image.width(), 2):
+            pixel = image.pixel(x, y)
+            if (pixel >> 24) & 0xFF > 10:
+                seen.add(pixel & 0xFFFFFF)
+    steel = [c for c in seen
+             if abs(((c >> 16) & 0xFF) - ((c >> 8) & 0xFF)) < 12 and ((c >> 16) & 0xFF) > 120]
+    assert steel, "no bodywork in the picture, only fire"
+    assert len(seen) >= 8, f"only {len(seen)} colours: this is a fragment"
+
+
+@needs_qt
+def test_a_wide_grid_is_not_rasterised_square():
+    """The general form of the same bug, for whatever gets drawn next."""
+    import sys as _sys
+    _sys.path.insert(0, str(REPO / "scripts"))
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    import buddy_sprites as sprites
+
+    grid = ["b" * 40, "b" * 40, "b" * 40]
+    image = sprites.to_qimage(grid, sprites.PALETTES["claude"], 2)
+    assert (image.width(), image.height()) == (80, 6), \
+        f"a 40x3 grid rasterised as {image.width()}x{image.height()}"

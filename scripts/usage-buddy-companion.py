@@ -810,9 +810,20 @@ class Companion(QWidget):
         Only on the transition: resizing a top-level window every frame makes
         the compositor do real work thirty times a second for no reason.
         """
-        wanted = self.car_size if self.in_car() else (BUDDY_PX, BUDDY_PX + 10)
-        if self.bubble:
+        if self.in_car():
+            # The car wins over the bubble, and it has to: the getaway opens by
+            # saying something, so the bubble is always up when the car appears.
+            # Bailing here left the window at 56 by 66 while a 384 by 126 car
+            # was drawn into it from y=-60 — and the only part of the picture
+            # inside that rectangle is the burning tyre tracks. On screen: an
+            # orange flame dragging the cursor, and nothing else.
+            wanted = self.car_size
+        elif self.bubble:
+            if self.width() == self.car_size[0]:
+                self._resize_for_bubble()      # just got out; give it back
             return
+        else:
+            wanted = (BUDDY_PX, BUDDY_PX + 10)
         if (self.width(), self.height()) != wanted:
             self.resize(*wanted)
 
@@ -968,12 +979,17 @@ class Companion(QWidget):
     def paintEvent(self, _event):
         p = QPainter(self)
 
-        if self.in_car():
+        image = self.car.get(self.car_frame()) if self.in_car() else None
+        # Only if it fits. A car drawn into a window smaller than itself is a
+        # slice of car, and the slice that lands inside a 56-pixel window is
+        # the jet — an orange flame towing the cursor with nothing attached to
+        # it. Falling back to the ordinary sprite is a worse joke and a much
+        # better failure.
+        if image is not None and (self.width() >= image.width()
+                                  and self.height() >= image.height()):
             p.setRenderHint(QPainter.Antialiasing, False)
             p.setRenderHint(QPainter.SmoothPixmapTransform, False)
-            image = self.car.get(self.car_frame())
-            if image is not None:
-                p.drawImage(0, self.height() - image.height(), image)
+            p.drawImage(0, self.height() - image.height(), image)
             p.end()
             return
 
