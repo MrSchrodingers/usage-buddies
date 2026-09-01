@@ -321,8 +321,39 @@ PlasmoidItem {
             (buddyMode === "alerts" ? " --alerts-only" : ""));
     }
 
-    onBuddyModeChanged: syncCompanion()
+    // Only stop on a real change away from a mode that was on. Unguarded, this
+    // fired during creation as buddyMode resolved to its default, and sent
+    // `stop` — which killed the companion the *other* applet instance had just
+    // started. Two instances in one panel share one companion process, and the
+    // one with the buddy switched off was silently switching it off for both.
+    property string previousBuddyMode: ""
+    onBuddyModeChanged: {
+        var was = previousBuddyMode;
+        previousBuddyMode = buddyMode;
+        if (buddyMode === "off") {
+            if (was !== "" && was !== "off") syncCompanion();   // a real switch-off
+            return;
+        }
+        syncCompanion();
+    }
     onLangChanged: if (buddyMode !== "off") syncCompanion()
+
+    // The companion's flags are read once, at startup, so it has to be started
+    // with the settings already resolved. Plasmoid.configuration is not
+    // readable during component creation: starting there picked langSetting
+    // "auto", fell back to the system locale — en_US on the machine this was
+    // found on — and launched an English companion for a widget set to
+    // Portuguese. Wait for the configuration to answer, then start.
+    Timer {
+        id: companionBoot
+        interval: 300; repeat: true; running: true
+        onTriggered: {
+            if (Plasmoid.configuration.buddyMode === undefined) return;
+            running = false;
+            root.previousBuddyMode = root.buddyMode;
+            if (root.buddyMode !== "off") root.syncCompanion();
+        }
+    }
     // One handler, because QML rejects a second assignment to the same property
     // with "Property value set multiple times" — and it rejects it by refusing
     // to load the applet at all, which is a blank panel rather than a warning.
@@ -332,10 +363,9 @@ PlasmoidItem {
     // and readData's guard turns that into a skipped read. Skipped, the widget
     // would stay empty for a whole refresh interval. onCompleted runs after
     // every property is set, so this is the read certain to find a provider.
-    Component.onCompleted: {
-        if (buddyMode !== "off") syncCompanion();
-        dataLoader.readData();
-    }
+    // The companion is started by companionBoot above, once the configuration
+    // is readable; starting it here would use unresolved settings.
+    Component.onCompleted: dataLoader.readData()
 
     P5Support.DataSource {
         id: focusHelper

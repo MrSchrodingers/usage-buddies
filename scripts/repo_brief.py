@@ -104,6 +104,10 @@ def build_command(prompt, lang="en", model="haiku"):
         "claude", "-p", prompt,
         "--output-format", "json",
         "--model", model,
+        # Two sentences over facts already gathered is not a reasoning problem.
+        # The default effort spends thinking tokens deciding how to phrase a
+        # summary, which is the most expensive way to be brief.
+        "--effort", "low",
         "--tools", "",
         "--system-prompt", SYSTEM.get(lang, SYSTEM["en"]),
         "--strict-mcp-config",
