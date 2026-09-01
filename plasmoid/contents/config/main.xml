@@ -37,5 +37,44 @@
     <entry name="displayMode" type="String">
       <default>full</default>
     </entry>
+    <!-- How long a focus session runs, in minutes. 25 is the pomodoro
+         convention: long enough to finish something, short enough that
+         someone will actually start one. -->
+    <entry name="buddyFocusMinutes" type="Int">
+      <default>25</default>
+    </entry>
+    <!-- How far the companion may escalate while a session waits on a human:
+         off | speak | walk | wave | pointer. Each step is louder than the
+         last, and "pointer" takes the mouse away from whoever is using it.
+         The default stops one rung below on purpose: seizing the cursor is
+         opt-in, never something an installation inherits. Anyone raising this
+         default should first watch it happen mid-sentence. -->
+    <entry name="buddyInsistence" type="String">
+      <default>walk</default>
+    </entry>
+    <!-- Speak less outside the hours this account usually works, derived from
+         lifetime.peakHours. On by default: the hours it stays quiet in are
+         measured from the user's own history, not guessed. -->
+    <entry name="buddyQuietHours" type="Bool">
+      <default>true</default>
+    </entry>
+    <!-- Visual joke layer: off | light | full. "light" by default — the
+         occasional prop stays funny, a constant one becomes the thing being
+         ignored. -->
+    <entry name="buddyMemes" type="String">
+      <default>light</default>
+    </entry>
+    <!-- Contact shadow under the character. On by default: without it the
+         sprite reads as pasted onto the screen rather than standing on it.
+         Off is the escape hatch for compositors where it costs frames. -->
+    <entry name="buddyShadow" type="Bool">
+      <default>true</default>
+    </entry>
+    <!-- Stay with one session until it is resolved instead of rotating over
+         all of them. Off by default, because with several sessions running,
+         locking onto one hides the others. -->
+    <entry name="buddyEscort" type="Bool">
+      <default>false</default>
+    </entry>
   </group>
 </kcfg>

@@ -185,6 +185,7 @@ PlasmoidItem {
             "justNow": "just now", "minutesAgo": "m ago", "hoursAgo": "h ago", "daysAgo": "d ago",
             "stale": "stale",
             "buddy": "Buddy", "buddy_off": "silent", "buddy_alerts": "alerts only", "buddy_chatty": "chatty",
+            "focusSession": "Focus session", "focusStart": "start", "focusStop": "end",
             "liveSessions": "Live sessions", "goThere": "go there",
             "st_asking": "asking you", "st_waiting": "done", "st_idle": "idle", "st_working": "working",
             "cacheSaved": "Cache saved", "hit": "hit", "readPerOutput": "Read per output",
@@ -234,6 +235,7 @@ PlasmoidItem {
             "justNow": "agora", "minutesAgo": "min atrás", "hoursAgo": "h atrás", "daysAgo": "d atrás",
             "stale": "desatualizado",
             "buddy": "Buddy", "buddy_off": "calado", "buddy_alerts": "só alertas", "buddy_chatty": "tagarela",
+            "focusSession": "Sessão de foco", "focusStart": "iniciar", "focusStop": "encerrar",
             "liveSessions": "Sessões vivas", "goThere": "ir para lá",
             "st_asking": "perguntou", "st_waiting": "terminou", "st_idle": "ocioso", "st_working": "trabalhando",
             "cacheSaved": "Cache economizou", "hit": "de acerto", "readPerOutput": "Lido por produzido",
@@ -284,6 +286,33 @@ PlasmoidItem {
     readonly property string buddyMode: Plasmoid.configuration.buddyMode || "off"
     readonly property string buddyVoice: Plasmoid.configuration.buddyVoice || "table"
 
+    // Everything below is passed on the companion's command line, so each one
+    // is clamped to the values the companion accepts. `Plasmoid.configuration`
+    // is a text file on disk: a value read from it and pasted into a shell
+    // command is untrusted input, and an unknown word would reach the process
+    // as an argument nobody parses — or worse, as shell syntax.
+    //
+    // `||` cannot express a boolean default: `false || true` is true, so a
+    // switch turned off would keep reporting on. Booleans compare explicitly,
+    // and the comparison also covers the undefined the configuration returns
+    // before it is readable.
+    readonly property int buddyFocusMinutes: {
+        var v = parseInt(Plasmoid.configuration.buddyFocusMinutes);
+        if (isNaN(v) || v < 1) return 25;
+        return Math.min(v, 240);
+    }
+    readonly property string buddyInsistence: {
+        var v = Plasmoid.configuration.buddyInsistence || "walk";
+        return ["off", "speak", "walk", "wave", "pointer"].indexOf(v) >= 0 ? v : "walk";
+    }
+    readonly property bool buddyQuietHours: Plasmoid.configuration.buddyQuietHours !== false
+    readonly property string buddyMemes: {
+        var v = Plasmoid.configuration.buddyMemes || "light";
+        return ["off", "light", "full"].indexOf(v) >= 0 ? v : "light";
+    }
+    readonly property bool buddyShadow: Plasmoid.configuration.buddyShadow !== false
+    readonly property bool buddyEscort: Plasmoid.configuration.buddyEscort === true
+
     property var sessionsData: ({})
     readonly property var attentionSession: sessionsData.attention ?? null
 
@@ -320,7 +349,13 @@ PlasmoidItem {
             (brand.name === "Codex" ? " --codex" : "") +
             (lang === "pt" ? " --pt" : "") +
             (buddyMode === "alerts" ? " --alerts-only" : "") +
-            (buddyVoice === "claude" ? " --live" : ""));
+            (buddyVoice === "claude" ? " --live" : "") +
+            " --focus-minutes " + buddyFocusMinutes +
+            " --insistence " + buddyInsistence +
+            (buddyQuietHours ? " --quiet-hours" : "") +
+            " --memes " + buddyMemes +
+            (buddyShadow ? "" : " --no-shadow") +
+            (buddyEscort ? " --escort" : ""));
     }
 
     // Only stop on a real change away from a mode that was on. Unguarded, this
@@ -333,6 +368,11 @@ PlasmoidItem {
         var was = previousBuddyMode;
         previousBuddyMode = buddyMode;
         if (buddyMode === "off") {
+            // The process is going away, so the widget's record of what it was
+            // asked to do goes with it; otherwise switching the companion back
+            // on offers to end a focus session that no longer exists.
+            focusRequested = false;
+            focusExpiry.stop();
             if (was !== "" && was !== "off") syncCompanion();   // a real switch-off
             return;
         }
@@ -340,6 +380,16 @@ PlasmoidItem {
     }
     onLangChanged: if (buddyMode !== "off") syncCompanion()
     onBuddyVoiceChanged: if (buddyMode !== "off") syncCompanion()
+    // One handler per setting that appears on the command line above. Without
+    // them the option changes, the running companion keeps the flags it was
+    // started with, and nothing happens until the widget is reloaded — a bug
+    // nobody reports, because it reads as the setting doing nothing.
+    onBuddyFocusMinutesChanged: if (buddyMode !== "off") syncCompanion()
+    onBuddyInsistenceChanged: if (buddyMode !== "off") syncCompanion()
+    onBuddyQuietHoursChanged: if (buddyMode !== "off") syncCompanion()
+    onBuddyMemesChanged: if (buddyMode !== "off") syncCompanion()
+    onBuddyShadowChanged: if (buddyMode !== "off") syncCompanion()
+    onBuddyEscortChanged: if (buddyMode !== "off") syncCompanion()
 
     // The companion's flags are read once, at startup, so it has to be started
     // with the settings already resolved. Plasmoid.configuration is not
@@ -369,6 +419,77 @@ PlasmoidItem {
     // The companion is started by companionBoot above, once the configuration
     // is readable; starting it here would use unresolved settings.
     Component.onCompleted: dataLoader.readData()
+
+    // ─── Telling the companion something while it is running ───
+    //
+    // Its flags are read once, at startup, so a restart is the only way to
+    // change them — and restarting to begin a focus session throws away
+    // everything the process has accumulated. Commands travel instead through
+    // a file the companion watches:
+    //
+    //     ~/.cache/usage-buddies/companion-command.json
+    //     {"command": "focus.start", "minutes": 25, "issuedAt": "<ISO 8601 UTC>"}
+    //     {"command": "focus.stop", "issuedAt": "<ISO 8601 UTC>"}
+    //
+    // `issuedAt` is what keeps the file from being an order that stands
+    // forever. The companion also reads it while starting up, and with no
+    // timestamp a mascot restarted the next morning would re-enter the focus
+    // session asked for yesterday. It also keeps two identical commands apart:
+    // the executable engine keys sources by their command string and ignores a
+    // connect for one already connected, so a second "focus.stop" would never
+    // be written.
+    P5Support.DataSource {
+        id: companionCommand
+        engine: "executable"
+        connectedSources: []
+        onNewData: function(source, data) { disconnectSource(source); }
+    }
+
+    // Written to a temporary file in the same directory, then renamed over the
+    // target. Writing in place is not atomic: the watcher on the other side
+    // wakes on the first write and reads truncated JSON, which it can only
+    // throw away — the command is lost with no trace on either side. A rename
+    // within one filesystem is atomic, so the reader sees either the previous
+    // file or the whole new one.
+    function sendCompanionCommand(payload) {
+        payload.issuedAt = new Date().toISOString();
+        var dir = "\"${XDG_CACHE_HOME:-$HOME/.cache}\"/usage-buddies";
+        companionCommand.connectSource(
+            "mkdir -p " + dir + " && " +
+            "t=$(mktemp " + dir + "/.companion-command.XXXXXX) && " +
+            "printf %s " + shellQuote(JSON.stringify(payload)) + " > \"$t\" && " +
+            "mv \"$t\" " + dir + "/companion-command.json");
+    }
+
+    // Single quotes suspend everything the shell would otherwise interpret.
+    // The one character that cannot appear between them is the quote itself,
+    // which is closed, escaped and reopened.
+    function shellQuote(s) {
+        return "'" + String(s).replace(/'/g, "'\\''") + "'";
+    }
+
+    // The companion never answers, so this is the widget's record of what it
+    // last asked for, not an observation of the other process. The timer drops
+    // it when the session it requested would have ended.
+    property bool focusRequested: false
+
+    Timer {
+        id: focusExpiry
+        interval: root.buddyFocusMinutes * 60000
+        onTriggered: root.focusRequested = false
+    }
+
+    function toggleFocusSession() {
+        if (focusRequested) {
+            sendCompanionCommand({"command": "focus.stop"});
+            focusRequested = false;
+            focusExpiry.stop();
+            return;
+        }
+        sendCompanionCommand({"command": "focus.start", "minutes": buddyFocusMinutes});
+        focusRequested = true;
+        focusExpiry.restart();
+    }
 
     P5Support.DataSource {
         id: focusHelper
@@ -2367,6 +2488,27 @@ PlasmoidItem {
                     PlasmaComponents3.ToolTip {
                         text: root.tr("buddy") + ": " + root.tr("buddy_" + root.buddyMode) +
                               "\n" + root.tr("clickToCycle")
+                    }
+                }
+
+                // Focus session, started from the widget because the
+                // companion has no window to click on. It is a separate
+                // process, so this writes a command file it watches rather
+                // than restarting it.
+                //
+                // Hidden with the companion switched off: the button would
+                // write a command for a process that is not running, which is
+                // a control that looks live and does nothing.
+                PlasmaComponents3.ToolButton {
+                    id: focusBtn
+                    visible: root.buddyMode !== "off"
+                    icon.name: root.focusRequested ? "process-stop" : "chronometer"
+                    onClicked: root.toggleFocusSession()
+                    PlasmaComponents3.ToolTip {
+                        text: root.tr("focusSession") + ": " +
+                              (root.focusRequested
+                               ? root.tr("focusStop")
+                               : root.tr("focusStart") + " " + root.buddyFocusMinutes + " min")
                     }
                 }
 

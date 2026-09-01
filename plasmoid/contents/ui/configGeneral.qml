@@ -9,6 +9,12 @@ KCM.SimpleKCM {
     property string cfg_provider
     property string cfg_language
     property string cfg_buddyVoice
+    property int cfg_buddyFocusMinutes
+    property string cfg_buddyInsistence
+    property bool cfg_buddyQuietHours
+    property string cfg_buddyMemes
+    property bool cfg_buddyShadow
+    property bool cfg_buddyEscort
     property double cfg_planMonthlyCost
 
     Kirigami.FormLayout {
@@ -42,6 +48,11 @@ KCM.SimpleKCM {
             onActivated: page.cfg_language = currentValue
         }
 
+        Kirigami.Separator {
+            Kirigami.FormData.label: "Companion"
+            Kirigami.FormData.isSection: true
+        }
+
         // The written table costs nothing and never waits. Claude writes lines
         // about the actual state of the machine, in batches of twelve —
         // measured at about $0.0026 a line, against a subscription this widget
@@ -57,6 +68,126 @@ KCM.SimpleKCM {
             ]
             currentIndex: Math.max(0, indexOfValue(page.cfg_buddyVoice))
             onActivated: page.cfg_buddyVoice = currentValue
+        }
+
+        QQC2.SpinBox {
+            Kirigami.FormData.label: "Focus session:"
+            from: 5
+            to: 240
+            stepSize: 5
+            editable: true
+            value: page.cfg_buddyFocusMinutes
+            onValueModified: page.cfg_buddyFocusMinutes = value
+            textFromValue: function (v) { return v + " min" }
+        }
+
+        QQC2.Label {
+            Kirigami.FormData.label: ""
+            text: "How long a session started from the popup runs. It stays quiet for that long."
+            opacity: 0.6
+            font.italic: true
+            wrapMode: Text.WordWrap
+        }
+
+        // The ladder is ordered by how much of the user's attention each step
+        // takes. Only the last one takes input away from them, which is why it
+        // is spelled out here and is not the default.
+        QQC2.ComboBox {
+            id: insistenceBox
+            Kirigami.FormData.label: "Insistence:"
+            textRole: "text"
+            valueRole: "value"
+            model: [
+                { value: "off",     text: "Off — it never chases a waiting session" },
+                { value: "speak",   text: "Speak — a line in its bubble, nothing more" },
+                { value: "walk",    text: "Walk — it goes and stands by the window that is waiting" },
+                { value: "wave",    text: "Wave — it walks over, then waves at you" },
+                { value: "pointer", text: "Pointer — it moves your mouse cursor to that window" }
+            ]
+            currentIndex: Math.max(0, indexOfValue(page.cfg_buddyInsistence))
+            onActivated: page.cfg_buddyInsistence = currentValue
+        }
+
+        QQC2.Label {
+            Kirigami.FormData.label: ""
+            text: insistenceBox.currentValue === "pointer"
+                  ? "Warning: this step moves your mouse cursor. The companion takes the pointer out of whatever you are doing and drags it to the window that is waiting."
+                  : "How far it escalates while a session waits on you. It stops at the step chosen here."
+            opacity: 0.7
+            font.italic: true
+            wrapMode: Text.WordWrap
+        }
+
+        QQC2.CheckBox {
+            Kirigami.FormData.label: "Quiet hours:"
+            text: "Speak less outside your usual working hours"
+            checked: page.cfg_buddyQuietHours
+            onToggled: page.cfg_buddyQuietHours = checked
+        }
+
+        QQC2.Label {
+            Kirigami.FormData.label: ""
+            text: "Read from the hours this account has actually worked, not from a schedule someone has to keep up to date."
+            opacity: 0.6
+            font.italic: true
+            wrapMode: Text.WordWrap
+        }
+
+        QQC2.ComboBox {
+            id: memesBox
+            Kirigami.FormData.label: "Visual jokes:"
+            textRole: "text"
+            valueRole: "value"
+            model: [
+                { value: "off",   text: "Off — plain sprite, no props" },
+                { value: "light", text: "Light — a prop now and then" },
+                { value: "full",  text: "Full — a prop on most lines" }
+            ]
+            currentIndex: Math.max(0, indexOfValue(page.cfg_buddyMemes))
+            onActivated: page.cfg_buddyMemes = currentValue
+        }
+
+        QQC2.Label {
+            Kirigami.FormData.label: ""
+            text: "Free to run, paid for in attention: a joke that arrives every time stops registering."
+            opacity: 0.6
+            font.italic: true
+            wrapMode: Text.WordWrap
+        }
+
+        QQC2.CheckBox {
+            Kirigami.FormData.label: "Shadow:"
+            text: "Contact shadow under the character"
+            checked: page.cfg_buddyShadow
+            onToggled: page.cfg_buddyShadow = checked
+        }
+
+        QQC2.Label {
+            Kirigami.FormData.label: ""
+            text: "Without it the sprite reads as pasted on top of the screen. Costs a little compositing on every frame."
+            opacity: 0.6
+            font.italic: true
+            wrapMode: Text.WordWrap
+        }
+
+        QQC2.CheckBox {
+            Kirigami.FormData.label: "Escort:"
+            text: "Stay with one session until it is resolved"
+            checked: page.cfg_buddyEscort
+            onToggled: page.cfg_buddyEscort = checked
+        }
+
+        QQC2.Label {
+            Kirigami.FormData.label: ""
+            text: "Off, it rotates over every session that needs you. On, the others wait their turn — quieter, and easier to miss one."
+            opacity: 0.6
+            font.italic: true
+            wrapMode: Text.WordWrap
+        }
+
+        Kirigami.Separator {
+            Kirigami.FormData.label: "Usage"
+            Kirigami.FormData.isSection: true
         }
 
         QQC2.SpinBox {
