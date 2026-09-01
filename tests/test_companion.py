@@ -115,6 +115,144 @@ def test_companion_actually_moves():
                        env={**os.environ, "QT_QPA_PLATFORM": "xcb"})
     assert r.returncode == 0, r.stderr
     out = json.loads(r.stdout.strip().splitlines()[-1])
-    assert out["moved"] > 10, f"barely moved: {out}"
+    # Both axes: a companion that only slides along one line is a status bar
+    # with a face.
+    assert out["movedX"] > 10, f"barely moved horizontally: {out}"
+    assert out["movedY"] > 10, f"never left the bottom line: {out}"
     x, y, w, h = out["geometry"]
     assert w > 0 and h > 0
+
+
+# ── movement, docking and the click/drag distinction ──
+
+def _companion(monkeypatch):
+    """A Companion with its polling neutralised, so tests drive it."""
+    import os as _os
+    _os.environ["QT_QPA_PLATFORM"] = "xcb"
+    spec = importlib.util.spec_from_file_location("companion_ui", COMPANION)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["companion_ui"] = mod
+    spec.loader.exec_module(mod)
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    c = mod.Companion()
+    c.poll_timer.stop()
+    c._poll = lambda: None
+    return mod, app, c
+
+
+needs_display = pytest.mark.skipif(
+    importlib.util.find_spec("PySide6") is None or not os.environ.get("DISPLAY"),
+    reason="PySide6 or X display missing")
+
+
+@needs_display
+def test_it_leaves_the_bottom_line(monkeypatch):
+    """A companion confined to one line is a status bar with a face."""
+    mod, app, c = _companion(monkeypatch)
+    ys = {c._pick_target()[1] for _ in range(60)}
+    assert len(ys) > 20, "targets cluster on one line"
+    assert min(ys) < c.min_y + (c.max_y - c.min_y) * 0.5, "never goes above mid-screen"
+
+
+@needs_display
+def test_targets_favour_the_lower_half(monkeypatch):
+    """Uniform placement puts it over whatever is being read as often as not."""
+    mod, app, c = _companion(monkeypatch)
+    span = c.max_y - c.min_y
+    ys = [c._pick_target()[1] for _ in range(400)]
+    lower = sum(1 for y in ys if y > c.min_y + span / 2)
+    assert lower / len(ys) > 0.6, f"only {lower / len(ys):.0%} in the lower half"
+
+
+@needs_display
+def test_frame_rate_drops_when_it_settles(monkeypatch):
+    """30fps to animate a character that is standing still is a steady slice of
+    a core for nothing."""
+    mod, app, c = _companion(monkeypatch)
+    c.target = (c.pos_x, c.pos_y)
+    c.next_move = float("inf")
+    c.docked = False
+    c.click_at = 0
+    c._tick()
+    assert c.frame_timer.interval() == mod.FRAME_MS_IDLE
+    c.target = (c.min_x, c.min_y)
+    c._tick()
+    assert c.frame_timer.interval() == mod.FRAME_MS_ACTIVE
+
+
+@needs_display
+def test_dropped_in_a_corner_it_stays(monkeypatch):
+    """Putting something in a corner is an instruction; wandering off ignores it."""
+    mod, app, c = _companion(monkeypatch)
+    c.pos_x, c.pos_y = float(c.min_x + 2), float(c.min_y + 2)
+    c._snap()
+    assert c.docked is True
+    assert (c.pos_x, c.pos_y) == (float(c.min_x), float(c.min_y))
+    # and it does not pick a new target while docked
+    before = c.target
+    c.next_move = 0
+    c._tick()
+    assert c.target == before
+
+
+@needs_display
+def test_dropped_mid_screen_it_resumes_roaming(monkeypatch):
+    mod, app, c = _companion(monkeypatch)
+    c.pos_x = float((c.min_x + c.max_x) / 2)
+    c.pos_y = float((c.min_y + c.max_y) / 2)
+    c._snap()
+    assert c.docked is False
+
+
+@needs_display
+def test_undock_lets_it_roam_again(monkeypatch):
+    mod, app, c = _companion(monkeypatch)
+    c.docked = True
+    c._undock()
+    assert c.docked is False
+
+
+@needs_display
+def test_a_click_falls_back_to_some_session(monkeypatch):
+    """A click that silently does nothing reads as broken, and there is always
+    a session worth jumping to."""
+    mod, app, c = _companion(monkeypatch)
+    c.brain.sessions = {"attention": None,
+                        "sessions": [{"pid": 4242, "name": "repo", "state": "working"}]}
+    called = []
+    monkeypatch.setattr(mod.subprocess, "Popen",
+                        lambda cmd, **kw: called.append(cmd))
+    monkeypatch.setattr(mod, "FOCUS_HELPER", Path("/bin/true"))
+    c._go_to_session()
+    assert called and called[0][-1] == "4242", called
+
+
+@needs_display
+def test_a_session_needing_attention_wins_the_click(monkeypatch):
+    mod, app, c = _companion(monkeypatch)
+    c.brain.sessions = {"attention": {"pid": 111, "name": "hub", "state": "waiting"},
+                        "sessions": [{"pid": 222, "name": "other", "state": "working"}]}
+    called = []
+    monkeypatch.setattr(mod.subprocess, "Popen", lambda cmd, **kw: called.append(cmd))
+    monkeypatch.setattr(mod, "FOCUS_HELPER", Path("/bin/true"))
+    c._go_to_session()
+    assert called[0][-1] == "111"
+
+
+@needs_display
+def test_the_window_accepts_mouse_input(monkeypatch):
+    """BypassWindowManagerHint is unnecessary for positioning under XWayland —
+    both variants were measured placing and moving a window — and it costs
+    reliable mouse input, which click and drag need.
+
+    Checked on the live window flags, not the source: the source mentions the
+    hint in the comment explaining why it is absent, which an earlier version
+    of this test happily matched.
+    """
+    from PySide6.QtCore import Qt
+    mod, app, c = _companion(monkeypatch)
+    flags = c.windowFlags()
+    assert not (flags & Qt.BypassWindowManagerHint), "input would be unreliable"
+    assert flags & Qt.WindowStaysOnTopHint, "would sink behind other windows"
+    assert flags & Qt.FramelessWindowHint

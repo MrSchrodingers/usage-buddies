@@ -2117,66 +2117,10 @@ PlasmoidItem {
                         }
                     }
 
-                    // Speech bubble. Anchored to the buddy so the line reads as
-                    // coming from it, and clipped to nothing when there is
-                    // nothing to say — silence is the default state.
-                    Rectangle {
-                        id: bubble
-                        visible: root.buddySays !== null
-                        z: 20
-                        anchors.left: parent.right
-                        anchors.leftMargin: 6
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: Math.min(bubbleText.implicitWidth + 18,
-                                        Kirigami.Units.gridUnit * 13)
-                        height: bubbleText.implicitHeight + 12
-                        radius: 8
-                        color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g,
-                                       Kirigami.Theme.textColor.b, 0.09)
-
-                        // Little tail toward the buddy.
-                        Rectangle {
-                            width: 7; height: 7
-                            rotation: 45
-                            anchors.right: parent.left
-                            anchors.rightMargin: -3
-                            anchors.verticalCenter: parent.verticalCenter
-                            color: parent.color
-                        }
-
-                        PlasmaComponents3.Label {
-                            id: bubbleText
-                            anchors.fill: parent
-                            anchors.margins: 6
-                            text: root.buddySays?.text ?? ""
-                            wrapMode: Text.WordWrap
-                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.72
-                            opacity: 0.8
-                        }
-
-                        // Fades in rather than appearing, so a line that
-                        // changes on refresh does not read as a flicker.
-                        opacity: 0
-                        states: State {
-                            when: bubble.visible
-                            PropertyChanges { target: bubble; opacity: 1 }
-                        }
-                        transitions: Transition {
-                            NumberAnimation { property: "opacity"; duration: 500
-                                              easing.type: Easing.OutCubic }
-                        }
-
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: root.attentionSession ? Qt.PointingHandCursor : Qt.ArrowCursor
-                            onClicked: {
-                                // Clicking a line about a session goes to it.
-                                var a = root.attentionSession;
-                                if (a) focusHelper.connectSource(
-                                    "$HOME/.local/bin/focus-session.sh " + a.pid);
-                            }
-                        }
-                    }
+                    // No speech bubble here. It was anchored to the buddy and
+                    // overlapped the title and badge beside it — the header is
+                    // 24 gridUnits wide and the bubble needs 13 of them. The
+                    // talking belongs to the desktop companion, which has room.
 
                     // === ALL OVERLAYS ON TOP OF CLAWD ===
                     // DUMB: Fire
