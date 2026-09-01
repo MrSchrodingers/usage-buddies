@@ -223,7 +223,35 @@ def session_idle(transcript: Path, now=None):
     return count, int(now - newest)
 
 
-def classify(records, idle_seconds, background=0):
+SHELLS = {"sh", "bash", "zsh", "dash", "fish", "ksh"}
+
+
+def running_command(pid):
+    """True when this session has a shell child, meaning a Bash call is running.
+
+    Every session carries the same persistent children — the MCP servers it
+    launched, `npm exec ...` — so their presence says nothing. A shell appears
+    only while a command is executing. Measured across five live sessions: two
+    npm children each at rest, plus one zsh for each that was mid-command.
+
+    Only covers tool calls that spawn a shell, which is the case that goes
+    quiet for minutes at a time.
+    """
+    try:
+        children = open(f"/proc/{pid}/task/{pid}/children").read().split()
+    except OSError:
+        return False
+    for child in children:
+        try:
+            with open(f"/proc/{child}/comm") as handle:
+                if handle.read().strip() in SHELLS:
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def classify(records, idle_seconds, background=0, executing=False):
     """What the session is doing, most-urgent first.
 
     Ordering matters: a session asking a question is blocked on a human no
@@ -258,6 +286,18 @@ def classify(records, idle_seconds, background=0):
         if idle_seconds >= IDLE_SECONDS:
             return "idle", stop
         return ("waiting" if idle_seconds >= SETTLED_SECONDS else "working"), stop
+
+    # A turn that stopped to call a tool, with that command still executing,
+    # has not finished — it is inside the call. Nothing is written to the
+    # transcript while a command runs, so a deploy watched from a shell goes
+    # quiet for as long as the deploy takes and was then reported as an
+    # abandoned session.
+    #
+    # Gated on the command actually running rather than on the stop_reason
+    # alone: a session that stopped mid-tool-call and is *not* executing
+    # anything is stuck or waiting, and calling that "working" would hide it.
+    if stop == "tool_use" and executing:
+        return "working", (tools[0] if tools else "tool_use")
 
     if idle_seconds >= IDLE_SECONDS:
         return "idle", stop
@@ -348,7 +388,8 @@ def collect() -> dict:
             records = _tail_records(transcript)
 
         state, detail = classify(records, idle if idle is not None else 0,
-                                 background=background)
+                                 background=background,
+                                 executing=running_command(live["pid"]))
         record = records[0] if records else None
         name = os.path.basename(live["cwd"].rstrip("/")) or live["cwd"]
         sessions.append({

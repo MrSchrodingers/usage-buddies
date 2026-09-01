@@ -142,3 +142,92 @@ def test_a_quoted_launch_in_tool_output_is_not_a_launch(tmp_path):
     }) + "\n")
     assert mod._background_bash_ids(transcript) == set(), \
         "a quoted id was read as a launch"
+
+
+def test_a_session_inside_a_long_tool_call_is_not_abandoned(tmp_path):
+    """Nothing is written to the transcript while a command runs.
+
+    A deploy watched from a shell goes quiet for as long as the deploy takes,
+    and the session was then announced as finished. The process is known alive
+    — this probe starts from pgrep — so a turn that stopped to call a tool is
+    inside that call, not done with it.
+    """
+    import os
+    mod = _probe()
+    project = tmp_path / "projects" / "-repo"
+    project.mkdir(parents=True)
+    transcript = project / "abc123.jsonl"
+    transcript.write_text(json.dumps({
+        "type": "assistant",
+        "message": {"role": "assistant", "stop_reason": "tool_use",
+                    "content": [{"type": "tool_use", "name": "Bash", "input": {}}]},
+    }) + "\n")
+    old = time.time() - 3600
+    os.utime(transcript, (old, old))
+
+    state, detail = mod.classify(mod._tail_records(transcript), 3600,
+                                 background=0, executing=True)
+    assert state == "working", f"an hour into a deploy it reported {state}"
+    assert detail == "Bash"
+
+    # And the case the old behaviour existed to catch: stopped mid-call with
+    # nothing running is stuck, and saying "working" would bury it.
+    stuck, _ = mod.classify(mod._tail_records(transcript), 3600,
+                            background=0, executing=False)
+    assert stuck == "idle", f"a stalled session reported {stuck}"
+
+
+def test_a_finished_turn_that_is_quiet_is_still_idle(tmp_path):
+    """The contrast. Without it, 'never idle' would pass the test above."""
+    mod = _probe()
+    transcript = _session(tmp_path, turn_age=3600)
+    state, _ = mod.classify(mod._tail_records(transcript), 3600, background=0)
+    assert state == "idle"
+
+
+def test_a_shell_child_is_what_counts_as_running(tmp_path):
+    """Against real /proc, not a fixture.
+
+    Every session carries the same persistent children — the MCP servers it
+    launched, which are `npm exec ...` and always there. Counting any child at
+    all would report every session as executing, forever. Only a shell appears
+    while a command runs.
+    """
+    import os
+    import subprocess
+    mod = _probe()
+
+    assert not mod.running_command(os.getpid()), \
+        "reported a command running before one was started"
+
+    child = subprocess.Popen(["sh", "-c", "sleep 4"])
+    try:
+        deadline = time.time() + 3
+        while time.time() < deadline and not mod.running_command(os.getpid()):
+            time.sleep(0.05)
+        assert mod.running_command(os.getpid()), "missed a running shell child"
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
+
+    deadline = time.time() + 3
+    while time.time() < deadline and mod.running_command(os.getpid()):
+        time.sleep(0.05)
+    assert not mod.running_command(os.getpid()), \
+        "still reported running after the shell exited"
+
+
+def test_a_non_shell_child_does_not_count(tmp_path):
+    """The MCP servers are long-lived children of every session. If they
+    counted, no session would ever be reported quiet again."""
+    import os
+    import subprocess
+    mod = _probe()
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(4)"])
+    try:
+        time.sleep(0.4)
+        assert not mod.running_command(os.getpid()), \
+            "a non-shell child was counted as a running command"
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
