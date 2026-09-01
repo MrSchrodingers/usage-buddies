@@ -61,36 +61,174 @@ CLICK_ANIM = 0.45        # squash-and-stretch, seconds
 SNAP_MARGIN = 26         # how close to an edge a drop counts as "put me here"
 
 
+# What it can say. Several lines per trigger, because two lines in rotation is
+# the same line: the previous version said "ti finished" for an hour straight.
+#
+# Categories beyond the alerts exist so that a quiet system still produces
+# variety — a companion with nothing to say and no idle repertoire either says
+# the same alert forever or goes mute.
 LINES = {
     "en": {
-        "asking":     ["{name} asked you something and is just sitting there.",
-                       "{name} needs a decision. It will wait forever — that is the problem."],
-        "waiting":    ["{name} finished. Go look before you forget it existed.",
-                       "{name} is done and idling. Your move.",
-                       "{name} wrapped up {idle} ago. Still waiting."],
-        "idle":       ["{name} has done nothing for {idle}. Existential, really.",
-                       "{name} is idle. Contemplating the void, presumably."],
-        "twoRed":     ["Two quotas in the red. This is fine."],
-        "compaction": ["{n} compactions today. You keep forgetting things and calling it progress."],
-        "readRatio":  ["{n}:1 read per output. Reading a library to write a postcard."],
-        "bashHeavy":  ["{n}% of your calls are Bash. There are other tools. Allegedly."],
-        "cacheDrop":  ["Cache hit down to {n}%. Something is invalidating the prefix."],
-        "nightOwl":   ["It is late. The commit will still be broken tomorrow."],
+        "asking": [
+            "{name} asked you something and is just sitting there.",
+            "{name} needs a decision. It will wait forever — that is the problem.",
+            "{name} has a question. Its patience is infinite and unhelpful.",
+            "{name} is blocked on you. No pressure.",
+            "{name} wants an answer. It is not going to guess.",
+        ],
+        "waiting": [
+            "{name} finished. Go look before you forget it existed.",
+            "{name} is done and idling. Your move.",
+            "{name} wrapped up {idle} ago. Still waiting.",
+            "{name} finished {idle} ago and has been staring at a wall since.",
+            "{name} is done. Whether it did the right thing is a separate question.",
+            "{name} stopped {idle} ago. Someone should check.",
+            "{name} delivered. Review is the part people skip.",
+        ],
+        "idle": [
+            "{name} has done nothing for {idle}. Existential, really.",
+            "{name} is idle. Contemplating the void, presumably.",
+            "{name} has been still for {idle}. Either done or forgotten.",
+            "{name}: {idle} of nothing. A monument to potential.",
+            "{name} idles. Somewhere a token goes unspent.",
+        ],
+        "twoRed": [
+            "Two quotas in the red. This is fine.",
+            "Both limits burning. Bold strategy.",
+            "Two quotas red at once. That takes commitment.",
+            "Multiple limits critical. The plan is working.",
+        ],
+        "compaction": [
+            "{n} compactions today. You keep forgetting things and calling it progress.",
+            "Memory wiped {n} times. Ship of Theseus, but worse.",
+            "{n} compactions. Each one a small funeral for context.",
+            "{n} times the context was too big to keep. Consider smaller questions.",
+        ],
+        "readRatio": [
+            "{n}:1 read per output. Reading a library to write a postcard.",
+            "{n} tokens in, one out. Efficient is not the word.",
+            "{n}:1. Most of that context is along for the ride.",
+            "Reading {n} for every one written. Somebody is not skimming.",
+        ],
+        "bashHeavy": [
+            "{n}% of your calls are Bash. There are other tools. Allegedly.",
+            "{n}% Bash. The other tools are right there, unused.",
+            "{n}% of everything is a shell command. A philosophy, of sorts.",
+        ],
+        "cacheDrop": [
+            "Cache hit down to {n}%. Something is invalidating the prefix.",
+            "{n}% cache hit. Your prefix is leaking somewhere.",
+            "Cache at {n}%. A timestamp in the system prompt would do that.",
+        ],
+        "nightOwl": [
+            "It is late. The commit will still be broken tomorrow.",
+            "Past midnight. Nothing good gets merged at this hour.",
+            "This late, the bug you are chasing is usually a typo.",
+            "The night shift. Tomorrow-you will read this code as a stranger.",
+        ],
+        "sessionSpread": [
+            "{n} sessions running. Impressive, or a diagnosis.",
+            "{n} Claudes at once. Someone is going to lose track.",
+            "{n} sessions in flight. Hope you remember what {name} was for.",
+        ],
+        "ambient": [
+            "Everything is fine. Suspiciously so.",
+            "Nothing needs you. Enjoy it while it lasts.",
+            "All quiet. That is either good news or the calm part.",
+            "No alerts. The machines are behaving.",
+            "Nothing to report. I checked twice.",
+            "Systems nominal. Deeply uneventful.",
+            "Still here. Still watching. Still nothing.",
+        ],
+        "philosophy": [
+            "You automate the work, then supervise the automation. Progress.",
+            "Every token you spend is a small bet that the answer is out there.",
+            "The tool got faster. The thinking did not.",
+            "Someone will read this code. Statistically, it will be you.",
+            "A machine that never rests is not the same as one that never stops.",
+            "The context window is finite. So, in fairness, is everything.",
+        ],
     },
     "pt": {
-        "asking":     ["{name} te perguntou algo e está lá, parado.",
-                       "{name} precisa de uma decisão. Ele espera pra sempre — esse é o problema."],
-        "waiting":    ["{name} terminou. Vai lá conferir antes de esquecer que existe.",
-                       "{name} acabou e está de bobeira. É sua vez.",
-                       "{name} fechou há {idle}. Continua esperando."],
-        "idle":       ["{name} não faz nada há {idle}. Existencial, no fundo.",
-                       "{name} está ocioso. Contemplando o vazio, presumo."],
-        "twoRed":     ["Duas cotas no vermelho. This is fine."],
-        "compaction": ["{n} compactações hoje. Você esquece tudo e chama de progresso."],
-        "readRatio":  ["{n}:1 de leitura por saída. Lendo uma biblioteca pra escrever um bilhete."],
-        "bashHeavy":  ["{n}% das suas chamadas são Bash. Existem outras ferramentas. Dizem."],
-        "cacheDrop":  ["Cache caiu pra {n}%. Alguma coisa está invalidando o prefixo."],
-        "nightOwl":   ["Tá tarde. O commit vai continuar quebrado amanhã."],
+        "asking": [
+            "{name} te perguntou algo e está lá, parado.",
+            "{name} precisa de uma decisão. Ele espera pra sempre — esse é o problema.",
+            "{name} tem uma pergunta. A paciência dele é infinita e inútil.",
+            "{name} está travado esperando você. Sem pressa.",
+            "{name} quer uma resposta. Adivinhar ele não vai.",
+        ],
+        "waiting": [
+            "{name} terminou. Vai lá conferir antes de esquecer que existe.",
+            "{name} acabou e está de bobeira. É sua vez.",
+            "{name} fechou há {idle}. Continua esperando.",
+            "{name} terminou há {idle} e está encarando a parede desde então.",
+            "{name} entregou. Se entregou certo é outra conversa.",
+            "{name} parou há {idle}. Alguém devia conferir.",
+            "{name} concluiu. Revisar é a parte que todo mundo pula.",
+        ],
+        "idle": [
+            "{name} não faz nada há {idle}. Existencial, no fundo.",
+            "{name} está ocioso. Contemplando o vazio, presumo.",
+            "{name} parado há {idle}. Ou terminou, ou foi esquecido.",
+            "{name}: {idle} de nada. Um monumento ao potencial.",
+            "{name} ocioso. Em algum lugar um token deixa de ser gasto.",
+        ],
+        "twoRed": [
+            "Duas cotas no vermelho. This is fine.",
+            "Os dois limites queimando. Estratégia ousada.",
+            "Duas cotas vermelhas ao mesmo tempo. Isso é dedicação.",
+            "Vários limites críticos. O plano está funcionando.",
+        ],
+        "compaction": [
+            "{n} compactações hoje. Você esquece tudo e chama de progresso.",
+            "Memória apagada {n} vezes. Barco de Teseu, só que pior.",
+            "{n} compactações. Cada uma um pequeno velório de contexto.",
+            "{n} vezes o contexto não coube. Considere perguntas menores.",
+        ],
+        "readRatio": [
+            "{n}:1 de leitura por saída. Lendo uma biblioteca pra escrever um bilhete.",
+            "{n} tokens entram, um sai. Eficiente não é a palavra.",
+            "{n}:1. Boa parte desse contexto está só pegando carona.",
+            "Lendo {n} pra cada um escrito. Alguém não está passando o olho.",
+        ],
+        "bashHeavy": [
+            "{n}% das suas chamadas são Bash. Existem outras ferramentas. Dizem.",
+            "{n}% Bash. As outras ferramentas estão bem ali, intactas.",
+            "{n}% de tudo é comando de shell. Uma filosofia, de certa forma.",
+        ],
+        "cacheDrop": [
+            "Cache caiu pra {n}%. Alguma coisa está invalidando o prefixo.",
+            "{n}% de acerto no cache. Seu prefixo está vazando.",
+            "Cache em {n}%. Um timestamp no system prompt faria isso.",
+        ],
+        "nightOwl": [
+            "Tá tarde. O commit vai continuar quebrado amanhã.",
+            "Passou da meia-noite. Nada bom entra em produção nessa hora.",
+            "A essa hora, o bug que você persegue costuma ser um typo.",
+            "Turno da madrugada. Amanhã você lê esse código como estranho.",
+        ],
+        "sessionSpread": [
+            "{n} sessões rodando. Impressionante, ou um diagnóstico.",
+            "{n} Claudes ao mesmo tempo. Alguém vai se perder.",
+            "{n} sessões no ar. Tomara que você lembre pra que era o {name}.",
+        ],
+        "ambient": [
+            "Tudo certo. Suspeitamente certo.",
+            "Ninguém precisa de você. Aproveita.",
+            "Tudo quieto. Ou é boa notícia, ou é a parte calma.",
+            "Nenhum alerta. As máquinas estão se comportando.",
+            "Nada a relatar. Conferi duas vezes.",
+            "Sistemas nominais. Profundamente sem graça.",
+            "Ainda aqui. Ainda olhando. Ainda nada.",
+        ],
+        "philosophy": [
+            "Você automatiza o trabalho e depois supervisiona a automação. Progresso.",
+            "Cada token gasto é uma pequena aposta de que a resposta existe.",
+            "A ferramenta ficou mais rápida. O pensamento, não.",
+            "Alguém vai ler esse código. Estatisticamente, vai ser você.",
+            "Uma máquina que nunca descansa não é a mesma coisa que uma que nunca para.",
+            "A janela de contexto é finita. Como, aliás, tudo.",
+        ],
     },
 }
 
@@ -112,7 +250,17 @@ def _fmt_idle(seconds):
 
 
 class Brain(QObject):
-    """Decides what is worth saying, in the same order the widget uses."""
+    """Decides what is worth saying, in the same order the widget uses.
+
+    Two rules keep it from becoming wallpaper. It remembers what it recently
+    said and will not repeat inside that window — the previous version rotated
+    two lines and so effectively said one. And when several sessions qualify it
+    rotates between them, because "ti finished" for an hour is the same
+    complaint whether the sentence changes or not.
+    """
+
+    RECENT = 12          # lines to remember before allowing a repeat
+    SUBJECT_RECENT = 3   # sessions to cycle past before returning to one
 
     def __init__(self, lang="en", alerts_only=False):
         super().__init__()
@@ -120,6 +268,8 @@ class Brain(QObject):
         self.alerts_only = alerts_only
         self.sessions = {}
         self.usage = {}
+        self._recent = []
+        self._subjects = []
 
     def refresh(self):
         self.sessions = _read_json(SESSIONS_FILE)
@@ -129,33 +279,61 @@ class Brain(QObject):
     def attention(self):
         return (self.sessions or {}).get("attention")
 
+    def _all(self, *states):
+        return [s for s in (self.sessions.get("sessions") or [])
+                if s.get("state") in states]
+
+    def _rotate(self, candidates):
+        """Prefer a session not spoken about lately.
+
+        With three sessions waiting, always announcing the first turns a useful
+        signal into background noise about one repo.
+        """
+        if not candidates:
+            return None
+        fresh = [c for c in candidates if c.get("name") not in self._subjects]
+        chosen = random.choice(fresh) if fresh else random.choice(candidates)
+        self._subjects.append(chosen.get("name"))
+        del self._subjects[:-self.SUBJECT_RECENT]
+        return chosen
+
     def _pick(self, key, **vars_):
         table = LINES[self.lang].get(key) or []
         if not table:
             return None
-        text = random.choice(table)
+        unsaid = [t for t in table if t not in self._recent]
+        text = random.choice(unsaid or table)
+        self._recent.append(text)
+        del self._recent[:-self.RECENT]
         for k, v in vars_.items():
             text = text.replace("{" + k + "}", str(v))
         return text
 
     def line(self):
         """The current thing worth saying, or None. Silence is the default."""
-        a = self.attention
-        if a and a.get("state") == "asking":
-            return self._pick("asking", name=a.get("name", "?"))
-        if a and a.get("state") == "waiting":
-            return self._pick("waiting", name=a.get("name", "?"),
-                              idle=_fmt_idle(a.get("idleSeconds", 0)))
+        asking = self._all("asking")
+        if asking:
+            s = self._rotate(asking)
+            return self._pick("asking", name=s.get("name", "?"))
 
-        idle = [s for s in (self.sessions.get("sessions") or [])
-                if s.get("state") == "idle"]
+        waiting = self._all("waiting")
+        if waiting:
+            s = self._rotate(waiting)
+            return self._pick("waiting", name=s.get("name", "?"),
+                              idle=_fmt_idle(s.get("idleSeconds", 0)))
+
+        idle = self._all("idle")
         if idle:
-            return self._pick("idle", name=idle[0].get("name", "?"),
-                              idle=_fmt_idle(idle[0].get("idleSeconds", 0)))
+            s = self._rotate(idle)
+            return self._pick("idle", name=s.get("name", "?"),
+                              idle=_fmt_idle(s.get("idleSeconds", 0)))
 
         if self.alerts_only:
             return None
 
+        # Diagnostics, worst first. Each fires only above a threshold, so a
+        # healthy system falls through to the ambient lines instead of being
+        # told the same non-problem repeatedly.
         eff = self.usage.get("efficiency") or {}
         hit = eff.get("cacheHitRate")
         if hit is not None and 0 < hit < 0.3:
@@ -176,9 +354,18 @@ class Brain(QObject):
             if count / total > 0.7 and name == "Bash":
                 return self._pick("bashHeavy", n=round(100 * count / total))
 
+        running = self.sessions.get("total") or 0
+        if running >= 4:
+            sample = (self.sessions.get("sessions") or [{}])[0]
+            return self._pick("sessionSpread", n=running,
+                              name=sample.get("name", "?"))
+
         if 0 <= time.localtime().tm_hour < 5:
             return self._pick("nightOwl")
-        return None
+
+        # Nothing is wrong. Alternate between saying so and saying something
+        # else entirely, so silence has texture.
+        return self._pick(random.choice(("ambient", "philosophy")))
 
 
 class Companion(QWidget):
@@ -215,12 +402,19 @@ class Companion(QWidget):
         self.said = ""
         self.bubble_size = (0, 0)
 
-        screen = QApplication.primaryScreen().availableGeometry()
-        self.bounds = screen
-        self.min_x = screen.left() + 8
-        self.max_x = screen.right() - BUDDY_PX - 8
-        self.min_y = screen.top() + 8
-        self.max_y = screen.bottom() - BUDDY_PX - 8
+        # Every screen, not just the primary one. Confined to the primary it
+        # never appears on the other monitor at all, which is most of the time
+        # someone spends looking somewhere.
+        self.screens = [s.availableGeometry() for s in QApplication.screens()]
+        if not self.screens:
+            self.screens = [QApplication.primaryScreen().availableGeometry()]
+        self.bounds = self.screens[0]
+        for g in self.screens[1:]:
+            self.bounds = self.bounds.united(g)
+        self.min_x = self.bounds.left() + 8
+        self.max_x = self.bounds.right() - BUDDY_PX - 8
+        self.min_y = self.bounds.top() + 8
+        self.max_y = self.bounds.bottom() - BUDDY_PX - 8
 
         self.pos_x = float(random.randint(self.min_x, self.max_x))
         self.pos_y = float(self.max_y)
@@ -249,6 +443,8 @@ class Companion(QWidget):
         self.poll_timer.timeout.connect(self._poll)
         self.poll_timer.start(POLL_MS)
         QTimer.singleShot(200, self._poll)
+        # After the window is mapped, or there is nothing to set the property on.
+        QTimer.singleShot(600, self._make_sticky)
 
     # ── what it says ──
 
@@ -295,16 +491,51 @@ class Companion(QWidget):
             self._active = False
 
     def _pick_target(self):
-        """Anywhere on screen, biased toward the lower half.
+        """A point on one of the screens, biased toward the lower half.
 
-        Uniform placement puts it over whatever is being read as often as not;
-        weighting downward keeps it out of the way without confining it to one
-        line.
+        Picking inside a chosen screen rather than across the union matters
+        when the monitors are different heights or not flush: the union has
+        dead regions belonging to no display, and a companion standing in one
+        is invisible while looking perfectly fine to the code.
+
+        Screens are weighted by area, so the larger display sees it more, and
+        the vertical bias keeps it clear of whatever is being read without
+        confining it to a single line.
         """
-        x = random.randint(self.min_x, self.max_x)
-        span = self.max_y - self.min_y
-        y = self.min_y + int(span * (random.random() ** 0.55))
+        weights = [max(1, g.width() * g.height()) for g in self.screens]
+        g = random.choices(self.screens, weights=weights, k=1)[0]
+        lo_x, hi_x = g.left() + 8, max(g.left() + 8, g.right() - BUDDY_PX - 8)
+        lo_y, hi_y = g.top() + 8, max(g.top() + 8, g.bottom() - BUDDY_PX - 8)
+        x = random.randint(lo_x, hi_x)
+        y = lo_y + int((hi_y - lo_y) * (random.random() ** 0.55))
         return float(x), float(y)
+
+    def _screen_at(self, x, y):
+        """The screen containing a point, or the nearest one."""
+        cx, cy = x + BUDDY_PX / 2, y + BUDDY_PX / 2
+        for g in self.screens:
+            if g.left() <= cx <= g.right() and g.top() <= cy <= g.bottom():
+                return g
+        return min(self.screens,
+                   key=lambda g: (g.center().x() - cx) ** 2 + (g.center().y() - cy) ** 2)
+
+    def _make_sticky(self):
+        """Show on every virtual desktop.
+
+        Without this it lives on whichever desktop it was launched from and has
+        to be hunted for. KWin's own scripting sets it, but the X property has
+        to be written too — KWin reported onAllDesktops=true while the window
+        still carried desktop 0, and only the property made it follow.
+        """
+        try:
+            wid = int(self.winId())
+        except Exception:
+            return
+        subprocess.Popen(
+            ["sh", "-c",
+             f"xprop -id {wid} -f _NET_WM_DESKTOP 32c "
+             f"-set _NET_WM_DESKTOP 0xFFFFFFFF 2>/dev/null"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def _tick(self):
         now = time.monotonic()
@@ -343,6 +574,8 @@ class Companion(QWidget):
             elif not self.bubble and now - self.click_at > CLICK_ANIM:
                 self._doze()
 
+        # Clamp to the union while travelling — clamping to the current screen
+        # would trap it on whichever one it started from.
         self.pos_x = max(self.min_x, min(self.max_x, self.pos_x))
         self.pos_y = max(self.min_y, min(self.max_y, self.pos_y))
         self.move(int(self.pos_x), int(self.pos_y))

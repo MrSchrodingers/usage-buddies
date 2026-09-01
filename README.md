@@ -327,6 +327,13 @@ It is a **separate process**, not part of the widget: a Plasma applet lives
 inside the panel's window and cannot leave it. The header button owns its
 lifecycle, so there is one control rather than two.
 
+It roams **every monitor** and shows on **every virtual desktop**. Confined to
+the primary screen it never appears on the other display at all, which is most
+of the time someone spends looking somewhere; pinned to one desktop it has to
+be hunted for. Targets are picked inside a chosen screen rather than across
+their union, because the union of two monitors contains regions belonging to no
+display — standing in one is invisible while looking perfectly fine to the code.
+
 It runs under **XWayland** (`QT_QPA_PLATFORM=xcb`), because Wayland has no call
 for a client to position its own window — by design. The alternative is asking
 KWin to move the window over D-Bus on every frame, which is neither smooth nor
