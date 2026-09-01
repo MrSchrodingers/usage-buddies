@@ -313,6 +313,8 @@ install_collector() {
         || warn "Failed to copy repo_brief.py" "The companion will not start"
     cp "$REPO_DIR/scripts/buddy_voice.py" "$HOME/.local/bin/" \
         || warn "Failed to copy buddy_voice.py" "The companion will not start"
+    cp "$REPO_DIR/scripts/virtual_pointer.py" "$HOME/.local/bin/" \
+        || warn "Failed to copy virtual_pointer.py" "The companion will not start"
     ok "Session monitor installed"
 
     # Optional harness probe. Installed unconditionally and inert without

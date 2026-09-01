@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import buddy_sprites as sprites                                                  # noqa: E402
 import repo_brief                                                                # noqa: E402
 import buddy_voice                                                               # noqa: E402
+import virtual_pointer                                                           # noqa: E402
 
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "usage-buddies"
 SESSIONS_FILE = CACHE / "sessions.json"
@@ -71,7 +72,10 @@ DRAG_TUG_AFTER = 2       # drags inside that window before it pulls back
 DRAG_TUG_DISTANCE = 900  # or one drag that hauls it this far, in pixels
 TUG_SECONDS = 7.0        # how long it holds on, hard cap
 TUG_RUN_SPEED = 340.0    # px/s while it is running off with the pointer
-TUG_BREAK = 260.0        # pull the pointer this far from it and it loses grip
+TUG_STEP = 6             # largest delta sent to the pointer at once, in px.
+                         # libinput accelerates: one big jump travels much
+                         # further than the same distance in small steps, and
+                         # the point is to carry the pointer, not launch it.
 TUG_STRENGTH = 0.34      # fraction of the gap closed per frame: a tug, not a
                          # lock — pull harder and you win, which is the whole
                          # difference between a joke and a hijacked desktop
@@ -81,8 +85,8 @@ DRAG_TUG_SECONDS = 5.0   # or one drag held this long, which is the same message
 # The swing. The body is not glued to the cursor: it hangs from it on a spring
 # and trails, which is what makes a dragged sprite read as having weight.
 # Tuned by eye at 30fps — stiff enough to keep up, loose enough to overshoot.
-SWING_STIFFNESS = 62.0
-SWING_DAMPING = 0.86     # per 1/60s, so the feel does not change with the rate
+SWING_STIFFNESS = 145.0
+SWING_DAMPING = 0.80     # per 1/60s, so the feel does not change with the rate
 SWING_MAX_LEAN = 190.0   # px/s of horizontal speed that reaches the deepest pose
 
 # The wobble. This is the part that is in the sprite rather than in the window:
@@ -557,6 +561,8 @@ class Companion(QWidget):
         self.drag_distance = 0.0
         self.tug_until = 0.0
         self.tugged_at = 0.0
+        self.tug_from = None
+        self.pointer = None
 
         self.resize(BUDDY_PX, BUDDY_PX)
         self._place()
@@ -823,33 +829,60 @@ class Companion(QWidget):
         wob = max(-1.0, min(1.0, self.wobble))
         return sprites.wobble_frame(int(round(lean * 3)), int(round(wob * 3)))
 
+    def _ensure_pointer(self):
+        """A virtual mouse, made ready before it is needed.
+
+        The compositor takes a second or two to notice a new input device, so
+        creating one at the moment of the grab would spend the whole gag
+        waiting. It is created when the character is first picked up, which is
+        the earliest moment we know a grab might follow, and it sends nothing
+        until then.
+        """
+        if self.pointer is not None:
+            return
+        self.pointer = virtual_pointer.VirtualPointer().open() or False
+
     def _tug(self, now):
-        """It has the pointer, and it is running.
+        """It has the pointer, and it is running off with it.
 
-        Not a pull toward where it is standing — that was a sleeve being
-        tugged, and what it should read as is being carried off. It picks
-        somewhere across the screen, runs there, and the pointer is dragged
-        along a fraction of the gap per frame.
+        The pointer is moved by exactly the distance the character moved this
+        frame, so it is carried along rather than dragged toward anything. No
+        absolute position is needed, which matters because there is no way to
+        read one: QCursor.pos() returns XWayland's shadow of the pointer, and
+        on a desktop whose windows are mostly native Wayland that shadow is
+        wherever it was last time an X client saw it.
 
-        A fraction, still, and never a setPos to a fixed point: pull hard
-        enough and the pointer gets further away than TUG_BREAK, at which
-        point it loses its grip and says so. That is the whole safety
-        argument — you can always win, and winning is a visible event rather
-        than a struggle against something that keeps grabbing back. Plus a
-        hard time cap and a long cooldown.
+        That is also why QCursor.setPos looked like it worked and did not. It
+        moves the shadow; the compositor owns the real pointer and corrects it
+        back, which on screen is the cursor flickering and staying put. The
+        only thing that moves a pointer under Wayland is being an input
+        device, so this is one — see virtual_pointer.py.
+
+        Safety is the time cap and the fact that it only ever adds the
+        character's own movement: pull the other way and your motion and its
+        motion sum, so you win by moving, every time.
         """
         if now >= self.tug_until or self.dragging:
+            self.tug_from = None
             return
-        pointer = QCursor.pos()
-        dx = (self.x() + BUDDY_PX / 2) - pointer.x()
-        dy = (self.y() + BUDDY_PX / 2) - pointer.y()
-        if (dx * dx + dy * dy) ** 0.5 > TUG_BREAK:
-            self.tug_until = 0.0
-            self._say(self._t("dropped"))
+        if not self.pointer:
             return
+        here = (self.pos_x, self.pos_y)
+        if self.tug_from is None:
+            self.tug_from = here
+            return
+        dx = here[0] - self.tug_from[0]
+        dy = here[1] - self.tug_from[1]
+        self.tug_from = here
         self._wake()
-        QCursor.setPos(int(pointer.x() + dx * TUG_STRENGTH),
-                       int(pointer.y() + dy * TUG_STRENGTH))
+        # Split into small steps: libinput's acceleration curve turns one big
+        # delta into a much larger movement than the same distance sent
+        # gradually, and the pointer would arrive somewhere else entirely.
+        steps = max(1, int(max(abs(dx), abs(dy)) // TUG_STEP))
+        for _ in range(steps):
+            if not self.pointer.move(dx / steps, dy / steps):
+                self.pointer = False
+                return
 
     def _animate(self, dt, now, moving):
         """Pick the clip from what is actually happening, then step the clock.
@@ -939,6 +972,7 @@ class Companion(QWidget):
             return
 
         self.anim.play_once("land")
+        self._ensure_pointer()
         self.press_pos = event.globalPosition()
         self.drag_offset = event.globalPosition() - QPointF(self.x(), self.y())
         self.dragging = False
@@ -988,6 +1022,7 @@ class Companion(QWidget):
                 self.tug_until = now + random.uniform(TUG_SECONDS - 1, TUG_SECONDS)
                 self.tugged_at = now
                 self.recent_drags = []
+                self.tug_from = None
                 # Somewhere far, so the run is worth watching. Picked as the
                 # furthest of a handful of candidates rather than at random:
                 # a kidnapping that ends four pixels away is a shrug.

@@ -69,52 +69,6 @@ def test_a_long_drag_complains_once(monkeypatch):
 
 
 @needs_qt
-def test_the_tug_is_bounded_and_gradual():
-    """It closes a fraction of the gap per frame, so real movement beats it."""
-    mod, c = _companion()
-    from PySide6.QtGui import QCursor
-    from PySide6.QtCore import QPoint
-
-    c.move(400, 400)
-    QCursor.setPos(520, 500)          # inside its reach; further and it lets go
-    before = QCursor.pos()
-    c.tug_until = time.monotonic() + 5
-    c.dragging = False
-    c._tug(time.monotonic())
-    after = QCursor.pos()
-
-    moved = abs(after.x() - before.x()) + abs(after.y() - before.y())
-    gap = abs(before.x() - 400) + abs(before.y() - 400)
-    assert 0 < moved, "the tug did nothing"
-    assert moved < gap * 0.5, f"moved {moved} of {gap} in one frame — that is a jump"
-    QCursor.setPos(QPoint(before.x(), before.y()))
-
-
-@needs_qt
-def test_no_tug_outside_its_window():
-    mod, c = _companion()
-    from PySide6.QtGui import QCursor
-    QCursor.setPos(900, 900)
-    before = QCursor.pos()
-    c.tug_until = 0.0
-    c._tug(time.monotonic())
-    assert QCursor.pos() == before, "moved the pointer with no tug running"
-
-
-@needs_qt
-def test_no_tug_while_being_dragged():
-    """Fighting the hand that is holding it would just feel broken."""
-    mod, c = _companion()
-    from PySide6.QtGui import QCursor
-    QCursor.setPos(900, 900)
-    before = QCursor.pos()
-    c.tug_until = time.monotonic() + 5
-    c.dragging = True
-    c._tug(time.monotonic())
-    assert QCursor.pos() == before
-
-
-@needs_qt
 def test_one_drag_never_earns_a_tug(monkeypatch):
     mod, c = _companion()
     monkeypatch.setattr(type(c), "_say", lambda self, text: None)
@@ -142,8 +96,7 @@ def test_the_tug_has_a_hard_ceiling_and_a_long_cooldown():
             exec(line.split("#")[0], {}, scope)
     assert scope["TUG_SECONDS"] <= 10, "holds on for too long"
     assert scope["TUG_COOLDOWN"] >= 300, "can repeat too soon"
-    assert 0 < scope["TUG_STRENGTH"] < 0.6, "closes too much of the gap per frame"
-    assert 0 < scope["TUG_BREAK"] <= 400, "cannot be shaken off by pulling away"
+    assert 0 < scope["TUG_STEP"] <= 20, "sends the pointer in jumps big enough to fling it"
 
 
 # ── the swing ──────────────────────────────────────────────────────────────
@@ -389,31 +342,6 @@ def test_the_shape_has_its_own_spring_not_a_readout_of_speed():
 
 
 @needs_qt
-def test_pulling_away_breaks_its_grip():
-    """The safety argument. Holding the pointer is only defensible because you
-    can always take it back, and taking it back is one deliberate movement —
-    not a fight against something that keeps grabbing again."""
-    mod, c = _companion()
-    said = []
-    from PySide6.QtGui import QCursor
-    c.move(400, 400)
-    c.dragging = False
-    c.tug_until = time.monotonic() + 5
-
-    type(c)._say_backup = type(c)._say
-    try:
-        type(c)._say = lambda self, text: said.append(text)
-        QCursor.setPos(400 + int(mod.TUG_BREAK) + 200, 400)
-        away = QCursor.pos()
-        c._tug(time.monotonic())
-        assert QCursor.pos() == away, "still dragging the pointer after it was pulled free"
-        assert c.tug_until == 0.0, "kept trying"
-        assert said, "let go without a word"
-    finally:
-        type(c)._say = type(c)._say_backup
-
-
-@needs_qt
 def test_it_runs_somewhere_worth_watching():
     """A kidnapping that ends four pixels away is a shrug."""
     mod, c = _companion(); import random
@@ -441,3 +369,167 @@ def test_it_runs_somewhere_worth_watching():
     finally:
         type(c)._say = type(c)._say_backup
         type(c)._snap = type(c)._snap_backup
+
+
+# ── carrying the pointer ───────────────────────────────────────────────────
+#
+# QCursor.setPos does not move the pointer here and looks like it does: it
+# warps XWayland's shadow, the compositor corrects the real one back, and on
+# screen the cursor flickers and stays where it was. Verified against KWin's
+# own workspace.cursorPos, which a uinput device does move — 853,559 to
+# 1450,891 — and which QCursor.pos() reported as unchanged throughout.
+#
+# So the pointer is moved by *relative* deltas from a virtual input device,
+# and never read: there is no reliable way to ask where it is.
+
+class _FakePointer:
+    def __init__(self):
+        self.moved = []
+        self.alive = True
+
+    def move(self, dx, dy):
+        self.moved.append((dx, dy))
+        return self.alive
+
+
+@needs_qt
+def test_it_carries_the_pointer_by_its_own_movement():
+    """Moved by the distance the character moved, not toward where it is
+    standing. There is no absolute position to aim at."""
+    mod, c = _companion()
+    fake = _FakePointer()
+    c.pointer = fake
+    c.dragging = False
+    c.tug_until = time.monotonic() + 5
+    c.tug_from = None
+
+    c.pos_x, c.pos_y = 400.0, 400.0
+    c._tug(time.monotonic())            # first frame only records where it was
+    assert not fake.moved, "moved the pointer before it had a delta"
+
+    c.pos_x, c.pos_y = 460.0, 430.0
+    c._tug(time.monotonic())
+    assert fake.moved, "did not carry the pointer at all"
+    total_x = sum(dx for dx, _ in fake.moved)
+    total_y = sum(dy for _, dy in fake.moved)
+    assert abs(total_x - 60) < 1.5, f"carried {total_x} horizontally, moved 60"
+    assert abs(total_y - 30) < 1.5, f"carried {total_y} vertically, moved 30"
+
+
+@needs_qt
+def test_the_pointer_is_carried_in_small_steps():
+    """libinput accelerates. One big delta travels much further than the same
+    distance sent gradually, and the pointer ends up somewhere else."""
+    mod, c = _companion()
+    fake = _FakePointer()
+    c.pointer = fake
+    c.dragging = False
+    c.tug_until = time.monotonic() + 5
+    c.pos_x = c.pos_y = 400.0
+    c.tug_from = (400.0, 400.0)
+    c.pos_x = 700.0
+    c._tug(time.monotonic())
+    assert len(fake.moved) > 1, "sent a 300px jump in one event"
+    assert all(abs(dx) <= mod.TUG_STEP + 1 for dx, _ in fake.moved), \
+        f"steps too large: {fake.moved[:4]}"
+
+
+@needs_qt
+def test_it_does_not_touch_the_pointer_outside_the_grab():
+    mod, c = _companion()
+    fake = _FakePointer()
+    c.pointer = fake
+
+    c.tug_until = 0.0
+    c.dragging = False
+    c.pos_x = 400.0
+    c._tug(time.monotonic())
+    assert not fake.moved, "moved the pointer with no grab running"
+
+    c.tug_until = time.monotonic() + 5
+    c.dragging = True                    # being held: it is not carrying anything
+    c.tug_from = (100.0, 100.0)
+    c._tug(time.monotonic())
+    assert not fake.moved, "carried the pointer while it was being dragged"
+
+
+@needs_qt
+def test_a_dead_device_stops_it_rather_than_raising():
+    """The device can vanish — the user's session can revoke it. A desktop toy
+    must not throw in a paint tick."""
+    mod, c = _companion()
+    fake = _FakePointer()
+    fake.alive = False
+    c.pointer = fake
+    c.dragging = False
+    c.tug_until = time.monotonic() + 5
+    c.tug_from = (400.0, 400.0)
+    c.pos_x = 500.0
+    c._tug(time.monotonic())
+    assert c.pointer is False, "kept a device that reported itself gone"
+
+
+def test_the_virtual_pointer_degrades_to_nothing():
+    """Where /dev/uinput is not writable this has to return None, not raise:
+    the whole feature is a joke and must never be the reason the companion
+    does not start."""
+    import sys as _sys
+    _sys.path.insert(0, str(REPO / "scripts"))
+    import virtual_pointer
+    original = virtual_pointer.UINPUT
+    try:
+        virtual_pointer.UINPUT = "/definitely/not/here"
+        assert virtual_pointer.VirtualPointer().open() is None
+        assert virtual_pointer.available() is False
+    finally:
+        virtual_pointer.UINPUT = original
+
+
+def test_the_pointer_device_turns_its_own_acceleration_off():
+    """libinput accelerates by default, and the cursor arrives ahead of the
+    character — measured, 900 pixels of movement carried the pointer 1220.
+    With the device's profile set flat it is 800 for 800.
+
+    Also pins the D-Bus call shape: reading a property as
+    `org.kde.KWin.InputDevice.name` answers UnknownInterface, which reads as
+    the interface being absent rather than the call being wrong.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(REPO / "scripts"))
+    import virtual_pointer
+    source = (REPO / "scripts" / "virtual_pointer.py").read_text()
+    assert "pointerAccelerationProfileFlat" in source
+    assert "org.freedesktop.DBus.Properties.Get" in source, \
+        "reads properties by dotted name, which does not work"
+    assert "org.freedesktop.DBus.Properties.Set" in source
+
+
+def test_movement_keeps_its_fractional_remainder():
+    """The protocol carries whole pixels. Dropping the fraction on every call
+    loses a few percent of every movement, which across a run is the pointer
+    ending up somewhere the character is not."""
+    import sys as _sys
+    _sys.path.insert(0, str(REPO / "scripts"))
+    import virtual_pointer
+
+    sent = []
+    device = virtual_pointer.VirtualPointer()
+    device.fd = -1
+    device._flatten = lambda: None
+    original = virtual_pointer.os.write
+    try:
+        virtual_pointer.os.write = lambda fd, payload: sent.append(payload) or len(payload)
+        for _ in range(10):
+            device.move(0.6, 0.0)
+    finally:
+        virtual_pointer.os.write = original
+        device.fd = None
+
+    total = 0
+    for payload in sent:
+        for i in range(0, len(payload), virtual_pointer._EVENT.size):
+            _, _, kind, code, value = virtual_pointer._EVENT.unpack(
+                payload[i:i + virtual_pointer._EVENT.size])
+            if kind == virtual_pointer.EV_REL and code == virtual_pointer.REL_X:
+                total += value
+    assert total == 6, f"ten moves of 0.6px carried {total}px, not 6"
