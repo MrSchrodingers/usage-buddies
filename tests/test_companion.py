@@ -88,12 +88,59 @@ def test_lines_exist_in_both_languages():
 
 # ── the control script: two real traps ──
 
-def test_ctl_does_not_kill_its_own_shell():
+def _fake_proc(root, entries):
+    """A /proc with the given {pid: argv-bytes}, for the ctl to scan."""
+    for pid, argv in entries.items():
+        (root / str(pid)).mkdir(parents=True)
+        (root / str(pid) / "cmdline").write_bytes(argv)
+    return {"USAGE_BUDDY_PROC": str(root)}
+
+
+def _ctl(verb, env=None):
+    return subprocess.run(["bash", str(CTL), verb], capture_output=True, text=True,
+                          timeout=30, env={**os.environ, **(env or {})})
+
+
+def test_ctl_does_not_kill_its_own_shell(tmp_path):
     """`pkill -f usage-buddy-companion` kills the shell running it, because
-    that string is in its own command line. This happened."""
-    r = subprocess.run(["bash", str(CTL), "stop"], capture_output=True, text=True, timeout=30)
+    that string is in its own command line. This happened.
+
+    Scanned against a directory this test built rather than against the real
+    /proc. The previous version called `stop` for real: it asserted the right
+    thing, passed, and killed whatever companion the user had running — proven
+    by starting one, running this test, and counting zero afterwards. A suite
+    that reaches out and stops the program it is testing is a suite nobody can
+    run while using the program.
+    """
+    env = _fake_proc(tmp_path, {})
+    r = _ctl("stop", env)
     assert r.returncode == 0, r.stderr
     assert r.stderr.strip() == "", f"noise on stderr: {r.stderr}"
+
+
+def test_ctl_stops_a_companion_it_finds_and_leaves_everything_else(tmp_path):
+    """The kill path itself, end to end, without touching a real companion.
+
+    Two processes are started and only one is described to the ctl as a
+    companion. A scan that matched too widely would take both; one that
+    matched too narrowly would take neither.
+    """
+    mine = subprocess.Popen(["sleep", "120"])
+    other = subprocess.Popen(["sleep", "120"])
+    try:
+        env = _fake_proc(tmp_path, {
+            mine.pid: b"/usr/bin/python3\x00/home/u/.local/bin/usage-buddy-companion.py\x00",
+            other.pid: b"/usr/bin/sleep\x00120\x00",
+        })
+        assert _ctl("status", env).stdout.strip() == "1"
+        assert _ctl("stop", env).returncode == 0
+        mine.wait(timeout=10)
+        assert mine.returncode is not None, "the companion survived stop"
+        assert other.poll() is None, "stop killed a process that was not a companion"
+    finally:
+        for p in (mine, other):
+            p.kill()
+            p.wait(timeout=10)
 
 
 def test_ctl_matches_the_script_behind_the_interpreter():

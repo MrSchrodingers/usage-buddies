@@ -14,12 +14,18 @@ set -uo pipefail
 SELF=$$
 SCRIPT_NAME="usage-buddy-companion.py"
 BIN="${USAGE_BUDDY_COMPANION:-$HOME/.local/bin/$SCRIPT_NAME}"
+# Where to look for running companions. Overridable so the tests can exercise
+# the scan and the kill against a directory they built, instead of against
+# whatever the machine happens to be running. They used to call `stop` for
+# real: the assertion passed and the user's companion died, which is a test
+# that measures the right thing by doing the wrong one.
+PROC="${USAGE_BUDDY_PROC:-/proc}"
 
 # Echoes the pid of every running companion.
 companion_pids() {
     local pid p argv
-    for pid in /proc/[0-9]*; do
-        p="${pid#/proc/}"
+    for pid in "$PROC"/[0-9]*; do
+        p="${pid#"$PROC"/}"
         [ "$p" = "$SELF" ] && continue
         argv=$( { tr '\0' '\n' < "$pid/cmdline"; } 2>/dev/null | head -2) || continue
         case "$argv" in
