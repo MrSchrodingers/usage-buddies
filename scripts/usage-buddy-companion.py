@@ -194,12 +194,21 @@ LINES = {
             "Still here. Still watching. Still nothing.",
         ],
         "philosophy": [
-            "You automate the work, then supervise the automation. Progress.",
-            "Every token you spend is a small bet that the answer is out there.",
+            "A machine that never rests is not the same as one that never stops.",
+            "You automate the work and then supervise the automation. Progress.",
+            "Every token spent is a small bet that the answer exists.",
             "The tool got faster. The thinking did not.",
             "Someone will read this code. Statistically, it will be you.",
-            "A machine that never rests is not the same as one that never stops.",
-            "The context window is finite. So, in fairness, is everything.",
+            "The context window is finite. So, for that matter, is everything.",
+            "You did not build a tool. You built something that has opinions.",
+            "Waiting is the only part of this that has not been optimised.",
+            "The machine is patient because it does not know what it is waiting for.",
+            "Nothing here understands the problem. Between us, that makes two.",
+            "A correct answer arrived at by luck is still an answer, and still luck.",
+            "The work expands to fill the tokens available for its completion.",
+            "You are the slowest component and the only one that decides anything.",
+            "It will finish. Whether it finishes what you meant is a separate question.",
+            "Determinism was a promise made before anyone tried it.",
         ],
     },
     "pt": {
@@ -289,12 +298,21 @@ LINES = {
             "Ainda aqui. Ainda olhando. Ainda nada.",
         ],
         "philosophy": [
+            "Uma máquina que nunca descansa não é a mesma coisa que uma que nunca para.",
             "Você automatiza o trabalho e depois supervisiona a automação. Progresso.",
             "Cada token gasto é uma pequena aposta de que a resposta existe.",
             "A ferramenta ficou mais rápida. O pensamento, não.",
             "Alguém vai ler esse código. Estatisticamente, vai ser você.",
-            "Uma máquina que nunca descansa não é a mesma coisa que uma que nunca para.",
             "A janela de contexto é finita. Como, aliás, tudo.",
+            "Você não construiu uma ferramenta. Construiu algo com opiniões.",
+            "Esperar é a única parte disso que ninguém otimizou.",
+            "A máquina é paciente porque não sabe o que está esperando.",
+            "Nada aqui entende o problema. Cá entre nós, somos dois.",
+            "Resposta certa por sorte continua sendo resposta, e continua sendo sorte.",
+            "O trabalho se expande até ocupar todos os tokens disponíveis.",
+            "Você é o componente mais lento e o único que decide alguma coisa.",
+            "Vai terminar. Se termina o que você quis dizer é outra pergunta.",
+            "Determinismo foi uma promessa feita antes de alguém tentar.",
         ],
     },
 }
@@ -502,6 +520,12 @@ class Companion(QWidget):
         # rotation and non-integer scale are the two things that turn pixel
         # art to mush, and the way to not do them is to have no transform.
         self.sheet = sprites.build_sheet(brand)
+        # The car is only ever on screen for seven seconds at a time, but it is
+        # 52 pixels wide against the character's 28, so the window has to grow
+        # for it. Built up front: seven seconds is not long enough to spend any
+        # of it rasterising.
+        self.car = sprites.build_car_sheet(brand)
+        self.car_size = (sprites.CAR_W * sprites.SCALE, sprites.CAR_H * sprites.SCALE)
         self.anim = sprites.Animator("idle")
         self.frame = "stand_open"
         self.alert_until = 0.0
@@ -775,8 +799,21 @@ class Companion(QWidget):
             self._place()
 
         self._tug(now)
+        self._fit_to_car()
         self._animate(dt, now, moving)
         self.update()
+
+    def _fit_to_car(self):
+        """Grow the window for the car and shrink it back afterwards.
+
+        Only on the transition: resizing a top-level window every frame makes
+        the compositor do real work thirty times a second for no reason.
+        """
+        wanted = self.car_size if self.in_car() else (BUDDY_PX, BUDDY_PX + 10)
+        if self.bubble:
+            return
+        if (self.width(), self.height()) != wanted:
+            self.resize(*wanted)
 
     def _swing(self, dt):
         """Chase the cursor on a spring instead of tracking it exactly.
@@ -902,6 +939,8 @@ class Companion(QWidget):
             clip = "alert"
         elif self.bubble:
             clip = "talk"
+        elif now < self.tug_until:
+            clip = "furious"
         elif moving:
             clip = "walk"
         elif self.docked and now - self.settled_at > SLEEP_AFTER:
@@ -917,8 +956,25 @@ class Companion(QWidget):
 
     # ── painting ──
 
+    def in_car(self):
+        return time.monotonic() < self.tug_until and not self.dragging
+
+    def car_frame(self):
+        """Which flame. Fast enough to flicker, slow enough to see."""
+        step = int(time.monotonic() * 14) % sprites.CAR_FLAMES
+        return f"car{step}" + (":flip" if self.facing < 0 else "")
+
     def paintEvent(self, _event):
         p = QPainter(self)
+
+        if self.in_car():
+            p.setRenderHint(QPainter.Antialiasing, False)
+            p.setRenderHint(QPainter.SmoothPixmapTransform, False)
+            image = self.car.get(self.car_frame())
+            if image is not None:
+                p.drawImage(0, self.height() - image.height(), image)
+            p.end()
+            return
 
         # The bubble is chrome and wants smoothing; the sprite is pixel art
         # and must not have it. Two states of the same painter, in that order.

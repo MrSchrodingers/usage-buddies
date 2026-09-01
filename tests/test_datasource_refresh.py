@@ -219,3 +219,19 @@ def test_no_nested_object_reads_an_enclosing_property_unqualified():
     offenders = _violations(QML.read_text())
     assert not offenders, "unqualified reads of an enclosing property:\n  " + \
         "\n  ".join(offenders)
+
+
+def test_no_source_gates_its_data_on_the_exit_code_key():
+    """`data["exit code"]` is a string key with a space in it. If the engine
+    ever spells it differently the comparison becomes undefined === 0, which
+    is false — so every read is thrown away in silence while the source keeps
+    cycling, and the widget shows whatever it had when the panel started for
+    as long as the panel stays up. It looks like a slow refresh, and there is
+    no warning anywhere.
+
+    Output that parses into the shape we want is the thing actually needed,
+    and it does not depend on a key name."""
+    text = QML.read_text()
+    offenders = [line.strip() for line in text.splitlines()
+                 if "exit code" in line and not line.lstrip().startswith("//")]
+    assert not offenders, "data gated on the exit-code key:\n  " + "\n  ".join(offenders)

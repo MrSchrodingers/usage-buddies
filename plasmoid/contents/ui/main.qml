@@ -390,9 +390,10 @@ PlasmoidItem {
                           " 2>/dev/null; cat \"${XDG_CACHE_HOME:-$HOME/.cache}\"/usage-buddies/sessions.json 2>/dev/null");
         }
         onNewData: function(source, data) {
-            if (data["exit code"] === 0 && data.stdout) {
+            var out = (data && data.stdout) ? String(data.stdout).trim() : "";
+            if (out) {
                 try {
-                    root.sessionsData = JSON.parse(data.stdout.trim());
+                    root.sessionsData = JSON.parse(out);
                 } catch(e) {
                     console.warn("usage-buddies: bad sessions.json:", e);
                 }
@@ -541,9 +542,10 @@ PlasmoidItem {
                           "cat \"${XDG_CACHE_HOME:-$HOME/.cache}\"/usage-buddies/tollens.json 2>/dev/null");
         }
         onNewData: function(source, data) {
-            if (data["exit code"] === 0 && data.stdout) {
+            var out = (data && data.stdout) ? String(data.stdout).trim() : "";
+            if (out) {
                 try {
-                    root.tollens = JSON.parse(data.stdout.trim());
+                    root.tollens = JSON.parse(out);
                 } catch(e) {
                     console.warn("usage-buddies: bad tollens.json:", e);
                 }
@@ -586,9 +588,19 @@ PlasmoidItem {
                           " 1>/dev/null 2>/dev/null; cat " + b.dataFile);
         }
         onNewData: function(source, data) {
-            if (data["exit code"] === 0 && data.stdout) {
+            // Gated on the output parsing, not on the exit code. The engine's
+            // key for that is a string with a space in it, and if it ever
+            // stops being spelled exactly "exit code" the comparison is
+            // undefined === 0, which is false — so every read is discarded in
+            // silence while the source keeps cycling, and the widget shows the
+            // number it had when the panel started, for as long as the panel
+            // is up. Whether that is what happened here or not, the exit code
+            // adds nothing: output that parses into the shape we want is the
+            // thing we actually need.
+            var out = (data && data.stdout) ? String(data.stdout).trim() : "";
+            if (out) {
                 try {
-                    var parsed = JSON.parse(data.stdout.trim());
+                    var parsed = JSON.parse(out);
                     root.usageData = parsed;
                     root.countdownMinutes = parsed.rateLimits?.session?.resetsInMinutes ?? 0;
                     root.countdownSeconds = 0;

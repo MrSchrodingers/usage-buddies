@@ -585,3 +585,101 @@ def test_a_short_provocation_still_waits_out_the_cooldown(monkeypatch):
     c.mouseReleaseEvent(QMouseEvent(QMouseEvent.MouseButtonRelease, QPointF(0, 0),
                                     Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
     assert c.tug_until == 0.0, "a five-second drag ignored the cooldown"
+
+
+# ── the getaway car ────────────────────────────────────────────────────────
+
+def test_the_car_is_a_car():
+    """Three things that were wrong in the first drafts and each stopped it
+    reading as a vehicle: a gull-wing door that floated above the roof, square
+    tyres, and a jet of constant width that looked like a stripe."""
+    import sys as _sys
+    _sys.path.insert(0, str(REPO / "scripts"))
+    import buddy_sprites as sprites
+
+    grid = sprites.build_car("claude", 0)
+    assert len(grid) == sprites.CAR_H
+    assert all(len(row) == sprites.CAR_W for row in grid)
+
+    filled = {(x, y) for y, row in enumerate(grid)
+              for x, ch in enumerate(row) if ch != "."}
+
+    # The door column and the roof have to be connected: walk down from the
+    # top of the door and there must be no gap before the body.
+    column = sorted(y for x, y in filled if 26 <= x <= 34)
+    runs = [b - a for a, b in zip(column, column[1:]) if b - a > 1]
+    assert not runs, f"the door is detached from the roof by {runs}"
+
+    # Wheels round, not square: the widest row of a tyre must be wider than
+    # its top row.
+    # Measured on tyre pixels only, and below the body: rows through the
+    # bodywork are the same width whatever shape the wheel is, which is how
+    # the first version of this passed a square one.
+    tyre = [(x, y) for y, row in enumerate(grid)
+            for x, ch in enumerate(row) if ch == "8" and 17 <= x <= 27]
+    def width(y):
+        return len([1 for x, yy in tyre if yy == y])
+    assert width(18) > width(21), f"the wheel is a box: {width(18)} vs {width(21)}"
+
+
+def test_the_jet_tapers_and_animates():
+    import sys as _sys
+    _sys.path.insert(0, str(REPO / "scripts"))
+    import buddy_sprites as sprites
+
+    lengths = []
+    for flame in range(sprites.CAR_FLAMES):
+        grid = sprites.build_car("claude", flame)
+        fire = [(x, y) for y, row in enumerate(grid)
+                for x, ch in enumerate(row) if ch in "567"]
+        assert all(x < 18 for x, _ in fire), \
+            "something outside the exhaust is using a flame colour"
+        assert fire, f"frame {flame} has no flame"
+        xs = [x for x, _ in fire]
+        lengths.append(max(xs) - min(xs))
+        near = len([1 for x, _ in fire if x >= max(xs) - 1])
+        far = len([1 for x, _ in fire if x <= min(xs) + 1])
+        assert near > far, f"frame {flame} does not taper: {near} at the exhaust, {far} at the tip"
+    assert len(set(lengths)) > 1, f"the flame is the same length every frame: {lengths}"
+
+
+def test_every_colour_in_the_car_has_a_value():
+    import sys as _sys
+    _sys.path.insert(0, str(REPO / "scripts"))
+    import buddy_sprites as sprites
+    for brand in ("claude", "codex"):
+        palette = sprites.car_palette(brand)
+        for flame in range(sprites.CAR_FLAMES):
+            used = set("".join(sprites.build_car(brand, flame))) - {"."}
+            missing = used - set(palette)
+            assert not missing, f"{brand} flame {flame} uses {missing} with no colour"
+
+
+@needs_qt
+def test_the_window_grows_for_the_car_and_shrinks_back():
+    """52 pixels of car do not fit in a 28 pixel window, and leaving it that
+    size afterwards leaves a transparent slab following the cursor."""
+    mod, c = _companion()
+    import buddy_sprites as sprites
+    c.bubble = ""
+    c.dragging = False
+
+    c.tug_until = time.monotonic() + 5
+    c._fit_to_car()
+    assert (c.width(), c.height()) == c.car_size, "did not make room for the car"
+
+    c.tug_until = 0.0
+    c._fit_to_car()
+    assert c.width() == sprites.SIZE, "stayed car-sized after the getaway"
+
+
+@needs_qt
+def test_it_drives_angry():
+    """The scowl is the point of the sequence."""
+    mod, c = _companion()
+    c.dragging = c.docked = False
+    c.bubble = ""
+    c.alert_until = 0.0
+    c.tug_until = time.monotonic() + 5
+    c._animate(0.02, time.monotonic(), moving=True)
+    assert c.anim.base == "furious", f"drove off placidly: {c.anim.base}"

@@ -264,6 +264,10 @@ EYES = {
     "half":  ["....", "wwww", "wppw", "wwww"],
     "shut":  ["....", "....", "oooo", "...."],
     "happy": ["....", "o..o", ".oo.", "...."],
+    # The brow slants down toward the nose. Authored for the left eye only and
+    # mirrored for the right, which is what keeps the two halves of a scowl
+    # pointing at each other instead of both leaning the same way.
+    "angry": ["oo..", "wwoo", "wppw", "wwww"],
 }
 
 POSE_EYE_DY = {
@@ -608,8 +612,11 @@ CLIPS = {
                                         ("dangle_wide_up", 150), ("dangle_look", 130)]},
     # Dragged around for too long. Same pose, angrier face, and fast enough to
     # read as protest rather than as swinging.
-    "annoyed": {"loop": True, "frames": [("dangle_shut", 110), ("dangle_wide", 90),
-                                         ("dangle_shut", 110), ("dangle_wide_up", 90)]},
+    "annoyed": {"loop": True, "frames": [("dangle_angry", 110), ("dangle_angry_up", 90),
+                                         ("dangle_angry", 110), ("dangle_shut", 90)]},
+    # Running off with the pointer. Same gait, scowling.
+    "furious": {"loop": True, "frames": [("walk0_angry", 90), ("walk1_angry", 70),
+                                         ("walk2_angry", 90), ("walk3_angry", 70)]},
     "land":  {"loop": False, "frames": [("squash_shut", 70), ("squash_happy", 90),
                                         ("stand_happy", 110), ("stretch_happy", 90),
                                         ("stand_open", 130)]},
@@ -632,6 +639,13 @@ FRAME_SPECS = {
     "dangle_wide_up": ("dangle", "wide", -1),
     "dangle_look":    ("dangle", "look", 0),
     "dangle_shut":    ("dangle", "shut", 0),
+    "dangle_angry":   ("dangle", "angry", 0),
+    "dangle_angry_up": ("dangle", "angry", -1),
+    "stand_angry":    ("stand", "angry", 0),
+    "walk0_angry":    ("walk0", "angry", 0),
+    "walk1_angry":    ("walk1", "angry", -1),
+    "walk2_angry":    ("walk2", "angry", 0),
+    "walk3_angry":    ("walk3", "angry", -1),
     "tuck_shut":      ("tuck", "shut", 0),
     "tuck_half":      ("tuck", "half", -1),
     "squash_shut":    ("squash", "shut", 0),
@@ -793,6 +807,17 @@ def to_qimage(grid, palette, scale=SCALE):
     return img
 
 
+def build_car_sheet(brand, scale=SCALE):
+    """The car's frames as QImages, both directions."""
+    pal = car_palette(brand)
+    sheet = {}
+    for flame in range(CAR_FLAMES):
+        grid = build_car(brand, flame)
+        sheet[f"car{flame}"] = to_qimage(grid, pal, scale)
+        sheet[f"car{flame}:flip"] = to_qimage(mirror(grid), pal, scale)
+    return sheet
+
+
 def build_sheet(brand, scale=SCALE):
     """Every frame of a brand as a QImage, plus its mirror.
 
@@ -807,3 +832,120 @@ def build_sheet(brand, scale=SCALE):
         sheet[name] = to_qimage(grid, pal, scale)
         sheet[name + ":flip"] = to_qimage(mirror(grid), pal, scale)
     return sheet
+
+
+# ── the DeLorean ───────────────────────────────────────────────────────────
+# Wider than the character and on its own canvas, because a car at 28 pixels
+# is a grey smudge. Generated from spans rather than hand-authored: the shape
+# is geometric — a wedge, two circles, a tapering jet — and spans are how you
+# describe geometry without counting 1248 characters by hand.
+#
+# Three rules learned by drawing it wrong first. The gull-wing door has to
+# touch the roof or it floats above the car like a bird. The wheels have to be
+# circles: a square tyre reads as a box, and the whole thing stops being a car.
+# And the jet has to taper — constant width reads as a stripe painted on the
+# bumper.
+#
+# Palette adds greys, glass and fire on top of the brand's own, so the driver
+# can be drawn in the character's colours inside it.
+
+# Wide enough for the jet to have room. At 52 the longest flame ran off the
+# edge and all three frames clipped to the same length, so the animation was
+# there in the code and invisible on screen.
+CAR_W, CAR_H = 60, 24
+CAR_FLAMES = 3
+
+CAR_PALETTE = {
+    "1": "#F2F5F8",   # steel highlight
+    "2": "#B9C0C7",   # steel
+    "3": "#6E767E",   # steel shadow, trim
+    "4": "#2A4459",   # glass
+    "0": "#FFF6C8",   # headlights and tail lights
+    "5": "#FFF6C8",   # flame core — its own character, so "567" means fire and
+                      # nothing else. Sharing one with the headlights made a
+                      # test measure the front of the car as the exhaust.
+    "6": "#FFB03A",   # flame
+    "7": "#E8492A",   # flame edge
+    "8": "#141619",   # tyre
+    "9": "#D9432E",   # tail light
+}
+
+
+def build_car(brand, flame=0):
+    """One frame of the car, as an ASCII grid CAR_W by CAR_H."""
+    grid = [["."] * CAR_W for _ in range(CAR_H)]
+
+    def span(y, a, b, ch):
+        for x in range(a, b + 1):
+            if 0 <= x < CAR_W and 0 <= y < CAR_H:
+                grid[y][x] = ch
+
+    NOSE = 8          # the whole car shifted right, to leave the jet room
+    body = ((9, 21, 31), (10, 19, 34), (11, 16, 37), (12, 12, 40), (13, 10, 43),
+            (14, 9, 47), (15, 8, 49), (16, 8, 50), (17, 9, 50))
+    for y, a, b in body:
+        span(y, a + NOSE, b + NOSE, "2")
+
+    for i in range(7):                       # gull-wing door, hinged on the roof
+        span(8 - i, 21 - i * 2 + NOSE, 25 - i + NOSE, "2")
+    span(9, 19 + NOSE, 24 + NOSE, "2")
+
+    span(9, 22 + NOSE, 30 + NOSE, "1")                     # sheen along the top edge
+    span(10, 20 + NOSE, 22 + NOSE, "1")
+
+    for y, a, b in ((10, 23, 32), (11, 20, 25), (11, 29, 36), (12, 30, 38)):
+        span(y, a + NOSE, b + NOSE, "4")            # glass
+    for x in range(13, 20, 2):
+        span(12, x + NOSE, x + NOSE, "3")           # rear louvres
+
+    span(15, 12 + NOSE, 45 + NOSE, "3")             # side trim
+    span(16, 50 + NOSE, 50 + NOSE, "3")
+    span(14, 48 + NOSE, 49 + NOSE, "0"); span(15, 48 + NOSE, 49 + NOSE, "0")
+    span(14, 8 + NOSE, 9 + NOSE, "9");   span(15, 8 + NOSE, 9 + NOSE, "9")
+
+    for cx in (14 + NOSE, 38 + NOSE):        # wheels, as circles
+        cy, radius = 18, 4
+        for y in range(cy - radius, cy + radius + 1):
+            drop = abs(y - cy)
+            half = int((radius * radius - drop * drop) ** 0.5)
+            span(y, cx - half, cx + half, "8")
+            if drop <= 1:
+                span(y, cx - half + 2, cx + half - 2, "3")
+        span(cy, cx - 1, cx + 1, "1")
+
+    driver = ["..bb..", ".bbbb.", "bwoobw", "bwppwb", ".bbbb."]
+    for r, row in enumerate(driver):         # scowling, in the doorway
+        for c, ch in enumerate(row):
+            if ch != ".":
+                span(8 + r, 24 + c + NOSE, 24 + c + NOSE, ch)
+
+    length = (9, 15, 12)[flame % CAR_FLAMES]
+    for i in range(length):                  # the jet, tapering
+        x = 7 + NOSE - i
+        if x < 0:
+            break
+        along = i / max(1, length - 1)
+        half = max(0, int(round(2.4 * (1 - along) + 0.2)))
+        hue = "5" if along < 0.22 else ("6" if along < 0.62 else "7")
+        for y in range(15 - half, 16 + half):
+            span(y, x, x, hue)
+
+    fire = {".", "5", "6", "7"}
+    outlined = [row[:] for row in grid]
+    for y in range(CAR_H):
+        for x in range(CAR_W):
+            if grid[y][x] in fire:
+                continue
+            for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                yy, xx = y + dy, x + dx
+                if not (0 <= yy < CAR_H and 0 <= xx < CAR_W) or grid[yy][xx] in fire:
+                    outlined[y][x] = "o"
+                    break
+    return ["".join(row) for row in outlined]
+
+
+def car_palette(brand):
+    """Brand colours plus the car's own, so the driver matches the character."""
+    merged = dict(PALETTES["codex" if brand == "codex" else "claude"])
+    merged.update(CAR_PALETTE)
+    return merged
