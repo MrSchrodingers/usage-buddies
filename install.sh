@@ -300,6 +300,12 @@ install_collector() {
         cp "$REPO_DIR/scripts/$f" "$HOME/.local/bin/" && chmod +x "$HOME/.local/bin/$f" \
             || warn "Failed to copy $f" "The live-session list will not work"
     done
+    # buddy_sprites.py is imported by the companion from its own directory, so
+    # it has to land next to it. It is a library, not a command: no +x.
+    # tests/test_sprites.py pins this — a companion installed without it dies
+    # on the import, and the only symptom is a character that never appears.
+    cp "$REPO_DIR/scripts/buddy_sprites.py" "$HOME/.local/bin/" \
+        || warn "Failed to copy buddy_sprites.py" "The companion will not start"
     ok "Session monitor installed"
 
     # Optional harness probe. Installed unconditionally and inert without

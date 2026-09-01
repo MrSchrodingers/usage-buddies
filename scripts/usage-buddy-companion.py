@@ -32,8 +32,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 from PySide6.QtCore import Qt, QTimer, QPointF, QRectF, Signal, QObject          # noqa: E402
 from PySide6.QtGui import (QAction, QColor, QCursor, QFont, QFontMetrics,        # noqa: E402
                            QPainter, QPainterPath, QPen)
-from PySide6.QtSvg import QSvgRenderer                                           # noqa: E402
 from PySide6.QtWidgets import QApplication, QMenu, QWidget                       # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import buddy_sprites as sprites                                                  # noqa: E402
 
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "usage-buddies"
 SESSIONS_FILE = CACHE / "sessions.json"
@@ -43,7 +45,7 @@ INSTALLED_ICONS = (Path.home() / ".local/share/plasma/plasmoids"
                    / "org.kde.plasma.usagebuddies/contents/icons")
 FOCUS_HELPER = Path.home() / ".local" / "bin" / "focus-session.sh"
 
-BUDDY_PX = 56
+BUDDY_PX = sprites.SIZE          # grid times an integer scale; nothing is resampled
 BUBBLE_MAX = 300
 POLL_MS = 20_000
 
@@ -57,7 +59,8 @@ WALK_SPEED = 78.0        # px/s horizontally
 CLIMB_SPEED = 46.0       # px/s vertically — slower, so diagonals read as effort
 IDLE_MIN, IDLE_MAX = 4.0, 14.0
 SPEAK_SECONDS = 16.0
-CLICK_ANIM = 0.45        # squash-and-stretch, seconds
+SLEEP_AFTER = 45.0       # docked and untouched for this long: it dozes off
+ALERT_SECONDS = 1.4      # the double-take when something needs the human
 SNAP_MARGIN = 26         # how close to an edge a drop counts as "put me here"
 
 
@@ -391,9 +394,15 @@ class Companion(QWidget):
         self.setMouseTracking(True)
         self.setCursor(Qt.OpenHandCursor)
 
-        icon_dir = INSTALLED_ICONS if INSTALLED_ICONS.is_dir() else ICONS
-        svg = icon_dir / ("rex.svg" if brand == "codex" else "clawd.svg")
-        self.renderer = QSvgRenderer(str(svg)) if svg.exists() else None
+        # Every frame in both directions, built once. Baking the mirror here
+        # means the paint path is a single drawImage with no transform on it:
+        # rotation and non-integer scale are the two things that turn pixel
+        # art to mush, and the way to not do them is to have no transform.
+        self.sheet = sprites.build_sheet(brand)
+        self.anim = sprites.Animator("idle")
+        self.frame = "stand_open"
+        self.alert_until = 0.0
+        self.settled_at = time.monotonic()
 
         self.brain = Brain(lang, alerts_only)
         self.lang = lang
@@ -420,8 +429,6 @@ class Companion(QWidget):
         self.pos_y = float(self.max_y)
         self.target = (self.pos_x, self.pos_y)
         self.facing = 1
-        self.step_phase = 0.0
-        self.click_at = 0.0
         self.next_move = time.monotonic() + random.uniform(IDLE_MIN, IDLE_MAX)
 
         # Drag state. `docked` survives a drop near an edge: put down in a
@@ -432,7 +439,7 @@ class Companion(QWidget):
         self.docked = False
 
         self.resize(BUDDY_PX, BUDDY_PX)
-        self.move(int(self.pos_x), int(self.pos_y))
+        self._place()
 
         self.frame_timer = QTimer(self)
         self.frame_timer.timeout.connect(self._tick)
@@ -454,7 +461,12 @@ class Companion(QWidget):
         if line and line != self.said:
             self.said = line
             self.bubble = line
-            self.bubble_until = time.monotonic() + SPEAK_SECONDS
+            now = time.monotonic()
+            self.bubble_until = now + SPEAK_SECONDS
+            # The double-take only fires for something that wants the human.
+            # Ambient remarks get no jump, or the jump stops meaning anything.
+            if self.brain.attention:
+                self.alert_until = now + ALERT_SECONDS
             self._resize_for_bubble()
             if not self.docked:
                 # Step away from the edges so the bubble has room to open.
@@ -537,6 +549,19 @@ class Companion(QWidget):
              f"-set _NET_WM_DESKTOP 0xFFFFFFFF 2>/dev/null"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+    def _place(self):
+        """Move the window, snapped to the sprite grid.
+
+        A 2x sprite whose window sits on an odd screen pixel has every source
+        pixel straddling the screen grid by half. It does not look blurry —
+        nothing is resampled — it looks like the character is crawling. Moving
+        only in whole source pixels costs one pixel of positional precision
+        and buys a sprite that holds still while it walks.
+        """
+        step = sprites.SCALE
+        self.move(round(self.pos_x / step) * step,
+                  round(self.pos_y / step) * step)
+
     def _tick(self):
         now = time.monotonic()
         dt = self.frame_timer.interval() / 1000.0
@@ -545,84 +570,80 @@ class Companion(QWidget):
             self.bubble = ""
             self.resize(BUDDY_PX, BUDDY_PX + 10)
 
-        if self.dragging:
-            self.update()
-            return
+        moving = False
+        if not self.dragging:
+            tx, ty = self.target
+            dx, dy = tx - self.pos_x, ty - self.pos_y
+            moving = abs(dx) > 1.5 or abs(dy) > 1.5
 
-        tx, ty = self.target
-        dx, dy = tx - self.pos_x, ty - self.pos_y
-        moving = abs(dx) > 1.5 or abs(dy) > 1.5
-
-        if moving:
-            step_x = min(abs(dx), WALK_SPEED * dt)
-            step_y = min(abs(dy), CLIMB_SPEED * dt)
-            if abs(dx) > 1.5:
-                self.pos_x += step_x * (1 if dx > 0 else -1)
-                self.facing = 1 if dx > 0 else -1
-            if abs(dy) > 1.5:
-                self.pos_y += step_y * (1 if dy > 0 else -1)
-            self.step_phase += dt * 9.0
-            self._wake()
-        else:
-            self.step_phase += dt * 1.6
-            if self.docked:
+            if moving:
+                if abs(dx) > 1.5:
+                    self.pos_x += min(abs(dx), WALK_SPEED * dt) * (1 if dx > 0 else -1)
+                    self.facing = 1 if dx > 0 else -1
+                if abs(dy) > 1.5:
+                    self.pos_y += min(abs(dy), CLIMB_SPEED * dt) * (1 if dy > 0 else -1)
+                self.settled_at = now
+                self._wake()
+            elif self.docked:
                 self._doze()
             elif now >= self.next_move:
                 self.target = self._pick_target()
                 self.next_move = now + random.uniform(IDLE_MIN, IDLE_MAX)
                 self._wake()
-            elif not self.bubble and now - self.click_at > CLICK_ANIM:
+            elif not self.bubble and self.anim.base == "idle":
                 self._doze()
 
-        # Clamp to the union while travelling — clamping to the current screen
-        # would trap it on whichever one it started from.
-        self.pos_x = max(self.min_x, min(self.max_x, self.pos_x))
-        self.pos_y = max(self.min_y, min(self.max_y, self.pos_y))
-        self.move(int(self.pos_x), int(self.pos_y))
+            # Clamp to the union while travelling. Clamping to the current
+            # screen would trap it on whichever one it started from.
+            self.pos_x = max(self.min_x, min(self.max_x, self.pos_x))
+            self.pos_y = max(self.min_y, min(self.max_y, self.pos_y))
+            self._place()
+
+        self._animate(dt, now, moving)
         self.update()
+
+    def _animate(self, dt, now, moving):
+        """Pick the clip from what is actually happening, then step the clock.
+
+        Order matters: being held beats everything, and the alert double-take
+        beats talking, because the point of the alert is to be seen before the
+        sentence is read.
+        """
+        if self.dragging:
+            clip = "held"
+        elif now < self.alert_until:
+            clip = "alert"
+        elif self.bubble:
+            clip = "talk"
+        elif moving:
+            clip = "walk"
+        elif self.docked and now - self.settled_at > SLEEP_AFTER:
+            clip = "sleep"
+        else:
+            clip = "idle"
+
+        self.anim.set_clip(clip)
+        # Only blink where a blink means anything. Asleep the eyes are already
+        # shut, and mid-stride it is lost.
+        self.anim.maybe_blink(dt, allowed=clip in ("idle", "talk"))
+        self.frame = self.anim.advance(dt)
 
     # ── painting ──
 
     def paintEvent(self, _event):
-        import math
         p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
 
-        tx, ty = self.target
-        moving = (abs(tx - self.pos_x) > 1.5 or abs(ty - self.pos_y) > 1.5) and not self.dragging
-
-        # Gait. Two bobs per stride and a slight lean into the direction of
-        # travel; standing still it breathes instead.
-        bob = math.sin(self.step_phase * 2) * (3.4 if moving else 1.4)
-        lean = math.sin(self.step_phase) * (0.09 if moving else 0.0)
-
-        # Squash and stretch on click: down fast, back slowly.
-        squash = 1.0
-        since = time.monotonic() - self.click_at
-        if since < CLICK_ANIM:
-            t = since / CLICK_ANIM
-            squash = 1.0 - 0.28 * math.sin(math.pi * t) * (1.0 - t * 0.4)
-
-        if self.dragging:
-            # Held: hangs and swings a little.
-            bob = math.sin(self.step_phase * 3) * 2.0
-            lean = math.sin(self.step_phase * 3) * 0.14
-
+        # The bubble is chrome and wants smoothing; the sprite is pixel art
+        # and must not have it. Two states of the same painter, in that order.
         if self.bubble:
+            p.setRenderHint(QPainter.Antialiasing, True)
             self._paint_bubble(p)
 
-        if self.renderer:
-            h = BUDDY_PX * squash
-            w = BUDDY_PX / max(0.7, squash) ** 0.5
-            x = (BUDDY_PX - w) / 2
-            y = self.height() - h + bob
-            p.save()
-            p.translate(x + w / 2, y + h)
-            p.rotate(lean * 57.3)
-            if self.facing < 0:
-                p.scale(-1, 1)
-            self.renderer.render(p, QRectF(-w / 2, -h, w, h))
-            p.restore()
+        p.setRenderHint(QPainter.Antialiasing, False)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, False)
+        img = self.sheet.get(self.frame + (":flip" if self.facing < 0 else ""))
+        if img is not None:
+            p.drawImage(0, self.height() - BUDDY_PX, img)
         p.end()
 
     def _paint_bubble(self, p):
@@ -660,7 +681,7 @@ class Companion(QWidget):
             menu.exec(QCursor.pos())
             return
 
-        self.click_at = time.monotonic()
+        self.anim.play_once("land")
         self.press_pos = event.globalPosition()
         self.drag_offset = event.globalPosition() - QPointF(self.x(), self.y())
         self.dragging = False
@@ -677,13 +698,15 @@ class Companion(QWidget):
         target = event.globalPosition() - self.drag_offset
         self.pos_x = max(self.min_x, min(self.max_x, target.x()))
         self.pos_y = max(self.min_y, min(self.max_y, target.y()))
-        self.move(int(self.pos_x), int(self.pos_y))
+        self._place()
 
     def mouseReleaseEvent(self, event):
         self.setCursor(Qt.OpenHandCursor)
         if self.dragging:
             self.dragging = False
+            self.settled_at = time.monotonic()
             self._snap()
+            self.anim.play_once("land")
             return
         # A click, not a drag: go to whatever most needs attention.
         self._go_to_session()
@@ -706,7 +729,7 @@ class Companion(QWidget):
             self.pos_y = (self.min_y if self.pos_y - self.min_y < SNAP_MARGIN
                           else self.max_y if self.max_y - self.pos_y < SNAP_MARGIN
                           else self.pos_y)
-            self.move(int(self.pos_x), int(self.pos_y))
+            self._place()
         else:
             self.docked = False
             self.next_move = time.monotonic() + random.uniform(IDLE_MIN, IDLE_MAX)
