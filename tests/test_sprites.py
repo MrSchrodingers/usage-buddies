@@ -27,8 +27,12 @@ def _bounds(grid):
 
 # ── the grids ──────────────────────────────────────────────────────────────
 
+# CAR_* excluded: the car has its own canvas and its own palette, and is
+# checked by tests/test_drag_behaviour.py. Sweeping it in here asserted a
+# 28-wide grid against a 128-wide one.
 @pytest.mark.parametrize("name", [n for n in dir(sprites)
-                                  if n.isupper() and isinstance(getattr(sprites, n), list)
+                                  if n.isupper() and not n.startswith("CAR_")
+                                  and isinstance(getattr(sprites, n), list)
                                   and getattr(sprites, n)
                                   and isinstance(getattr(sprites, n)[0], str)])
 def test_every_body_is_a_square_grid_of_known_colours(name):

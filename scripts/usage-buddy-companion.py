@@ -525,7 +525,8 @@ class Companion(QWidget):
         # for it. Built up front: seven seconds is not long enough to spend any
         # of it rasterising.
         self.car = sprites.build_car_sheet(brand)
-        self.car_size = (sprites.CAR_W * sprites.SCALE, sprites.CAR_H * sprites.SCALE)
+        self.car_size = (sprites.CAR_W * sprites.CAR_SCALE,
+                         sprites.CAR_H * sprites.CAR_SCALE)
         self.anim = sprites.Animator("idle")
         self.frame = "stand_open"
         self.alert_until = 0.0
@@ -1089,7 +1090,21 @@ class Companion(QWidget):
                 # furthest of a handful of candidates rather than at random:
                 # a kidnapping that ends four pixels away is a shrug.
                 here = (self.pos_x, self.pos_y)
-                self.target = max((self._pick_target() for _ in range(6)),
+                # Within the screen it is already on. Crossing a monitor
+                # boundary loses the pointer: the two displays here are
+                # different heights, so on the way across the compositor
+                # clamps the pointer to whatever is a valid position, the
+                # deltas that were clamped away are gone, and it reappears
+                # behind — which is the cursor lagging and then arriving
+                # displaced.
+                screen = self._screen_at(*here)
+                lo_x = screen.left() + 8
+                hi_x = max(lo_x, screen.right() - BUDDY_PX - 8)
+                lo_y = screen.top() + 8
+                hi_y = max(lo_y, screen.bottom() - BUDDY_PX - 8)
+                candidates = [(float(random.randint(lo_x, hi_x)),
+                               float(random.randint(lo_y, hi_y))) for _ in range(6)]
+                self.target = max(candidates,
                                   key=lambda t: (t[0] - here[0]) ** 2 + (t[1] - here[1]) ** 2)
                 self.docked = False
                 self.next_move = self.tug_until + 1.0

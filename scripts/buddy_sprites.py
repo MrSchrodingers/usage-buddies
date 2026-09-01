@@ -835,100 +835,167 @@ def build_sheet(brand, scale=SCALE):
 
 
 # ── the DeLorean ───────────────────────────────────────────────────────────
-# Wider than the character and on its own canvas, because a car at 28 pixels
-# is a grey smudge. Generated from spans rather than hand-authored: the shape
-# is geometric — a wedge, two circles, a tapering jet — and spans are how you
-# describe geometry without counting 1248 characters by hand.
+# On its own canvas and at its own scale. The first version was 60x24 at the
+# character's 2x — 120 pixels of car on a four-thousand pixel desktop, which
+# was too small to read as anything. This is 100x42 at 3x.
 #
-# Three rules learned by drawing it wrong first. The gull-wing door has to
-# touch the roof or it floats above the car like a bird. The wheels have to be
-# circles: a square tyre reads as a box, and the whole thing stops being a car.
-# And the jet has to taper — constant width reads as a stripe painted on the
-# bumper.
+# Built from a filled outline rather than horizontal spans. The car is a wedge,
+# and a wedge is a polygon: describing it as forty span() calls meant guessing
+# each row's width, and the result was tall and blobby where the real thing is
+# long and low. Three to one, which is the proportion that makes it a DeLorean
+# rather than a hatchback.
 #
-# Palette adds greys, glass and fire on top of the brand's own, so the driver
-# can be drawn in the character's colours inside it.
+# Things that were wrong before, each fixed by rendering it and looking:
+#   the wheels hung below the body instead of sitting in arches cut out of it
+#   the gull-wing door read as a tent over the driver, not a raised panel
+#   the flame trails floated behind the car instead of starting at the tyres
+#   the headlights shared a palette character with the jet
 
-# Wide enough for the jet to have room. At 52 the longest flame ran off the
-# edge and all three frames clipped to the same length, so the animation was
-# there in the code and invisible on screen.
-CAR_W, CAR_H = 60, 24
+# Wide enough for the longest jet. At 100 the car's tail sat at x=8 and all
+# three flame lengths ran off the edge, so they clipped to the same eight
+# columns — the animation was in the code and not on screen, for the second
+# time. CAR_X is the whole car shifted right to make that room.
+CAR_W, CAR_H = 128, 42
+CAR_X = 26
+CAR_SCALE = 3
 CAR_FLAMES = 3
+CAR_GROUND = 33
 
 CAR_PALETTE = {
-    "1": "#F2F5F8",   # steel highlight
-    "2": "#B9C0C7",   # steel
-    "3": "#6E767E",   # steel shadow, trim
-    "4": "#2A4459",   # glass
-    "0": "#FFF6C8",   # headlights and tail lights
-    "5": "#FFF6C8",   # flame core — its own character, so "567" means fire and
-                      # nothing else. Sharing one with the headlights made a
-                      # test measure the front of the car as the exhaust.
+    "1": "#F7FAFD",   # steel highlight
+    "2": "#AEB6BE",   # steel
+    "3": "#5F676F",   # steel shadow, trim, alloy
+    "4": "#20364A",   # glass
+    "0": "#FFF0B0",   # headlights
+    "5": "#FFFDE8",   # flame core
     "6": "#FFB03A",   # flame
     "7": "#E8492A",   # flame edge
-    "8": "#141619",   # tyre
-    "9": "#D9432E",   # tail light
+    "8": "#0E1013",   # tyre
+    "9": "#D9432E",   # tail lights
 }
+
+# tail at the left, nose at the right; roof low and long
+CAR_BODY = ((90, 23), (88, 19), (62, 17), (50, 11), (30, 11),
+            (16, 17), (10, 20), (8, 24), (9, 27), (90, 27))
+CAR_DRIVER = ["..bbbbbb..", ".bbbbbbbb.", "bbooooobbb", "bwwoowwoow",
+              "bwppwwppwb", "bbwwwwwwbb", ".bbbbbbbb."]
 
 
 def build_car(brand, flame=0):
-    """One frame of the car, as an ASCII grid CAR_W by CAR_H."""
+    """One frame of the car, CAR_W by CAR_H."""
+    import math
     grid = [["."] * CAR_W for _ in range(CAR_H)]
 
+    def put(x, y, ch):
+        x += CAR_X
+        if 0 <= x < CAR_W and 0 <= y < CAR_H:
+            grid[y][x] = ch
+
     def span(y, a, b, ch):
-        for x in range(a, b + 1):
-            if 0 <= x < CAR_W and 0 <= y < CAR_H:
-                grid[y][x] = ch
+        for x in range(int(a), int(b) + 1):
+            put(x, y, ch)
 
-    NOSE = 8          # the whole car shifted right, to leave the jet room
-    body = ((9, 21, 31), (10, 19, 34), (11, 16, 37), (12, 12, 40), (13, 10, 43),
-            (14, 9, 47), (15, 8, 49), (16, 8, 50), (17, 9, 50))
-    for y, a, b in body:
-        span(y, a + NOSE, b + NOSE, "2")
+    def poly(points, ch):
+        ys = [p[1] for p in points]
+        for y in range(int(min(ys)), int(max(ys)) + 1):
+            crossings = []
+            for i in range(len(points)):
+                x1, y1 = points[i]
+                x2, y2 = points[(i + 1) % len(points)]
+                if y1 == y2:
+                    continue
+                if min(y1, y2) <= y < max(y1, y2):
+                    crossings.append(x1 + (y - y1) * (x2 - x1) / (y2 - y1))
+            crossings.sort()
+            for i in range(0, len(crossings) - 1, 2):
+                span(y, round(crossings[i]), round(crossings[i + 1]), ch)
 
-    for i in range(7):                       # gull-wing door, hinged on the roof
-        span(8 - i, 21 - i * 2 + NOSE, 25 - i + NOSE, "2")
-    span(9, 19 + NOSE, 24 + NOSE, "2")
 
-    span(9, 22 + NOSE, 30 + NOSE, "1")                     # sheen along the top edge
-    span(10, 20 + NOSE, 22 + NOSE, "1")
+    poly(CAR_BODY, "2")
+    span(26, 10, 89, "3"); span(27, 10, 89, "3")          # sill shadow
+    for y in range(24, 26):
+        span(y, 10, 12, "3")
+    span(11, 31, 49, "1"); span(12, 31, 49, "1")          # sheen
+    span(18, 63, 87, "1")
 
-    for y, a, b in ((10, 23, 32), (11, 20, 25), (11, 29, 36), (12, 30, 38)):
-        span(y, a + NOSE, b + NOSE, "4")            # glass
-    for x in range(13, 20, 2):
-        span(12, x + NOSE, x + NOSE, "3")           # rear louvres
+    poly([(19, 17), (29, 13), (29, 18), (20, 20)], "4")   # rear window
+    poly([(48, 12), (60, 17), (48, 17)], "4")             # windscreen
+    poly([(31, 12), (46, 12), (46, 17), (31, 17)], "4")   # the open doorway
+    span(13, 32, 36, "1"); span(14, 50, 54, "1")          # reflections
 
-    span(15, 12 + NOSE, 45 + NOSE, "3")             # side trim
-    span(16, 50 + NOSE, 50 + NOSE, "3")
-    span(14, 48 + NOSE, 49 + NOSE, "0"); span(15, 48 + NOSE, 49 + NOSE, "0")
-    span(14, 8 + NOSE, 9 + NOSE, "9");   span(15, 8 + NOSE, 9 + NOSE, "9")
+    for x in range(20, 30, 3):                            # rear louvres
+        for y in range(15, 19):
+            put(x, y, "3")
 
-    for cx in (14 + NOSE, 38 + NOSE):        # wheels, as circles
-        cy, radius = 18, 4
-        for y in range(cy - radius, cy + radius + 1):
-            drop = abs(y - cy)
-            half = int((radius * radius - drop * drop) ** 0.5)
-            span(y, cx - half, cx + half, "8")
-            if drop <= 1:
-                span(y, cx - half + 2, cx + half - 2, "3")
-        span(cy, cx - 1, cx + 1, "1")
+    span(21, 14, 86, "3"); span(22, 14, 86, "2")          # the wedge crease
 
-    driver = ["..bb..", ".bbbb.", "bwoobw", "bwppwb", ".bbbb."]
-    for r, row in enumerate(driver):         # scowling, in the doorway
+    for y in range(21, 26):                               # front
+        span(y, 88, 90, "3")
+    span(20, 84, 90, "0"); span(21, 84, 90, "0")
+    for y in range(23, 26):
+        for x in range(84, 90, 2):
+            put(x, y, "1")
+    for y in range(21, 24):                               # rear lights
+        span(y, 8, 16, "9")
+    span(20, 10, 16, "3")
+
+    for cx in (26, 70):                                   # arches and wheels
+        for y in range(20, CAR_GROUND + 1):
+            drop = abs(y - 27)
+            if drop <= 9 and y < 27:
+                half = int((81 - drop * drop) ** 0.5)
+                span(y, cx - half, cx + half, ".")
+        for y in range(CAR_GROUND - 13, CAR_GROUND + 1):
+            drop = abs(y - (CAR_GROUND - 6))
+            if drop <= 7:
+                half = int((49 - drop * drop) ** 0.5)
+                span(y, cx - half, cx + half, "8")
+        for y in range(CAR_GROUND - 11, CAR_GROUND - 1):
+            drop = abs(y - (CAR_GROUND - 6))
+            if drop <= 4:
+                half = int((19.36 - drop * drop) ** 0.5)
+                span(y, cx - half, cx + half, "3")
+        for i in range(5):                                # five spokes
+            angle = i * 2 * math.pi / 5
+            put(cx + round(3 * math.cos(angle)),
+                CAR_GROUND - 6 + round(3 * math.sin(angle)), "1")
+        put(cx, CAR_GROUND - 6, "1")
+
+    poly([(47, 11), (40, 11), (18, 1), (25, 0)], "2")     # gull-wing, raised
+    poly([(45, 11), (41, 11), (21, 2), (25, 1)], "1")
+    poly([(44, 12), (40, 12), (20, 3), (23, 2)], "3")
+
+    for r, row in enumerate(CAR_DRIVER):                  # scowling, in the gap
         for c, ch in enumerate(row):
             if ch != ".":
-                span(8 + r, 24 + c + NOSE, 24 + c + NOSE, ch)
+                put(32 + c, 9 + r, ch)
 
-    length = (9, 15, 12)[flame % CAR_FLAMES]
-    for i in range(length):                  # the jet, tapering
-        x = 7 + NOSE - i
-        if x < 0:
+    for cx in (26, 70):                                   # burning tyre tracks
+        for i in range(16):
+            x = cx - 6 - i
+            if x < -CAR_X:
+                break
+            hue = "5" if i < 2 else ("6" if i < 7 else "7")
+            put(x, CAR_GROUND, hue)
+            if i < 9:
+                put(x, CAR_GROUND - 1, hue)
+            if i < 4:
+                put(x, CAR_GROUND - 2, hue)
+
+    length = (14, 25, 19)[flame % CAR_FLAMES]             # the jet
+    for i in range(length):
+        x = 8 - i
+        # -CAR_X, not 0: put() shifts by CAR_X, so the jet legitimately runs
+        # into negative source coordinates. Guarding at zero clipped every
+        # length to nine columns and made all three frames identical — which
+        # is exactly the bug the wider canvas was meant to fix.
+        if x < -CAR_X:
             break
         along = i / max(1, length - 1)
-        half = max(0, int(round(2.4 * (1 - along) + 0.2)))
-        hue = "5" if along < 0.22 else ("6" if along < 0.62 else "7")
-        for y in range(15 - half, 16 + half):
-            span(y, x, x, hue)
+        half = max(0, int(round(5.0 * (1 - along) + 0.4)))
+        hue = "5" if along < 0.18 else ("6" if along < 0.55 else "7")
+        for y in range(23 - half, 24 + half):
+            put(x, y, hue)
 
     fire = {".", "5", "6", "7"}
     outlined = [row[:] for row in grid]
@@ -949,3 +1016,15 @@ def car_palette(brand):
     merged = dict(PALETTES["codex" if brand == "codex" else "claude"])
     merged.update(CAR_PALETTE)
     return merged
+
+
+def build_car_sheet(brand, scale=None):
+    """The car's frames as QImages, both directions."""
+    pal = car_palette(brand)
+    scale = CAR_SCALE if scale is None else scale
+    sheet = {}
+    for flame in range(CAR_FLAMES):
+        grid = build_car(brand, flame)
+        sheet[f"car{flame}"] = to_qimage(grid, pal, scale)
+        sheet[f"car{flame}:flip"] = to_qimage(mirror(grid), pal, scale)
+    return sheet

@@ -590,6 +590,8 @@ def test_a_short_provocation_still_waits_out_the_cooldown(monkeypatch):
 # ── the getaway car ────────────────────────────────────────────────────────
 
 def test_the_car_is_a_car():
+    """Also pins the proportion. A DeLorean is three times as long as it is
+    tall; at anything squarer it reads as a hatchback."""
     """Three things that were wrong in the first drafts and each stopped it
     reading as a vehicle: a gull-wing door that floated above the roof, square
     tyres, and a jet of constant width that looked like a stripe."""
@@ -600,13 +602,15 @@ def test_the_car_is_a_car():
     grid = sprites.build_car("claude", 0)
     assert len(grid) == sprites.CAR_H
     assert all(len(row) == sprites.CAR_W for row in grid)
+    assert sprites.CAR_W * sprites.CAR_SCALE >= 260, \
+        "too small on screen to read as a car"
 
     filled = {(x, y) for y, row in enumerate(grid)
               for x, ch in enumerate(row) if ch != "."}
 
     # The door column and the roof have to be connected: walk down from the
     # top of the door and there must be no gap before the body.
-    column = sorted(y for x, y in filled if 26 <= x <= 34)
+    column = sorted(y for x, y in filled if 30 + sprites.CAR_X <= x <= 42 + sprites.CAR_X)
     runs = [b - a for a, b in zip(column, column[1:]) if b - a > 1]
     assert not runs, f"the door is detached from the roof by {runs}"
 
@@ -616,10 +620,13 @@ def test_the_car_is_a_car():
     # bodywork are the same width whatever shape the wheel is, which is how
     # the first version of this passed a square one.
     tyre = [(x, y) for y, row in enumerate(grid)
-            for x, ch in enumerate(row) if ch == "8" and 17 <= x <= 27]
+            for x, ch in enumerate(row) if ch == "8"
+            and 18 + sprites.CAR_X <= x <= 34 + sprites.CAR_X]
     def width(y):
         return len([1 for x, yy in tyre if yy == y])
-    assert width(18) > width(21), f"the wheel is a box: {width(18)} vs {width(21)}"
+    middle, bottom = sprites.CAR_GROUND - 6, sprites.CAR_GROUND
+    assert width(middle) > width(bottom), \
+        f"the wheel is a box: {width(middle)} vs {width(bottom)}"
 
 
 def test_the_jet_tapers_and_animates():
@@ -632,13 +639,15 @@ def test_the_jet_tapers_and_animates():
         grid = sprites.build_car("claude", flame)
         fire = [(x, y) for y, row in enumerate(grid)
                 for x, ch in enumerate(row) if ch in "567"]
-        assert all(x < 18 for x, _ in fire), \
+        exhaust = [(x, y) for x, y in fire if y < sprites.CAR_GROUND - 3]
+        assert exhaust, "no jet, only ground fire"
+        assert all(x < 12 + sprites.CAR_X for x, _ in exhaust), \
             "something outside the exhaust is using a flame colour"
         assert fire, f"frame {flame} has no flame"
-        xs = [x for x, _ in fire]
+        xs = [x for x, _ in exhaust]
         lengths.append(max(xs) - min(xs))
-        near = len([1 for x, _ in fire if x >= max(xs) - 1])
-        far = len([1 for x, _ in fire if x <= min(xs) + 1])
+        near = len([1 for x, _ in exhaust if x >= max(xs) - 1])
+        far = len([1 for x, _ in exhaust if x <= min(xs) + 1])
         assert near > far, f"frame {flame} does not taper: {near} at the exhaust, {far} at the tip"
     assert len(set(lengths)) > 1, f"the flame is the same length every frame: {lengths}"
 
@@ -683,3 +692,40 @@ def test_it_drives_angry():
     c.tug_until = time.monotonic() + 5
     c._animate(0.02, time.monotonic(), moving=True)
     assert c.anim.base == "furious", f"drove off placidly: {c.anim.base}"
+
+
+@needs_qt
+def test_the_getaway_stays_on_one_screen(monkeypatch):
+    """Crossing a monitor boundary loses the pointer.
+
+    The two displays this was written on are different heights, so on the way
+    across the compositor clamps the pointer to a position that exists, the
+    clamped deltas are gone for good, and it reappears behind the character.
+    On screen that is the cursor lagging and then arriving displaced.
+    """
+    mod, c = _companion()
+    monkeypatch.setattr(type(c), "_say", lambda self, text: None)
+    monkeypatch.setattr(type(c), "_snap", lambda self: None)
+    if len(c.screens) < 2:
+        pytest.skip("one screen: nothing to cross")
+
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    for screen in c.screens:
+        c.pos_x = float(screen.left() + 20)
+        c.pos_y = float(screen.top() + 20)
+        c.recent_drags = []
+        c.drag_distance = 0.0
+        c.tug_until = 0.0
+        c.tugged_at = 0.0
+        for _ in range(12):
+            c.dragging = True
+            c.drag_started = time.monotonic() - (mod.DRAG_TUG_ALWAYS + 1)
+            c.mouseReleaseEvent(QMouseEvent(QMouseEvent.MouseButtonRelease, QPointF(0, 0),
+                                            Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
+            tx, ty = c.target
+            assert screen.left() <= tx <= screen.right(), \
+                f"ran off {screen} to x={tx}"
+            assert screen.top() <= ty <= screen.bottom(), \
+                f"ran off {screen} to y={ty}"
