@@ -25,13 +25,23 @@ def _bounds(grid):
     return (rows[0], rows[-1]) if rows else (0, 0)
 
 
+def _ink(grid):
+    return sum(1 for row in grid for ch in row if ch != ".")
+
+
 # ── the grids ──────────────────────────────────────────────────────────────
 
 # CAR_* excluded: the car has its own canvas and its own palette, and is
 # checked by tests/test_drag_behaviour.py. Sweeping it in here asserted a
 # 28-wide grid against a 128-wide one.
+#
+# SHADOW excluded for the same reason and not as a favour: it is three rows
+# rather than twenty-eight and its two characters are deliberately outside the
+# body alphabet, because a character cannot mean a body colour in one grid and
+# a shadow colour in another. It has its own test below.
 @pytest.mark.parametrize("name", [n for n in dir(sprites)
                                   if n.isupper() and not n.startswith("CAR_")
+                                  and not n.startswith("SHADOW")
                                   and isinstance(getattr(sprites, n), list)
                                   and getattr(sprites, n)
                                   and isinstance(getattr(sprites, n)[0], str)])
@@ -44,6 +54,21 @@ def test_every_body_is_a_square_grid_of_known_colours(name):
         assert set(row) <= LEGAL, f"{name} row {i}: {set(row) - LEGAL}"
 
 
+def _hollow_at(grid):
+    """Rows through the widest part of the body that have transparent pixels
+    inside the silhouette. That is what a leaked flood fill looks like."""
+    top, bottom = _bounds(grid)
+    found = []
+    for row in range(top + (bottom - top) // 3, top + (bottom - top) // 2 + 1):
+        cols = [c for c, ch in enumerate(grid[row]) if ch != "."]
+        if len(cols) < 2:
+            continue
+        gap = [c for c in range(cols[0], cols[-1] + 1) if grid[row][c] == "."]
+        if gap:
+            found.append((row, gap))
+    return found
+
+
 @pytest.mark.parametrize("brand", BRANDS)
 def test_no_pose_renders_hollow(brand):
     """The flood fill finds the interior by what it cannot reach from outside.
@@ -54,13 +79,31 @@ def test_no_pose_renders_hollow(brand):
     nothing raises, nothing warns.
     """
     for name, grid in sprites.build_frames(brand).items():
-        top, bottom = _bounds(grid)
-        for row in range(top + (bottom - top) // 3, top + (bottom - top) // 2 + 1):
-            cols = [c for c, ch in enumerate(grid[row]) if ch != "."]
-            if len(cols) < 2:
-                continue
-            gap = [c for c in range(cols[0], cols[-1] + 1) if grid[row][c] == "."]
-            assert not gap, f"{brand}/{name} row {row}: hollow at columns {gap}"
+        assert not _hollow_at(grid), f"{brand}/{name}: hollow at {_hollow_at(grid)}"
+
+
+def test_the_hollow_check_can_still_see_a_hollow_body():
+    """The check above is a sweep over whatever build_frames produced, so it
+    passes just as happily if it has stopped looking at anything. This hands it
+    a body with a three-column step in it — the exact edit that leaks — and
+    fails if it comes back clean."""
+    leaky = [row for row in sprites.CLAUDE_BODY]
+    leaky[10] = "o.......................o..."   # three columns wider, unshaded
+    grid = sprites.compose("claude", leaky, sprites.CLAUDE_LEGS["stand"],
+                           sprites.EYES["open"])
+    assert _hollow_at(grid), "the flood leaked and the probe did not notice"
+
+
+@pytest.mark.parametrize("brand", BRANDS)
+def test_the_hollow_check_sees_every_pose_and_not_just_the_old_ones(brand):
+    """A pose is only checked if a frame in the table draws it. A new pose
+    added with no frame naming it is a drawing nothing renders and nothing
+    tests, and it stays that way until someone puts it in a clip and it comes
+    out hollow on a desktop."""
+    swept = {pose for pose, _eye, _dy in sprites.FRAME_SPECS.values()}
+    legs = sprites.CODEX_LEGS if brand == "codex" else sprites.CLAUDE_LEGS
+    unused = set(legs) - swept
+    assert not unused, f"{brand}: leg bands no frame uses: {sorted(unused)}"
 
 
 @pytest.mark.parametrize("brand", BRANDS)
@@ -75,6 +118,64 @@ def test_every_pose_stands_on_the_same_ground(brand):
         body = getattr(sprites, attr)
         grounds[pose] = _bounds(body)[1]
     assert len(set(grounds.values())) == 1, f"poses end on different rows: {grounds}"
+
+
+@pytest.mark.parametrize("brand", BRANDS)
+def test_only_the_declared_poses_leave_the_floor(brand):
+    """A pose that floats reads as the creature shrinking rather than moving.
+
+    Two things are allowed to lift it. The bob a walk is built on, which raises
+    the whole creature — feet included — by exactly the row it shifted, and the
+    poses named in OFF_GROUND_POSES: peeking has no feet in the frame at all,
+    and a celebration is a jump.
+
+    "By exactly the row it shifted" is the load-bearing half. Letting any
+    negative offset excuse any height made this test blind: the celebration
+    lifts four rows through its leg band and one through its offset, and a
+    version of this that only looked at the sign of the offset let it go
+    undeclared. The assertion also runs the other way, so a pose declared
+    airborne that in fact stands on the floor fails too — a list that may be
+    wrong in one direction is not a list of anything.
+    """
+    frames = sprites.build_frames(brand)
+    ground = _bounds(frames["stand_open"])[1]
+    for name, (pose, _eye, body_dy) in sprites.FRAME_SPECS.items():
+        bottom = _bounds(frames[name])[1]
+        if pose in sprites.OFF_GROUND_POSES:
+            assert bottom < ground, \
+                f"{brand}/{name} is declared off the floor and stands on it"
+        else:
+            bobbed = body_dy < 0 and bottom == ground + body_dy
+            assert bottom == ground or bobbed, \
+                (f"{brand}/{name} ends on row {bottom}; the floor is row {ground} "
+                 f"and the frame is offset by {body_dy}")
+
+
+@pytest.mark.parametrize("brand", BRANDS)
+def test_no_frame_lifts_the_body_off_the_top_of_the_grid(brand):
+    """Rex's ear tufts start two rows down. A frame that lifts the body by
+    three takes their tips off the edge of the canvas and the tufts come back
+    as two floating marks over an earless owl. The shift is in range, nothing
+    raises, and the symptom is one frame of one clip looking wrong."""
+    for name, (pose, _eye, body_dy) in sprites.FRAME_SPECS.items():
+        body = sprites.pose_body(brand, pose)
+        lost = _ink(body) - _ink(sprites._shift(body, body_dy))
+        assert lost == 0, f"{brand}/{name}: {lost} pixels shifted off the grid"
+
+
+@pytest.mark.parametrize("brand", BRANDS)
+def test_only_squash_and_stretch_wear_another_pose_s_legs(brand):
+    """build_frames falls back to the standing band for a pose that has none.
+
+    That fallback renders something plausible and wrong — a sit wearing
+    standing legs is a creature standing — and it renders it silently. Two
+    poses use it on purpose: squash and stretch change the body and not the
+    stance. A third name appearing here is a leg band nobody drew.
+    """
+    legs = sprites.CODEX_LEGS if brand == "codex" else sprites.CLAUDE_LEGS
+    borrowed = {pose for pose, _eye, _dy in sprites.FRAME_SPECS.values()
+                if pose not in legs}
+    assert borrowed == {"squash", "stretch"}, f"{brand}: falls back for {borrowed}"
 
 
 def test_the_shading_hints_are_load_bearing():
@@ -92,6 +193,59 @@ def test_the_shading_hints_are_load_bearing():
 
 
 # ── mirroring ──────────────────────────────────────────────────────────────
+
+def _pupils(brand, grid):
+    """Where the pupils sit inside each eye box, left box then right box.
+
+    Read off the frame rather than off the EYES table, because the question is
+    what compose pasted, not what was authored.
+    """
+    if brand == "codex":
+        er, ec, gap = (sprites.CODEX_EYE_ROW, sprites.CODEX_EYE_COL,
+                       sprites.CODEX_EYE_GAP)
+    else:
+        er, ec, gap = sprites.EYE_ROW, sprites.EYE_COL, sprites.EYE_GAP
+    width = 4
+    return [{(r - er, c - left) for r in range(er, er + width)
+             for c in range(left, left + width) if grid[r][c] == "p"}
+            for left in (ec, ec + width + gap)]
+
+
+def test_a_paired_eye_is_used_as_drawn_and_a_single_one_is_still_mirrored():
+    """Both halves of the rule carry weight.
+
+    A single band has to keep being mirrored or every symmetric face starts
+    drifting apart, one eye at a time. A pair has to be pasted as given or the
+    glance it exists for comes out as `look`.
+    """
+    band = ["wwww", "ppww", "ppww", "wwww"]
+    left, right = sprites._eye_bands(band)
+    assert (left, right) == (band, sprites.mirror(band)), \
+        "a single band stopped being mirrored"
+
+    pair = (["wwww", "ppww", "ppww", "wwww"], ["wwww", "ppww", "ppww", "wwww"])
+    assert sprites._eye_bands(pair) == pair, "a pair was not used as drawn"
+    assert pair[1] != sprites.mirror(pair[0]), \
+        "the pair is its own mirror; it would prove nothing"
+
+
+@pytest.mark.parametrize("brand", BRANDS)
+def test_a_glance_reaches_the_frame_without_being_mirrored(brand):
+    """The right eye used to be built by mirroring whatever went on the left,
+    so an asymmetric expression was not expressible at all: both pupils against
+    the left edge came out as one pupil left and one right, which is a stare
+    past either side of whatever is in front. This checks the pixels compose
+    actually pasted, in both directions — the symmetric eyes have to stay
+    symmetric too."""
+    frames = sprites.build_frames(brand)
+    left, right = _pupils(brand, frames["peek_side"])
+    assert left and right, "no pupils found; this probe is reading the wrong rows"
+    assert left == right, "the glance was mirrored: the pupils went to opposite edges"
+
+    left, right = _pupils(brand, frames["stand_look"])
+    assert left and right, "no pupils found in the mirrored face either"
+    assert left != right, "a mirrored eye quietly stopped being mirrored"
+
 
 @pytest.mark.parametrize("brand", BRANDS)
 def test_mirroring_is_exact_and_reversible(brand):
@@ -115,9 +269,47 @@ def test_every_clip_names_a_frame_that_exists(brand):
 
 def test_frames_do_not_all_run_at_one_rate():
     """A cycle at a constant rate reads mechanical. The walk is supposed to
-    hold on contact and hurry through the pass."""
+    hold on contact and hurry through the pass, and every other clip has the
+    same obligation: a wave with four equal frames is a windmill, a nod with
+    four equal frames is a machine part. Uniform timing is the default a clip
+    arrives with, so it is the thing worth failing on."""
     walk = [ms for _, ms in sprites.CLIPS["walk"]["frames"]]
     assert len(set(walk)) > 1, f"walk is a metronome: {walk}"
+
+    for name, clip in sprites.CLIPS.items():
+        timings = [ms for _, ms in clip["frames"]]
+        assert len(timings) > 1, f"{name} is a single frame, not a clip"
+        assert len(set(timings)) > 1, f"{name} is a metronome: {timings}"
+
+
+# ── the contact shadow ─────────────────────────────────────────────────────
+
+def test_the_contact_shadow_is_translucent_and_keeps_out_of_the_body_alphabet():
+    """A shadow is the wallpaper darkened, not a grey shape laid on top of it.
+
+    Opaque, it is a puddle the character is standing in, and on a dark
+    wallpaper it is a bright one. And its characters have to stay out of
+    ".osbhwpa": a character cannot mean a body colour in one grid and a shadow
+    colour in another, and the body grids are swept for that alphabet.
+    """
+    assert sprites.SHADOW and sprites.SHADOW_PALETTE, "there is no shadow"
+    for ch, value in sprites.SHADOW_PALETTE.items():
+        assert len(value) == 9, f"{ch}: {value} carries no alpha channel"
+        alpha = int(value[1:3], 16)
+        assert 0 < alpha < 255, f"{ch}: alpha {alpha} is not a shadow"
+
+    used = set("".join(sprites.SHADOW)) - {"."}
+    assert used <= set(sprites.SHADOW_PALETTE), f"undrawable characters: {used}"
+    assert not used & LEGAL, "the shadow is using the body's alphabet"
+
+
+def test_the_shadow_is_wider_than_it_is_tall():
+    """It is a contact shadow, seen from the front. Anything approaching round
+    is a hole in the desktop, and anything as tall as the character is a second
+    character lying under it."""
+    rows = len(sprites.SHADOW)
+    cols = max(len([c for c in row if c != "."]) for row in sprites.SHADOW)
+    assert cols > rows * 2, f"{cols} wide by {rows} tall is not flat"
 
 
 # ── playback ───────────────────────────────────────────────────────────────
@@ -196,6 +388,30 @@ def test_a_source_pixel_is_a_solid_block_on_screen(brand):
             block = {img.pixel(c * scale + dx, r * scale + dy)
                      for dy in range(scale) for dx in range(scale)}
             assert len(block) == 1, f"{brand} source pixel ({c},{r}) is not flat"
+
+
+@needs_qt
+@pytest.mark.parametrize("brand", BRANDS)
+def test_the_sheet_hands_over_one_shadow_and_no_mirror_of_it(brand):
+    """The shadow reaches the painter as its own image, so that it can be left
+    out on the frames where the character is in the air and left unsheared
+    while the body is being dragged. Neither is possible if it is drawn into
+    the body grids, and both are the reason it exists separately.
+
+    No `:flip`: an ellipse is its own mirror, and a second key is one more
+    thing that can be asked for and drawn by mistake.
+    """
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    sheet = sprites.build_sheet(brand)
+    assert "shadow" in sheet, "the sheet carries no shadow"
+    assert "shadow:flip" not in sheet, "a symmetric ellipse was given a mirror"
+
+    img = sheet["shadow"]
+    alphas = {(img.pixel(x, y) >> 24) & 0xFF
+              for y in range(img.height()) for x in range(img.width())}
+    assert any(0 < a < 255 for a in alphas), f"nothing translucent in it: {alphas}"
+    assert 255 not in alphas, "part of the shadow is opaque"
 
 
 @needs_qt
