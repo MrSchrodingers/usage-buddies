@@ -190,15 +190,17 @@ def test_the_lean_trails_the_direction_of_travel():
     """Pulled right, the bottom of the body is still back on the left."""
     mod, c = _companion()
     c.vel_x = 0.0
-    assert c.swing_frame() is None, "leaning while still"
+    c.wobble = 0.0
 
+    import buddy_sprites as sprites
+    c.wobble = 0.0
     c.vel_x = mod.SWING_MAX_LEAN
     right = c.swing_frame()
     c.vel_x = -mod.SWING_MAX_LEAN
     left = c.swing_frame()
-    assert right and left and right != left
-    assert right.endswith("l2"), f"moving right leaned right: {right}"
-    assert left.endswith("r2"), f"moving left leaned left: {left}"
+    assert right != left
+    assert right == sprites.wobble_frame(-2, 0), f"moving right leaned right: {right}"
+    assert left == sprites.wobble_frame(2, 0), f"moving left leaned left: {left}"
 
 
 @needs_qt
@@ -265,3 +267,119 @@ def test_what_is_painted_changes_with_the_swing():
     leaning = c.grab().toImage()
 
     assert still != leaning, "the sprite looks identical whether it is swinging or not"
+
+
+# ── the wobble, which is the part that is in the sprite ────────────────────
+
+@needs_qt
+def test_the_body_keeps_moving_after_the_hand_stops():
+    """This is the difference between inertia in the window and inertia in the
+    drawing. The window can trail the cursor perfectly and the sprite still be
+    a rigid picture being slid around; what makes it read as soft is the shape
+    still changing once nothing is pulling on it."""
+    mod, c = _companion()
+    c.dragging = True
+    c.pos_x, c.pos_y = 500.0, 500.0
+    c.vel_x = c.vel_y = 0.0
+    c.wobble = c.wobble_v = 0.0
+
+    c.hand = (500.0, 200.0)                 # yanked upward
+    for _ in range(8):
+        c._swing(0.033)
+    assert abs(c.wobble) > 0.05, f"a hard pull did not deform it: {c.wobble}"
+
+    c.hand = (c.pos_x, c.pos_y)             # hand stops dead
+    shapes = []
+    for _ in range(30):
+        c._swing(0.033)
+        shapes.append(round(c.wobble, 3))
+    assert len(set(shapes)) > 5, f"the shape froze the moment the hand did: {shapes}"
+
+
+@needs_qt
+def test_the_wobble_settles_instead_of_ringing_forever():
+    """A spring with no damping is a sprite having a seizure."""
+    mod, c = _companion()
+    c.dragging = True
+    c.pos_x = c.pos_y = 500.0
+    c.vel_x = c.vel_y = 0.0
+    c.wobble, c.wobble_v = 1.0, 0.0
+    c.hand = (500.0, 500.0)
+    for _ in range(200):
+        c._swing(0.033)
+    assert abs(c.wobble) < 0.08, f"still ringing after six seconds: {c.wobble}"
+
+
+@needs_qt
+def test_stretch_and_squash_are_different_drawings():
+    """The frames have to actually differ, or the oscillator is driving
+    nothing."""
+    mod, c = _companion()
+    import buddy_sprites as sprites
+    c.vel_x = 0.0
+    seen = set()
+    for w in (-1.0, 0.0, 1.0):
+        c.wobble = w
+        seen.add(c.swing_frame())
+    assert len(seen) == 3, f"squash, rest and stretch are not distinct: {seen}"
+    for name in seen:
+        assert name in c.sheet, f"{name} is not a frame that exists"
+
+
+def test_squashing_keeps_the_feet_on_the_ground():
+    """A body that shrinks off the floor reads as getting smaller, not as
+    being compressed."""
+    import sys as _sys
+    _sys.path.insert(0, str(REPO / "scripts"))
+    import buddy_sprites as sprites
+    frames = sprites.build_frames("claude")
+    grounds = set()
+    for wob in (-2, -1, 0, 1, 2):
+        grid = frames[sprites.wobble_frame(0, wob)]
+        grounds.add(max(i for i, row in enumerate(grid) if set(row) != {"."}))
+    assert len(grounds) == 1, f"the ground row moves with the squash: {grounds}"
+
+
+def test_stretching_changes_the_height():
+    import sys as _sys
+    _sys.path.insert(0, str(REPO / "scripts"))
+    import buddy_sprites as sprites
+    frames = sprites.build_frames("claude")
+
+    def height(wob):
+        grid = frames[sprites.wobble_frame(0, wob)]
+        rows = [i for i, row in enumerate(grid) if set(row) != {"."}]
+        return rows[-1] - rows[0]
+
+    assert height(-2) < height(0) < height(2), \
+        f"heights do not order: {height(-2)}, {height(0)}, {height(2)}"
+
+
+@needs_qt
+def test_the_shape_has_its_own_spring_not_a_readout_of_speed():
+    """Distinguishing a spring from a formula.
+
+    "The shape changes while being dragged" is not enough: setting the
+    deformation equal to the current speed also changes it, and passes every
+    other test here, because the body is overshooting the hand and the speed
+    is oscillating anyway. What only a spring does is carry a displacement
+    through zero on its own — released from a stretch with nothing moving, it
+    has to squash before it comes to rest.
+    """
+    mod, c = _companion()
+    c.dragging = True
+    c.pos_x = c.pos_y = 500.0
+    c.hand = (500.0, 500.0)          # hand exactly on the body: nothing pulling
+    c.vel_x = c.vel_y = 0.0
+    c.wobble, c.wobble_v = 1.0, 0.0  # let go of it stretched
+
+    crossings, previous = 0, c.wobble
+    for _ in range(90):
+        c._swing(0.033)
+        assert abs(c.vel_y) < 1.0, "the position spring moved; the case is not clean"
+        if previous > 0 >= c.wobble or previous < 0 <= c.wobble:
+            crossings += 1
+        previous = c.wobble
+    assert crossings >= 2, (
+        f"the shape never passed through its resting state ({crossings} crossings) — "
+        "it is following the speed, not springing back")

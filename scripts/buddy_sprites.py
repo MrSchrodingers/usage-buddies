@@ -505,6 +505,49 @@ def shear(rows, lean):
     return out
 
 
+def stretch_rows(rows, delta):
+    """Squash or stretch a sprite by repeating or dropping whole rows.
+
+    The other exact vertical operation on a pixel grid. Scaling by a fraction
+    resamples; duplicating a row makes two identical rows and removing one
+    leaves the rest untouched, so a body can wobble without a single soft edge
+    appearing anywhere in it.
+
+    Rows are taken from the middle of the body, never the head or the feet:
+    stretching a face is uncanny and lifting the feet off the floor undoes what
+    the ground row is for. The bottom stays put, so the shape grows upward.
+    """
+    filled = [i for i, row in enumerate(rows) if set(row) != {"."}]
+    if not filled or delta == 0:
+        return list(rows)
+    top, bottom = filled[0], filled[-1]
+    if bottom - top < 8:
+        return list(rows)
+    band = list(range(top + (bottom - top) // 3, top + 2 * (bottom - top) // 3))
+    if not band:
+        return list(rows)
+
+    body = rows[top:bottom + 1]
+    picks = [band[(i * len(band)) // max(1, abs(delta)) % len(band)] - top
+             for i in range(abs(delta))]
+    out = []
+    for i, row in enumerate(body):
+        if delta < 0 and i in picks:
+            continue
+        out.append(row)
+        if delta > 0 and i in picks:
+            out.append(row)
+
+    blank = "." * GRID
+    # Bottom stays where it was: pad or trim from the top.
+    lead = bottom + 1 - len(out)
+    if lead >= 0:
+        result = [blank] * lead + out
+    else:
+        result = out[-lead:]
+    return (result + [blank] * (GRID - len(result)))[:GRID]
+
+
 def mirror(rows):
     """Horizontal flip on the grid rather than with a painter scale.
     Mirroring is the one exact transform on a pixel grid, and doing it here
@@ -622,13 +665,22 @@ def build_frames(brand):
     # and only its lean changes, so authoring them separately would be four
     # more grids to keep in step with the one that matters.
     base = out["dangle_wide"]
-    for name, lean in SWING.items():
-        out[name] = shear(base, lean)
+    for lean_step, lean in LEANS.items():
+        leaned = shear(base, lean)
+        for wob_step, wob in WOBBLES.items():
+            out[wobble_frame(lean_step, wob_step)] = stretch_rows(leaned, wob)
     return out
 
 
-SWING = {"dangle_swing_l2": -3, "dangle_swing_l1": -2,
-         "dangle_swing_r1": 2, "dangle_swing_r2": 3}
+# Held, the body both leans and wobbles. Lean is the shear, wobble is rows
+# repeated or dropped. Five by five, generated from the one dangle pose — the
+# alternative is twenty-five grids to keep in step with each other.
+LEANS = {-2: -3, -1: -2, 0: 0, 1: 2, 2: 3}
+WOBBLES = {-2: -2, -1: -1, 0: 0, 1: 1, 2: 2}
+
+
+def wobble_frame(lean, wob):
+    return f"wob{lean:+d}{wob:+d}"
 
 
 def frame_names():

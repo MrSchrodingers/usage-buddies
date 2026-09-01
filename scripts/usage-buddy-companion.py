@@ -67,13 +67,14 @@ SLEEP_AFTER = 45.0       # docked and untouched for this long: it dozes off
 # someone playing with it, and it is allowed to notice.
 DRAG_PATIENCE = 3.5      # seconds of continuous dragging before it complains
 DRAG_MEMORY = 90.0       # window over which repeated drags accumulate
-DRAG_TUG_AFTER = 3       # drags inside that window before it pulls back
+DRAG_TUG_AFTER = 2       # drags inside that window before it pulls back
+DRAG_TUG_DISTANCE = 900  # or one drag that hauls it this far, in pixels
 TUG_SECONDS = 6.0        # how long it pulls, hard cap
 TUG_STRENGTH = 0.06      # fraction of the gap closed per frame: a tug, not a
                          # lock — pull harder and you win, which is the whole
                          # difference between a joke and a hijacked desktop
 TUG_COOLDOWN = 420.0     # and then it leaves you alone for a while
-DRAG_TUG_SECONDS = 9.0   # or one drag held this long, which is the same message
+DRAG_TUG_SECONDS = 5.0   # or one drag held this long, which is the same message
 
 # The swing. The body is not glued to the cursor: it hangs from it on a spring
 # and trails, which is what makes a dragged sprite read as having weight.
@@ -81,6 +82,13 @@ DRAG_TUG_SECONDS = 9.0   # or one drag held this long, which is the same message
 SWING_STIFFNESS = 62.0
 SWING_DAMPING = 0.86     # per 1/60s, so the feel does not change with the rate
 SWING_MAX_LEAN = 260.0   # px/s of horizontal speed that reaches the deepest pose
+
+# The wobble. This is the part that is in the sprite rather than in the window:
+# the body itself stretches and squashes, on its own spring, so it keeps
+# jiggling for a moment after the movement stops instead of snapping rigid.
+WOBBLE_SPEED = 300.0     # px/s of vertical speed that reaches full stretch
+WOBBLE_K = 34.0          # how hard it is pulled back toward its resting shape
+WOBBLE_DAMP = 0.90       # per 1/60s; lower settles sooner and jiggles less
 ALERT_SECONDS = 1.4      # the double-take when something needs the human
 SNAP_MARGIN = 26         # how close to an edge a drop counts as "put me here"
 
@@ -540,8 +548,11 @@ class Companion(QWidget):
         self.hand = None          # where the cursor is; the body chases it
         self.vel_x = 0.0
         self.vel_y = 0.0
+        self.wobble = 0.0
+        self.wobble_v = 0.0
         self.drag_complained = False
         self.recent_drags = []
+        self.drag_distance = 0.0
         self.tug_until = 0.0
         self.tugged_at = 0.0
 
@@ -774,19 +785,38 @@ class Companion(QWidget):
                       * (SWING_DAMPING ** (dt * 60)))
         self.pos_x = max(self.min_x, min(self.max_x, self.pos_x + self.vel_x * dt))
         self.pos_y = max(self.min_y, min(self.max_y, self.pos_y + self.vel_y * dt))
+
+        # The body's own spring, separate from the one moving the window.
+        # Chasing the speed rather than matching it is what leaves it
+        # oscillating after the hand stops: the target snaps back to zero and
+        # the shape has to swing through it a few times to get there.
+        # Driven by how fast it is moving at all, not by how fast it is moving
+        # *down*. A vertical-only driver left the common case — hauling it
+        # sideways across the screen — perfectly rigid, which is exactly the
+        # complaint: inertia in the window and none in the drawing. Speed
+        # stretches it; the spring overshooting through zero is what supplies
+        # the squash when the hand stops.
+        speed = abs(self.vel_x) + abs(self.vel_y)
+        target = min(1.0, speed / WOBBLE_SPEED)
+        self.wobble_v = ((self.wobble_v + (target - self.wobble) * WOBBLE_K * dt)
+                         * (WOBBLE_DAMP ** (dt * 60)))
+        self.wobble = max(-1.4, min(1.4, self.wobble + self.wobble_v * dt))
+
         self._place()
         self._wake()
 
     def swing_frame(self):
-        """Which lean the current horizontal speed calls for.
+        """The pose for the current speed: how far it leans, and how far it is
+        stretched or squashed.
 
-        The body trails, so it leans away from where it is going: pulled right,
-        the bottom is still back on the left.
+        The lean comes from horizontal speed and trails the movement — pulled
+        right, the bottom is still back on the left. The stretch comes from the
+        body's own spring, which is why it is still moving after the hand has
+        stopped.
         """
         lean = max(-1.0, min(1.0, -self.vel_x / SWING_MAX_LEAN))
-        step = int(round(lean * 2))
-        return {-2: "dangle_swing_l2", -1: "dangle_swing_l1", 0: None,
-                1: "dangle_swing_r1", 2: "dangle_swing_r2"}[step]
+        wob = max(-1.0, min(1.0, self.wobble))
+        return sprites.wobble_frame(int(round(lean * 2)), int(round(wob * 2)))
 
     def _tug(self, now):
         """Pull the pointer back, briefly, after being dragged around a lot.
@@ -918,13 +948,18 @@ class Companion(QWidget):
             self.drag_started = time.monotonic()
             self.drag_complained = False
             self.vel_x = self.vel_y = 0.0
+            self.drag_distance = 0.0
         self.dragging = True
         self.setCursor(Qt.ClosedHandCursor)
         # Where the hand is, not where the body goes. _tick runs the spring;
         # setting the position here is what made it feel welded to the pointer.
         target = event.globalPosition() - self.drag_offset
-        self.hand = (max(self.min_x, min(self.max_x, target.x())),
-                     max(self.min_y, min(self.max_y, target.y())))
+        new_hand = (max(self.min_x, min(self.max_x, target.x())),
+                    max(self.min_y, min(self.max_y, target.y())))
+        if self.hand is not None:
+            self.drag_distance += (abs(new_hand[0] - self.hand[0])
+                                   + abs(new_hand[1] - self.hand[1]))
+        self.hand = new_hand
 
     def mouseReleaseEvent(self, event):
         self.setCursor(Qt.OpenHandCursor)
@@ -938,7 +973,8 @@ class Companion(QWidget):
             self.recent_drags = [t for t in self.recent_drags if now - t <= DRAG_MEMORY]
             self._snap()
             self.anim.play_once("land")
-            long_pull = now - self.drag_started >= DRAG_TUG_SECONDS
+            long_pull = (now - self.drag_started >= DRAG_TUG_SECONDS
+                         or self.drag_distance >= DRAG_TUG_DISTANCE)
             if ((len(self.recent_drags) >= DRAG_TUG_AFTER or long_pull)
                     and now - self.tugged_at > TUG_COOLDOWN):
                 self.tug_until = now + random.uniform(TUG_SECONDS - 1, TUG_SECONDS)
