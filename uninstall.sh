@@ -77,6 +77,8 @@ for f in "$HOME/.local/bin/usage-buddies-collector.py" \
          "$HOME/.local/bin/buddy_lines.py" \
          "$HOME/.local/bin/buddy_signals.py" \
          "$HOME/.local/bin/buddy_focus.py" \
+         "$HOME/.local/bin/buddy_actions.py" \
+         "$HOME/.local/bin/buddy_peers.py" \
          "$HOME/.local/bin/buddy_voice.py" \
          "$HOME/.local/bin/repo_brief.py" \
          "$HOME/.local/bin/virtual_pointer.py" \
