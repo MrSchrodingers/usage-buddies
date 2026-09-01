@@ -327,3 +327,29 @@ def test_the_live_idle_probe_answers_a_number_or_nothing_at_all():
     a bare int standing in for a failure."""
     value = focus.user_idle_seconds()
     assert value is None or (isinstance(value, float) and value >= 0.0), value
+
+
+# ── a payload that is wrong rather than absent ─────────────────────────────
+
+def test_a_truthy_wrong_type_in_the_payload_does_not_raise():
+    """`or {}` only catches the falsy, and that is the whole hole.
+
+    A collector caught mid-write, or a payload hand-edited to `"lifetime": 1`,
+    is valid JSON and truthy, so it walks straight past the guard and `.get`
+    on an int raises. This is read from the companion's poll, and the failure
+    is not one lost frame: the same file is still on disk twenty seconds
+    later, so it raises again, and again, and the character never speaks for
+    the rest of the session while walking around looking perfectly fine.
+    """
+    for payload in ({"lifetime": 1}, {"lifetime": "x"}, {"lifetime": []},
+                    {"lifetime": {"peakHours": 7}}, {"lifetime": {"peakHours": "x"}},
+                    1, "x", [], None, {}):
+        assert focus.peak_hours(payload) == {}, payload
+
+
+def test_a_real_payload_still_reads_after_the_type_checks():
+    """The guard has to reject the junk without rejecting the data — a
+    peak_hours that always answers {} passes the test above and silences
+    quiet hours everywhere."""
+    hours = focus.peak_hours({"lifetime": {"peakHours": {"9": 4, "14": 30, "3": 0}}})
+    assert hours == {9: 4, 14: 30}, hours

@@ -34,7 +34,7 @@ KCFG = REPO / "plasmoid" / "contents" / "config" / "main.xml"
 # than against each other, so neither can drift by agreeing with itself.
 COMPANION_FLAGS = {
     "--codex", "--pt", "--alerts-only", "--live",
-    "--focus-minutes", "--insistence", "--quiet-hours", "--memes",
+    "--focus-minutes", "--insistence", "--no-quiet-hours", "--memes",
     "--no-shadow", "--escort",
 }
 
@@ -257,3 +257,21 @@ def test_the_command_payload_is_shell_quoted():
     quote or a semicolon stops being data."""
     body = _function_body(QML.read_text(), "sendCompanionCommand")
     assert "shellQuote(" in body, "the payload reaches the shell unquoted"
+
+
+def test_restarting_the_companion_drops_the_widget_s_record_of_a_focus_block():
+    """Changing any setting restarts the process, and the new one rejects the
+    command file it finds: issuedAt is older than the start it just recorded.
+
+    The block is gone, but focusRequested was not cleared, so the header kept
+    showing the stop icon and offering to end it. Pressing that sent focus.stop
+    to a companion with no active block, which ignores it — a button that lies
+    until the widget's own expiry timer runs out, up to the full duration.
+    """
+    body = _function_body(QML.read_text(), "syncCompanion")
+    assert "focusRequested = false" in body, (
+        "syncCompanion restarts the companion without clearing the widget's "
+        "record of the focus block it just killed")
+    start = body.index("companionCtl.connectSource(ctl + \" start\"")
+    assert body.index("focusRequested = false") < start, (
+        "the record is cleared after the restart is queued")

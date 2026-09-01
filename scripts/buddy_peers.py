@@ -48,11 +48,17 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import time
 from collections import namedtuple
 from pathlib import Path
 
 SCRIPT_NAME = "usage-buddy-companion.py"
+
+# python, python3, python3.14, pypy3 — the argv[0] of a script run through an
+# interpreter. Anything else in that slot is a program operating *on* the
+# file rather than running it.
+_INTERPRETER = re.compile(r"^(python|pypy)[0-9.]*$")
 
 
 # ── cadence ────────────────────────────────────────────────────────────────
@@ -171,16 +177,29 @@ def is_companion(pid, proc="/proc"):
             argv = handle.read(MAX_BYTES)
     except (OSError, TypeError, ValueError):
         return False
-    for part in argv.split(b"\0"):
-        if not part:
-            continue
+    # Two shapes count, and position alone does not tell them apart. A shebang
+    # script is exec'd as
+    #   /usr/bin/python3 /path/usage-buddy-companion.py
+    # so argv[0] is the interpreter and the script is argv[1]; matching only
+    # argv[0] finds nothing, which is the mistake companion-ctl.sh documents.
+    # Matching any argument is the opposite error:
+    #   cp scripts/usage-buddy-companion.py ~/.local/bin/
+    # is install.sh running, and it answers yes. So does `vim` on the file,
+    # which is argv[1] like the real thing — the position is identical and
+    # only argv[0] separates them. The rule is therefore about who is running:
+    # the script as its own argv[0], or an interpreter running the script.
+    parts = []
+    for part in [p for p in argv.split(b"\0") if p][:2]:
         try:
-            name = os.path.basename(part.decode("utf-8", "replace"))
+            parts.append(os.path.basename(part.decode("utf-8", "replace")))
         except (AttributeError, UnicodeError):
-            continue
-        if name == SCRIPT_NAME:
-            return True
-    return False
+            return False
+    if not parts:
+        return False
+    if parts[0] == SCRIPT_NAME:
+        return True
+    return (len(parts) > 1 and parts[1] == SCRIPT_NAME
+            and _INTERPRETER.match(parts[0]) is not None)
 
 
 # ── reading the files, with no files ───────────────────────────────────────

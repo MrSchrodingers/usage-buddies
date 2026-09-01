@@ -343,8 +343,17 @@ QUIET_SHARE = 0.10       # an hour counts as worked at a tenth of the busiest on
 
 
 def peak_hours(usage):
-    """{hour: count} from a widget-data payload, junk dropped."""
-    raw = ((usage or {}).get("lifetime") or {}).get("peakHours")
+    """{hour: count} from a widget-data payload, junk dropped.
+
+    Every level is checked by type rather than by `or {}`. That idiom only
+    catches the falsy: a collector caught mid-write, or a payload hand-edited
+    to `"lifetime": 1`, is valid JSON and truthy, and `.get` on an int raises.
+    This is called from the companion's poll, and the failure is not one bad
+    frame — the same file is on disk next tick, so it raises every twenty
+    seconds and the character never speaks again.
+    """
+    lifetime = usage.get("lifetime") if isinstance(usage, dict) else None
+    raw = lifetime.get("peakHours") if isinstance(lifetime, dict) else None
     hours = {}
     if not isinstance(raw, dict):
         return hours

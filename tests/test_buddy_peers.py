@@ -497,3 +497,32 @@ def test_nothing_at_all_happens_on_an_empty_desktop():
     assert encounter.update(_peer(100, "claude", 0, 0), [], 0.0) is None
     assert encounter.update(_peer(100, "claude", 0, 0), None, 1.0) is None
     assert not encounter.busy
+
+
+def test_the_installer_copying_the_script_is_not_mistaken_for_a_companion(tmp_path):
+    """Matching the script name in any argument answers yes to
+
+        cp scripts/usage-buddy-companion.py ~/.local/bin/
+
+    which is install.sh running. A presence file left by a dead companion
+    whose pid the installer then reuses would be kept alive by that, and the
+    character walks toward a position nobody is publishing any more.
+
+    The window is the first two arguments, because a shebang script is exec'd
+    as `python3 /path/script.py` and argv[0] is the interpreter — matching
+    only argv[0] is the opposite mistake, and companion-ctl.sh documents
+    paying for it.
+    """
+    cases = {
+        b"/usr/bin/python3\x00/home/u/.local/bin/usage-buddy-companion.py\x00": True,
+        b"/home/u/.local/bin/usage-buddy-companion.py\x00": True,
+        b"/usr/bin/cp\x00scripts/usage-buddy-companion.py\x00/home/u/.local/bin/\x00": False,
+        b"/usr/bin/vim\x00scripts/usage-buddy-companion.py\x00": False,
+        b"/bin/sh\x00-c\x00echo usage-buddy-companion.py\x00": False,
+    }
+    for index, (argv, expected) in enumerate(cases.items()):
+        root = tmp_path / str(index)
+        (root / "4242").mkdir(parents=True)
+        (root / "4242" / "cmdline").write_bytes(argv)
+        got = peers.is_companion(4242, proc=str(root))
+        assert got is expected, f"{argv!r} -> {got}, expected {expected}"

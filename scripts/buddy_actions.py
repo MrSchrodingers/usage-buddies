@@ -295,6 +295,18 @@ def _path_from_uri(uri):
     names a directory with a strange name, and expanding it would let the
     contents of a dropped string choose a directory it never named.
     """
+    # Before urlsplit, because urlsplit answers by discarding. A path that
+    # contains `#` or `?` comes back truncated at that character, and the
+    # truncation is not an error: `file:///work/src/#scratch` parses to
+    # `/work/src`, which exists, is a repository, and is not what anyone
+    # dragged. Rejecting is the same choice `..` gets below and for the same
+    # reason — a URI whose meaning depends on how it was split is one this
+    # module must not resolve on the dropper's behalf. A conforming file
+    # manager percent-encodes both characters, so a raw one means the URI was
+    # assembled by something else.
+    if "#" in uri or "?" in uri:
+        return None, REASON_UNSAFE
+
     parts = urlsplit(uri)
     if parts.scheme != "file":
         # Covers http, data, and a bare relative path, which has no scheme.
@@ -604,10 +616,18 @@ def parse_window_info(raw):
 def _busctl(path, interface, method, *args, timeout=BUSCTL_TIMEOUT):
     """One D-Bus call to KWin as JSON text, or None. Never raises."""
     command = ["busctl", "--user", "call", KWIN_SERVICE, path, interface, method]
+    # Options go before the separator, values after it. busctl permutes its
+    # arguments, so a value beginning with a dash is read as an option:
+    #   busctl ... getWindowInfo s --version --json=short
+    # prints the systemd version instead of calling the method. The values
+    # here are window ids taken from the compositor's own reply, so this is
+    # hardening rather than a fix for an id seen in the wild, but they are the
+    # one part of this command that this process did not write.
+    command.append("--json=short")
     if args:
+        command.append("--")
         command.append("s" * len(args))
         command.extend(args)
-    command.append("--json=short")
     try:
         done = subprocess.run(command, capture_output=True, text=True,
                               timeout=timeout, check=False)

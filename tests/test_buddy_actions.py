@@ -583,3 +583,44 @@ def test_a_window_nobody_can_see_does_not_get_the_pointer_either():
     gone = {"x": -9000.0, "y": 200.0, "width": 800.0, "height": 600.0}
     assert actions.delivery_target(gone, SPRITE, BOUNDS, (100.0, 900.0),
                                    SCREENS) is None
+
+
+# ── what urlsplit throws away ──────────────────────────────────────────────
+
+def test_a_fragment_does_not_quietly_shorten_the_dropped_path(tmp_path):
+    """urlsplit answers by discarding: everything from the first `#` is gone.
+
+    That is not a parse error, it is a different directory. Dropping
+    `/work/src/#scratch` used to come back as `/work/src` — which exists, has
+    a .git, passes every check, and lands in `accepted` with nothing in
+    `rejected`. The reading then runs in the whole monorepo instead of the
+    folder someone dragged, it costs real money, and the module's entire
+    reason for reporting reasons is bypassed because there was no rejection.
+    """
+    (tmp_path / "src" / ".git").mkdir(parents=True)
+    (tmp_path / "src" / "#scratch").mkdir()
+
+    drop = actions.dropped_repositories([f"file://{tmp_path}/src/#scratch"])
+    assert drop.accepted == [], f"accepted a path nobody dropped: {drop.accepted}"
+    assert [reason for _uri, reason in drop.rejected] == [actions.REASON_UNSAFE]
+
+
+def test_a_query_character_is_rejected_rather_than_cut_off(tmp_path):
+    """Same discard, different separator. It reads as harmless only because the
+    truncation usually lands on something that does not exist — which makes it
+    a coincidence, not a defence."""
+    (tmp_path / "notes").mkdir()
+    drop = actions.dropped_repositories([f"file://{tmp_path}/notes?draft"],
+                                              require_repo=False)
+    assert drop.accepted == []
+    assert [reason for _uri, reason in drop.rejected] == [actions.REASON_UNSAFE]
+
+
+def test_an_encoded_hash_still_names_the_folder_it_encodes(tmp_path):
+    """The rejection is of the raw character, not of the folder. A conforming
+    file manager sends %23, and that drop has to keep working or the fix has
+    traded a wrong answer for a missing feature."""
+    target = tmp_path / "#scratch"
+    (target / ".git").mkdir(parents=True)
+    drop = actions.dropped_repositories([f"file://{tmp_path}/%23scratch"])
+    assert drop.accepted == [str(target)], drop.rejected

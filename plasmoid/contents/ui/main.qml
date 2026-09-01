@@ -345,6 +345,18 @@ PlasmoidItem {
         }
         // Restart rather than reconfigure: the flags are read at startup, so a
         // companion already running with the old ones would ignore them.
+        //
+        // And a restart ends any focus block, because the new process rejects
+        // the command file it finds on disk — issuedAt is older than the start
+        // it just recorded, which is the guard that stops yesterday's request
+        // re-entering a block nobody asked for twice. The widget's record has
+        // to go with it, or the header keeps offering to end a block that is
+        // gone and the button does nothing when pressed. onBuddyModeChanged
+        // already does this for the off switch; every setting that reaches the
+        // command line needs it too, so it lives here rather than in each of
+        // the six handlers.
+        focusRequested = false;
+        focusExpiry.stop();
         companionCtl.connectSource(ctl + " start" +
             (brand.name === "Codex" ? " --codex" : "") +
             (lang === "pt" ? " --pt" : "") +
@@ -352,7 +364,7 @@ PlasmoidItem {
             (buddyVoice === "claude" ? " --live" : "") +
             " --focus-minutes " + buddyFocusMinutes +
             " --insistence " + buddyInsistence +
-            (buddyQuietHours ? " --quiet-hours" : "") +
+            (buddyQuietHours ? "" : " --no-quiet-hours") +
             " --memes " + buddyMemes +
             (buddyShadow ? "" : " --no-shadow") +
             (buddyEscort ? " --escort" : ""));
@@ -454,11 +466,18 @@ PlasmoidItem {
     function sendCompanionCommand(payload) {
         payload.issuedAt = new Date().toISOString();
         var dir = "\"${XDG_CACHE_HOME:-$HOME/.cache}\"/usage-buddies";
+        // The temporary is created in the target's own directory so the move
+        // is a rename within one filesystem, which is what makes it atomic —
+        // a reader woken by a watcher mid-write would otherwise read half a
+        // document. It is also removed when any step after its creation
+        // fails: an && chain that stops at a full disk leaves the temporary
+        // behind, and since the companion watches the directory as well as
+        // the file, every leftover is both dead weight and a spurious wake.
         companionCommand.connectSource(
             "mkdir -p " + dir + " && " +
             "t=$(mktemp " + dir + "/.companion-command.XXXXXX) && " +
-            "printf %s " + shellQuote(JSON.stringify(payload)) + " > \"$t\" && " +
-            "mv \"$t\" " + dir + "/companion-command.json");
+            "{ printf %s " + shellQuote(JSON.stringify(payload)) + " > \"$t\" && " +
+            "mv \"$t\" " + dir + "/companion-command.json; } || rm -f \"$t\"");
     }
 
     // Single quotes suspend everything the shell would otherwise interpret.
