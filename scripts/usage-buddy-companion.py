@@ -18,32 +18,49 @@ silence, and closing it is a right-click away.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import random
 import subprocess
 import sys
 import time
+from collections import namedtuple
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Must be set before QtGui is imported, or the platform is already chosen.
 os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
-from PySide6.QtCore import (Qt, QTimer, QPointF, QRectF, Signal, QObject,        # noqa: E402
-                            QProcess, QProcessEnvironment)
+from PySide6.QtCore import (Qt, QTimer, QPointF, QRectF, QObject,               # noqa: E402
+                            QFileSystemWatcher, QProcess, QProcessEnvironment)
 from PySide6.QtGui import (QAction, QColor, QCursor, QFont, QFontMetrics,        # noqa: E402
                            QPainter, QPainterPath, QPen)
 from PySide6.QtWidgets import QApplication, QMenu, QWidget                       # noqa: E402
+
+# QtDBus is a separate module in some PySide6 packagings, and the whole of it
+# is optional here: without it the focus block loses its notification
+# inhibition and keeps everything else. An ImportError at module scope would
+# instead cost the companion entirely.
+try:                                                                             # noqa: E402
+    from PySide6.QtDBus import QDBusConnection, QDBusInterface
+except ImportError:                                                              # pragma: no cover
+    QDBusConnection = QDBusInterface = None
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import buddy_sprites as sprites                                                  # noqa: E402
 import repo_brief                                                                # noqa: E402
 import buddy_voice                                                               # noqa: E402
+import buddy_signals as signals                                                  # noqa: E402
+import buddy_focus as focus_engine                                               # noqa: E402
 from buddy_lines import LINES                                                    # noqa: E402
 import virtual_pointer                                                           # noqa: E402
 
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "usage-buddies"
 SESSIONS_FILE = CACHE / "sessions.json"
+# Written by the widget, read here. See CommandChannel below for why it carries
+# a timestamp and why it is replaced by a rename rather than written in place.
+COMMAND_FILE = CACHE / "companion-command.json"
 WIDGET_DATA = Path.home() / ".claude" / "widget-data.json"
 ICONS = Path(__file__).resolve().parent.parent / "plasmoid" / "contents" / "icons"
 INSTALLED_ICONS = (Path.home() / ".local/share/plasma/plasmoids"
@@ -106,6 +123,312 @@ WOBBLE_DAMP = 0.90       # per 1/60s; lower settles sooner and jiggles less
 ALERT_SECONDS = 1.4      # the double-take when something needs the human
 SNAP_MARGIN = 26         # how close to an edge a drop counts as "put me here"
 
+# Insistence. How long a gesture is held, and how long the pointer is carried
+# for. The carry is shorter than the drag retaliation's: that one is a joke and
+# wants to be watched, this one is a summons and wants to be over.
+INSIST_GESTURE_SECONDS = 4.0
+INSIST_TUG_SECONDS = 3.0
+
+# The focus block's readout, drawn inside the character's own square. Deliberate:
+# the window's size and position carry the docking, the side the bubble opens on
+# and the pointer carry, and a strip added above the sprite would move all three.
+FOCUS_BAR_H = 4
+FOCUS_BAR_INSET = 5
+
+# Clips the art may not have yet. The poses for focus and insistence are drawn
+# separately from this code, and buddy_sprites.Animator looks its clip up in
+# CLIPS on every frame — so naming one that has not landed raises inside the
+# frame timer and takes the companion down for good. Names are resolved through
+# clip_or_fallback, which means the art starts being used the moment it exists
+# and nothing breaks while it does not.
+CLIP_FALLBACK = {
+    "sit": "idle",
+    "wave": "alert",
+    "point": "alert",
+    "panic": "furious",
+    "celebrate": "alert",
+    "nod": "idle",
+}
+
+
+def clip_or_fallback(name, default="idle"):
+    """`name` if the sheet has it, otherwise the closest clip that exists."""
+    if name in sprites.CLIPS:
+        return name
+    alternative = CLIP_FALLBACK.get(name)
+    if alternative in sprites.CLIPS:
+        return alternative
+    return default if default in sprites.CLIPS else next(iter(sprites.CLIPS))
+
+
+# ── the command line ───────────────────────────────────────────────────────
+
+# The ladder the widget names, and the ceiling each name puts on it. `off` is
+# not "rung 0 exists": it is the companion never doing more than putting a
+# sentence in its bubble.
+INSISTENCE_STEPS = ("off", "speak", "walk", "wave", "pointer")
+INSISTENCE_CEILING = {"off": 0, "speak": 1, "walk": 2, "wave": 3, "pointer": 4}
+
+# How often a spoken line is delivered holding something, which is what the
+# widget's own labels for this setting describe: "plain sprite, no props", "a
+# prop now and then", "a prop on most lines". The prop is the book that
+# buddy_sprites bakes into the `read` pose — the only one that exists — so the
+# setting is a frequency over that clip rather than a wardrobe. Rolled once per
+# line; see Companion.prop_line.
+MEME_LEVELS = ("off", "light", "full")
+MEME_PROP_CHANCE = {"off": 0.0, "light": 0.15, "full": 0.6}
+
+# Defaults are the widget's defaults (plasmoid/contents/config/main.xml), so a
+# companion started by hand behaves like one started by the applet.
+DEFAULT_INSISTENCE = "walk"
+DEFAULT_MEMES = "light"
+DEFAULT_FOCUS_MINUTES = focus_engine.FOCUS_MINUTES
+
+# A block shorter than a minute is a typo, and one longer than four hours is
+# not a focus block. Both ends clamp rather than reject: see _one_of.
+FOCUS_MINUTES_MIN, FOCUS_MINUTES_MAX = 1, 240
+
+Options = namedtuple(
+    "Options",
+    "brand lang alerts_only live self_test focus_minutes insistence "
+    "quiet_hours memes shadow escort")
+
+
+def _one_of(value, allowed, default):
+    """A value fixed to the enum it has to be in.
+
+    Everything on this command line arrives from a KDE config file — a text
+    file a person can edit — by way of a shell command line. A typo in it has
+    to cost the setting and nothing else: a mascot that will not start because
+    someone wrote `pointr` is worse than a mascot running on the default, and
+    the failure is invisible from the widget, which never sees the exit code.
+    """
+    text = str(value or "").strip().lower()
+    return text if text in allowed else default
+
+
+def _clamped_int(value, low, high, default):
+    """An integer inside its range, or the default. Same contract as _one_of."""
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+    return max(low, min(high, number))
+
+
+def parse_args(argv):
+    """The command line, resolved and clamped, never exiting.
+
+    argparse's own validation is deliberately not used: `choices` and
+    `type=int` both answer a bad value with parser.error(), which is
+    SystemExit(2) — the process is gone before it draws anything, over a
+    setting. The options are read as plain strings and fixed afterwards.
+
+    parse_known_args, allow_abbrev=False and add_help=False for the same
+    reason. A flag this version has not heard of is a newer widget talking to
+    an older companion, which should cost that flag rather than the companion;
+    an abbreviation is ambiguous-by-accident and argparse exits on it; and
+    --help is one more exit path on a program whose caller is a shell script.
+    """
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("--codex", action="store_true")
+    parser.add_argument("--pt", action="store_true")
+    parser.add_argument("--alerts-only", action="store_true")
+    parser.add_argument("--live", action="store_true")
+    parser.add_argument("--self-test", action="store_true")
+    # nargs="?" so a flag left without its value is a missing value rather
+    # than "expected one argument", which is another exit.
+    parser.add_argument("--focus-minutes", nargs="?", default=None, const=None)
+    parser.add_argument("--insistence", nargs="?", default=None, const=None)
+    parser.add_argument("--quiet-hours", action="store_true")
+    parser.add_argument("--memes", nargs="?", default=None, const=None)
+    parser.add_argument("--no-shadow", action="store_true")
+    parser.add_argument("--escort", action="store_true")
+    known, _unknown = parser.parse_known_args(list(argv))
+    return Options(
+        brand="codex" if known.codex else "claude",
+        lang="pt" if known.pt else "en",
+        alerts_only=known.alerts_only,
+        live=known.live,
+        self_test=known.self_test,
+        focus_minutes=_clamped_int(known.focus_minutes, FOCUS_MINUTES_MIN,
+                                   FOCUS_MINUTES_MAX, DEFAULT_FOCUS_MINUTES),
+        insistence=_one_of(known.insistence, INSISTENCE_STEPS, DEFAULT_INSISTENCE),
+        quiet_hours=known.quiet_hours,
+        memes=_one_of(known.memes, MEME_LEVELS, DEFAULT_MEMES),
+        shadow=not known.no_shadow,
+        escort=known.escort,
+    )
+
+
+def default_options(**over):
+    """The options a companion built without a command line runs on."""
+    return parse_args([])._replace(**over)
+
+
+# ── commands from the widget ───────────────────────────────────────────────
+
+def read_command(path):
+    """The command file's contents as a dict, or None.
+
+    Invalid JSON is not an error on this path. The widget writes to a
+    temporary file and renames it over the target, so a complete file is what
+    a reader normally sees — but a directory watcher fires on the temporary
+    file appearing too, and that one is read mid-write. This runs inside a Qt
+    slot: an exception here does not lose a command, it loses the channel.
+    """
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def parse_issued_at(text):
+    """The widget's ISO 8601 stamp as an aware datetime, or None.
+
+    `new Date().toISOString()` ends in Z, which datetime.fromisoformat only
+    learned to read in 3.11; this has to run on whatever python3 the desktop
+    has, so the Z is translated rather than relied on. A stamp without a zone
+    is read as UTC, which is what the widget writes.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+    raw = text.strip()
+    if raw.endswith(("Z", "z")):
+        raw = raw[:-1] + "+00:00"
+    try:
+        stamp = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=timezone.utc)
+
+
+# ── holding the desktop's notifications back ───────────────────────────────
+
+class NotificationInhibitor:
+    """Keeps notifications inhibited for as long as a focus block runs.
+
+    Why this is here rather than in the Qt-free engine: an inhibition on these
+    servers is bound to the caller's D-Bus connection and dropped the moment it
+    closes. Measured against the same KDE stack on
+    org.freedesktop.PowerManagement.Inhibit, the one that reports what it is
+    holding — HasInhibit false, a short-lived gdbus call returns cookie 67,
+    HasInhibit false again as soon as that process exits. A fire-and-forget
+    subprocess therefore returns a cookie and inhibits nothing. Holding one
+    needs a connection that outlives the call.
+
+    That connection is this class's own, not the process's shared session bus,
+    because closing it is how the hold is given back. MEASURED here: the server
+    exports UnInhibit(u), PySide6 marshals a Python int as `i`, and the call
+    comes back "No such method 'UnInhibit' ... (signature 'i')" with the
+    inhibition still held — there is no way from PySide6 to send a uint32. So
+    the same connection-bound lifetime that makes a stray `gdbus call` useless
+    is what makes this work: one connection per hold, and dropping it is the
+    release. Closing the shared bus instead would take the rest of the
+    process's D-Bus with it.
+
+    Every failure is silent and costs only the inhibition: a desktop with no
+    session bus, no notification server, or a server that does not implement
+    Inhibit still gets a focus block, just a noisier one.
+    """
+
+    SERVICE = "org.freedesktop.Notifications"
+    PATH = "/org/freedesktop/Notifications"
+    # The desktop entry the server attributes the inhibition to. It is the
+    # applet's, because that is the thing the user switched on.
+    APP_ID = "org.kde.plasma.usagebuddies"
+    CONNECTION = "usage-buddies-companion-inhibit"
+
+    def __init__(self):
+        self.cookie = None
+        self._connection = None
+
+    def _connect(self):
+        """A named D-Bus connection and an interface on it, or None.
+
+        The name carries this object's id so two inhibitors cannot land on one
+        connection: Qt keys connections by name, and the second connectToBus
+        with a name already in use returns the first one — closing either would
+        then take both holds with it.
+        """
+        if QDBusConnection is None or QDBusInterface is None:
+            return None
+        name = f"{self.CONNECTION}-{id(self)}"
+        try:
+            bus = QDBusConnection.connectToBus(QDBusConnection.SessionBus, name)
+            if not bus.isConnected():
+                self._close(name)
+                return None
+            iface = QDBusInterface(self.SERVICE, self.PATH, self.SERVICE, bus)
+            if not iface.isValid():
+                self._close(name)
+                return None
+        except Exception:
+            self._close(name)
+            return None
+        return name, iface
+
+    @staticmethod
+    def _close(name):
+        if QDBusConnection is not None:
+            QDBusConnection.disconnectFromBus(name)
+
+    @staticmethod
+    def _cookie_of(reply):
+        """The cookie out of whatever the bus handed back, or None.
+
+        An error is not an exception in QtDBus: it comes back as a message of
+        type ErrorMessage carrying no arguments, so reading argument zero off
+        it is an IndexError on a path that must never raise.
+        """
+        if isinstance(reply, int) and not isinstance(reply, bool):
+            return reply
+        arguments = getattr(reply, "arguments", None)
+        values = arguments() if callable(arguments) else None
+        if not values:
+            return None
+        try:
+            return int(values[0])
+        except (TypeError, ValueError):
+            return None
+
+    def hold(self, reason):
+        """Ask for the inhibition. Returns the cookie, or None."""
+        if self.cookie is not None:
+            return self.cookie
+        opened = self._connect()
+        if opened is None:
+            return None
+        name, iface = opened
+        try:
+            cookie = self._cookie_of(iface.call("Inhibit", self.APP_ID, str(reason), {}))
+        except Exception:
+            cookie = None
+        # The interface has to go before the connection does, or Qt keeps the
+        # connection alive for it and warns about active objects on close.
+        del iface
+        if cookie is None:
+            self._close(name)
+            return None
+        self.cookie, self._connection = cookie, name
+        return cookie
+
+    def release(self):
+        """Give it back. Returns whether there was one to give back.
+
+        A block that ends with the process needs nothing here — every
+        connection it owns goes down with it — but a block that is cancelled
+        leaves this process alive, and without this the hold outlives the block
+        it belonged to and stays until the mascot is closed.
+        """
+        cookie, self.cookie = self.cookie, None
+        name, self._connection = self._connection, None
+        if name is not None:
+            self._close(name)
+        return cookie is not None
+
 
 def _read_json(path):
     try:
@@ -115,16 +438,34 @@ def _read_json(path):
         return {}
 
 
-def _fmt_idle(seconds):
-    if seconds < 60:
-        return f"{seconds}s"
-    if seconds < 3600:
-        return f"{seconds // 60}min"
-    return f"{seconds // 3600}h"
+def _fmt_remaining(seconds):
+    """Seconds left in a focus block, in the width the sprite has for them.
+
+    Minutes are rounded up while any part of one is left, so a block does not
+    read "0m" for the last fifty-nine seconds of it.
+    """
+    seconds = int(max(0.0, seconds))
+    if seconds >= 60:
+        return f"{seconds // 60 + (1 if seconds % 60 else 0)}m"
+    return f"{seconds}s"
+
+
+def _count(value):
+    """A number out of a field the collector may have left null or textual."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 class Brain(QObject):
     """Decides what is worth saying, in the same order the widget uses.
+
+    The ladder itself lives in buddy_signals, which is pure and has no opinion
+    about wording: it reads the two payloads and answers with every signal that
+    fires, most urgent first. What stays here is everything that needs memory
+    or a language — the no-repeat window, the rotation between sessions, the
+    focus gate, and the fallback for when nothing fires at all.
 
     Two rules keep it from becoming wallpaper. It remembers what it recently
     said and will not repeat inside that window — the previous version rotated
@@ -136,10 +477,38 @@ class Brain(QObject):
     RECENT = 12          # lines to remember before allowing a repeat
     SUBJECT_RECENT = 3   # sessions to cycle past before returning to one
 
-    def __init__(self, lang="en", alerts_only=False):
+    # What counts as an alert, by priority rather than by a list of keys.
+    # `background` is the last signal in the band that is about a session or
+    # about the ability to keep working; everything numerically after it is
+    # diagnosis, still true in ten minutes. Reading the boundary off the table
+    # means a signal added to that band is an alert without anyone having to
+    # remember to add it here too — which is how "twoRed" spent its whole life
+    # written and unreachable.
+    ALERT_PRIORITY = signals.PRIORITY["background"]
+
+    # Which sessions a signal could have been about. buddy_signals.detect is
+    # stateless and fills its vars from the first qualifying row, so the
+    # rotation has to re-pick the subject from the same candidate set the
+    # detector used. Without this, three sessions waiting become an hour of
+    # complaint about whichever one sorts first.
+    SUBJECT_STATES = {
+        "asking": ("asking",),
+        "waiting": ("waiting",),
+        "idle": ("idle",),
+        "allQuiet": ("idle",),
+        "background": ("background",),
+    }
+
+    def __init__(self, lang="en", alerts_only=False, focus=None, escort=None,
+                 quiet_hours=False):
         super().__init__()
         self.lang = lang if lang in LINES else "en"
         self.alerts_only = alerts_only
+        self.quiet_hours = quiet_hours
+        # Owned by the companion in the running program and created here when
+        # there is none, so a Brain built on its own still answers.
+        self.focus = focus if focus is not None else focus_engine.FocusSession()
+        self.escort = escort if escort is not None else focus_engine.Escort()
         self.sessions = {}
         self.usage = {}
         self._recent = []
@@ -154,8 +523,64 @@ class Brain(QObject):
         return (self.sessions or {}).get("attention")
 
     def _all(self, *states):
-        return [s for s in (self.sessions.get("sessions") or [])
-                if s.get("state") in states]
+        """Sessions in the named states — all of them when none is named —
+        after the escort has had its say.
+
+        The escort filters here, ahead of the rotation, because a lock is a
+        decision about what to look at. Narrowing after the fact would leave
+        the rotation cycling over sessions the user asked it to ignore and
+        then discarding the result, which is a companion that goes quiet
+        instead of one that concentrates.
+        """
+        rows = [s for s in ((self.sessions or {}).get("sessions") or [])
+                if isinstance(s, dict)]
+        rows = self.escort.filter(rows)
+        if states:
+            rows = [s for s in rows if s.get("state") in states]
+        return rows
+
+    def payload(self):
+        """The sessions payload as the detectors should see it: escorted."""
+        payload = dict(self.sessions or {})
+        payload["sessions"] = self._all()
+        return payload
+
+    def visible_sessions(self):
+        """The sessions the companion is currently looking at, escort and all.
+
+        The insistence ladder runs off this rather than the raw file, so an
+        escort narrows what the companion escalates about as well as what it
+        talks about.
+        """
+        return self._all()
+
+    def quiet(self, wall=None):
+        """Whether this is outside the hours this person is known to work."""
+        when = time.time() if wall is None else wall
+        return focus_engine.quiet_now(focus_engine.peak_hours(self.usage),
+                                      time.localtime(when).tm_hour)
+
+    def _candidates(self, key):
+        """The rows the rotation may choose between for a signal."""
+        states = self.SUBJECT_STATES.get(key)
+        if not states:
+            return []
+        rows = self._all(*states)
+        # idle and allQuiet come from the same state and are told apart by
+        # whether an agent is still running, exactly as the detector does it.
+        if key == "idle":
+            return [r for r in rows if _count(r.get("background")) > 0]
+        if key == "allQuiet":
+            return [r for r in rows if _count(r.get("background")) <= 0]
+        return rows
+
+    def _subject_vars(self, key, row):
+        """The placeholders a session-shaped category needs, for this row."""
+        vars_ = {"name": str(row.get("name") or "?"),
+                 "idle": signals.format_idle(row.get("idleSeconds"))}
+        if key == "background":
+            vars_["n"] = int(_count(row.get("background")) or 1)
+        return vars_
 
     def _rotate(self, candidates):
         """Prefer a session not spoken about lately.
@@ -171,7 +596,22 @@ class Brain(QObject):
         del self._subjects[:-self.SUBJECT_RECENT]
         return chosen
 
-    def _pick(self, key, **vars_):
+    def _pick(self, key, now=None, **vars_):
+        """A line from a category, or None when there is nothing to say.
+
+        The focus gate is here rather than around line(): every route to a
+        sentence passes through this method, including the ambient fallback,
+        so one check covers all of them. Putting it in line() would leave the
+        caller having to know which keys a block silences, and making line()
+        return the key alongside the text would change the contract of every
+        caller for the benefit of one.
+
+        No category takes a placeholder called `now` — tests/test_companion.py
+        pins that, because one would be swallowed by this signature and print
+        its own braces on screen.
+        """
+        if not self.focus.allows(key, now):
+            return None
         table = LINES[self.lang].get(key) or []
         if not table:
             return None
@@ -183,77 +623,37 @@ class Brain(QObject):
             text = text.replace("{" + k + "}", str(v))
         return text
 
-    def line(self):
-        """The current thing worth saying, or None. Silence is the default."""
-        asking = self._all("asking")
-        if asking:
-            s = self._rotate(asking)
-            return self._pick("asking", name=s.get("name", "?"))
+    def line(self, now=None, wall=None):
+        """The current thing worth saying, or None. Silence is the default.
 
-        waiting = self._all("waiting")
-        if waiting:
-            s = self._rotate(waiting)
-            return self._pick("waiting", name=s.get("name", "?"),
-                              idle=_fmt_idle(s.get("idleSeconds", 0)))
+        `now` is monotonic and only the focus block reads it; `wall` is a Unix
+        timestamp and only the hour-of-day signals read it. Both are arguments
+        so the whole decision can be tested without waiting for midnight or for
+        a block to run out.
+        """
+        now = time.monotonic() if now is None else now
+        quiet = self.quiet_hours and self.quiet(wall)
+        for signal in signals.detect(self.payload(), self.usage, wall):
+            # The list is sorted by priority, so the first signal past the
+            # alert boundary means every remaining one is past it too.
+            if (self.alerts_only or quiet) and signal.priority > self.ALERT_PRIORITY:
+                break
+            vars_ = dict(signal.vars)
+            chosen = self._rotate(self._candidates(signal.key))
+            if chosen is not None:
+                vars_.update(self._subject_vars(signal.key, chosen))
+            text = self._pick(signal.key, now=now, **vars_)
+            if text:
+                return text
+            # Silenced by the block, or a category with no lines: try the next
+            # signal down rather than jumping straight to a joke.
 
-        # A session that stopped *and* has nothing left running is the one
-        # worth calling finished. Kept apart from plain "idle" because quiet
-        # with an agent still going is not the same news as quiet all the way
-        # down, and only the second one means go and look.
-        idle = self._all("idle")
-        if idle:
-            s = self._rotate(idle)
-            key = "idle" if s.get("background") else "allQuiet"
-            return self._pick(key, name=s.get("name", "?"),
-                              idle=_fmt_idle(s.get("idleSeconds", 0)))
-
-        # Below everything that wants a human: background work is information,
-        # not a summons. It exists so the companion stops announcing a session
-        # as finished while its agent is still writing.
-        busy = self._all("background")
-        if busy:
-            s = self._rotate(busy)
-            return self._pick("background", name=s.get("name", "?"),
-                              n=s.get("background", 1))
-
-        if self.alerts_only:
+        if self.alerts_only or quiet:
             return None
-
-        # Diagnostics, worst first. Each fires only above a threshold, so a
-        # healthy system falls through to the ambient lines instead of being
-        # told the same non-problem repeatedly.
-        eff = self.usage.get("efficiency") or {}
-        hit = eff.get("cacheHitRate")
-        if hit is not None and 0 < hit < 0.3:
-            return self._pick("cacheDrop", n=round(hit * 100))
-
-        comp = (self.usage.get("compaction") or {}).get("count", 0)
-        if comp >= 5:
-            return self._pick("compaction", n=comp)
-
-        ratio = eff.get("readPerOutput") or 0
-        if ratio >= 300:
-            return self._pick("readRatio", n=round(ratio))
-
-        tools = (self.usage.get("toolUse") or {}).get("byTool") or {}
-        total = sum(tools.values())
-        if total > 200:
-            name, count = max(tools.items(), key=lambda kv: kv[1])
-            if count / total > 0.7 and name == "Bash":
-                return self._pick("bashHeavy", n=round(100 * count / total))
-
-        running = self.sessions.get("total") or 0
-        if running >= 4:
-            sample = (self.sessions.get("sessions") or [{}])[0]
-            return self._pick("sessionSpread", n=running,
-                              name=sample.get("name", "?"))
-
-        if 0 <= time.localtime().tm_hour < 5:
-            return self._pick("nightOwl")
-
         # Nothing is wrong. Alternate between saying so and saying something
-        # else entirely, so silence has texture.
-        return self._pick(random.choice(("ambient", "philosophy")))
+        # else entirely, so silence has texture. Still through _pick, so a
+        # focus block silences this too.
+        return self._pick(random.choice(("ambient", "philosophy")), now=now)
 
 
 def _menu_labels(sessions):
@@ -291,8 +691,19 @@ class Companion(QWidget):
     reads as a sprite being dragged, not a thing that moves itself.
     """
 
-    def __init__(self, brand="claude", lang="en", alerts_only=False, live=False):
+    def __init__(self, brand="claude", lang="en", alerts_only=False, live=False,
+                 options=None):
         super().__init__(None)
+        # The four positional arguments predate the settings and are kept
+        # because tests and callers construct a plain Companion() with them;
+        # `options` carries the whole command line and wins where both say
+        # something, so there is one source of truth in the running program.
+        self.options = options if options is not None else default_options(
+            brand=brand, lang=lang, alerts_only=alerts_only, live=live)
+        brand = self.options.brand
+        lang = self.options.lang
+        alerts_only = self.options.alerts_only
+        live = self.options.live
         # No BypassWindowManagerHint: it is not needed for positioning under
         # XWayland (both were measured placing and moving a window correctly)
         # and it costs reliable mouse input, which this needs for click and drag.
@@ -322,12 +733,36 @@ class Companion(QWidget):
         self.voice = buddy_voice.Voice(lang, time.monotonic()) if live else None
         self.refilling = None
 
-        self.brain = Brain(lang, alerts_only)
+        # The focus block, the escort and the insistence ladder are owned here
+        # and handed to the Brain, so both halves are reading the same one.
+        self.focus = focus_engine.FocusSession()
+        self.escort = focus_engine.Escort()
+        # Rung 4 takes the mouse out of someone's hand, so it is reached only
+        # when it was asked for by name. The ceiling below is the second half
+        # of the same opt-in: the engine will not report a 4 without this, and
+        # the companion will not act on one above the ceiling either.
+        self.insistence = focus_engine.Insistence(
+            allow_pointer=self.options.insistence == "pointer")
+        self._insisted = {}          # pid -> the highest rung already acted on
+        self.insist_until = 0.0
+        self.insist_clip = ""
+        self._focus_phase = focus_engine.PHASE_IDLE
+        self.inhibitor = NotificationInhibitor()
+
+        self.brain = Brain(lang, alerts_only, focus=self.focus, escort=self.escort,
+                           quiet_hours=self.options.quiet_hours)
+        # Decided once per line rather than per frame: rolled every tick, the
+        # book would appear and vanish thirty times a second.
+        self.prop_line = False
         self.lang = lang
         self.bubble = ""
         self.bubble_until = 0.0
         self.said = ""
         self.bubble_size = (0, 0)
+        # How far the window extends to the left of the character, which is
+        # non-zero only while a bubble is open on that side. Everything that
+        # converts between the window and the character goes through it.
+        self.bubble_pad = 0
 
         # Every screen, not just the primary one. Confined to the primary it
         # never appears on the other monitor at all, which is most of the time
@@ -382,19 +817,152 @@ class Companion(QWidget):
         self.frame_timer.start(FRAME_MS_ACTIVE)
         self._active = True
 
+        # Commands from the widget. Set up before any timer that reads it: the
+        # instant the process came up has to be recorded before the file is
+        # ever looked at, because that is what a command's issuedAt is
+        # compared against, and _poll re-checks the watch on every cycle.
+        self.started_at = datetime.now(timezone.utc)
+        self.last_command_at = None
+        self.watcher = QFileSystemWatcher(self)
+        self.watcher.fileChanged.connect(self._command_changed)
+        self.watcher.directoryChanged.connect(self._command_changed)
+        self._rewatch_command()
+
         self.poll_timer = QTimer(self)
         self.poll_timer.timeout.connect(self._poll)
         self.poll_timer.start(POLL_MS)
         QTimer.singleShot(200, self._poll)
         # After the window is mapped, or there is nothing to set the property on.
         QTimer.singleShot(600, self._make_sticky)
+        # And one read of whatever is already in the file, for a companion
+        # started while a block was meant to be running. Stale contents are
+        # rejected by the timestamp, so this can only ever act on a command
+        # written in the moment between starting and here.
+        QTimer.singleShot(250, self._command_changed)
+
+    # ── commands from the widget ──
+
+    def _rewatch_command(self):
+        """(Re-)watch the command file and the directory holding it.
+
+        Two known failure modes, both of which cost every command after the
+        first. The widget writes to a temporary file and renames it over the
+        target — the only way a reader cannot see a half-written file — so the
+        inode the watcher holds is replaced each time, and QFileSystemWatcher
+        drops a path whose file was removed. And the file may not exist at all
+        when the companion starts, so there is nothing to add a watch to yet;
+        the directory watch is what notices it being created, and this is
+        called again from every poll to pick up a directory created later.
+        """
+        if self.watcher is None:
+            return
+        watched = set(self.watcher.files()) | set(self.watcher.directories())
+        for path in (str(COMMAND_FILE.parent), str(COMMAND_FILE)):
+            if path not in watched and os.path.exists(path):
+                self.watcher.addPath(path)
+
+    def _command_changed(self, _path=None):
+        self.apply_command(read_command(COMMAND_FILE))
+        self._rewatch_command()
+
+    def apply_command(self, payload):
+        """Act on a command from the widget. Returns whether one was acted on.
+
+        The file is state, not an event: it keeps whatever was written last
+        until the next command replaces it. A companion restarted the next
+        morning that does not compare the timestamp re-enters the focus block
+        someone asked for yesterday, which is the reason issuedAt is in the
+        format at all. A command with no readable timestamp is dropped for the
+        same reason — there is nothing to tell it apart from that stale one.
+
+        Everything else is ignored rather than raised. An unknown verb is a
+        newer widget talking to an older companion, and a malformed payload is
+        a half-written file; neither is worth losing the channel over.
+        """
+        if not isinstance(payload, dict):
+            return False
+        issued = parse_issued_at(payload.get("issuedAt"))
+        if issued is None or issued <= self.started_at:
+            return False
+        # A watcher fires more than once for one write — the rename shows up
+        # on both the file and the directory — and re-running focus.start
+        # would restart the block from zero each time.
+        if self.last_command_at is not None and issued <= self.last_command_at:
+            return False
+        self.last_command_at = issued
+        command = payload.get("command")
+        if command == "focus.start":
+            self.start_focus(_clamped_int(payload.get("minutes"), FOCUS_MINUTES_MIN,
+                                          FOCUS_MINUTES_MAX,
+                                          self.options.focus_minutes))
+            return True
+        if command == "focus.stop":
+            self.stop_focus()
+            return True
+        return False
+
+    # ── the focus block ──
+
+    def start_focus(self, minutes=None):
+        """Begin a block: settle down, go quiet, hold the notifications."""
+        now = time.monotonic()
+        minutes = self.options.focus_minutes if minutes is None else minutes
+        self.focus.start(now, minutes)
+        self._focus_phase = self.focus.phase(now)
+        self.inhibitor.hold(self._t("focusReason"))
+        # It stays where it is for the block rather than roaming through it.
+        self.target = (self.pos_x, self.pos_y)
+        self.insist_until = 0.0
+        self._say(self._t("focusStarted").replace("{n}", str(int(minutes))))
+
+    def stop_focus(self):
+        """Call the block off. Cancelled, not finished: nothing to celebrate."""
+        if not self.focus.active:
+            return False
+        self.focus.cancel()
+        self._focus_phase = focus_engine.PHASE_IDLE
+        self.inhibitor.release()
+        self._say(self._t("focusStopped"))
+        return True
+
+    def _focus_tick(self, now):
+        """Move the block through its phases, once per poll."""
+        phase = self.focus.phase(now)
+        if phase == self._focus_phase:
+            return
+        self._focus_phase = phase
+        if phase == focus_engine.PHASE_ENDING:
+            # The end of a block has to be visible before it happens. Parked in
+            # a corner it is dozing at 200ms a frame, and a block that flips
+            # straight from running to done gives it no frames to walk back in
+            # — the end reads as a bubble appearing out of nowhere.
+            self.docked = False
+            self.target = self._approach_target()
+            self._wake()
+        elif phase == focus_engine.PHASE_DONE:
+            # cancel() rather than leaving it expired: `done` is a state a
+            # clock stays in, so an announcement bound to it repeats once per
+            # poll forever. Back to idle, having said it once.
+            self.focus.cancel()
+            self._focus_phase = focus_engine.PHASE_IDLE
+            self.inhibitor.release()
+            self.docked = False
+            self._say(self._t("focusOver"))
+            self._wake()
 
     # ── what it says ──
 
     def _poll(self):
+        now = time.monotonic()
         self.brain.refresh()
+        # A directory that did not exist when this started does now, once the
+        # collector has run; the watch is cheap to re-check and lost otherwise.
+        self._rewatch_command()
+        self._maybe_auto_escort()
+        self._focus_tick(now)
         self._maybe_refill()
-        line = self.brain.line()
+        line = self.brain.line(now=now)
+        self._insist(now)
         if line and self.voice is not None:
             # Only ever swaps the words. The decision of *whether* to speak
             # stays with Brain, which is bound to measured triggers; letting
@@ -405,14 +973,14 @@ class Companion(QWidget):
         if line and line != self.said:
             self.said = line
             self.bubble = line
-            now = time.monotonic()
+            self.prop_line = self._roll_prop()
             self.bubble_until = now + SPEAK_SECONDS
             # The double-take only fires for something that wants the human.
             # Ambient remarks get no jump, or the jump stops meaning anything.
             if self.brain.attention:
                 self.alert_until = now + ALERT_SECONDS
             self._resize_for_bubble()
-            if not self.docked:
+            if not self.docked and not self.focus.silences(now):
                 # Step away from the edges so the bubble has room to open.
                 self.target = (
                     max(self.min_x + 160, min(self.max_x - 160, self.pos_x + random.uniform(-140, 140))),
@@ -420,6 +988,69 @@ class Companion(QWidget):
             self._wake()
         elif not line:
             self.said = ""
+
+    def _approach_target(self):
+        """Somewhere on the current screen it cannot be missed.
+
+        Not the pointer. QCursor.pos() under this compositor returns
+        XWayland's shadow of the pointer rather than the pointer — the same
+        reading that makes _tug send deltas instead of positions — so walking
+        to it walks to wherever an X client last saw the cursor, which may be
+        another monitor. The middle of the screen it is already on is a
+        coarser aim and a true one.
+        """
+        screen = self._screen_at(self.pos_x, self.pos_y)
+        x = screen.center().x() - BUDDY_PX / 2
+        y = screen.top() + (screen.height() - BUDDY_PX) * 0.6
+        return (float(max(self.min_x, min(self.max_x, x))),
+                float(max(self.min_y, min(self.max_y, y))))
+
+    def _insist(self, now):
+        """Escalate on a session that has been wanting a human for a while.
+
+        `now` is monotonic, which buddy_focus.Insistence requires: on the wall
+        clock an NTP correction steps backwards and the rung freezes at
+        whatever it had reached.
+
+        Nothing above the first rung happens during a focus block or in the
+        quiet hours. The ladder exists to interrupt, and both of those are a
+        decision not to be interrupted.
+        """
+        ceiling = INSISTENCE_CEILING.get(self.options.insistence, 0)
+        levels = self.insistence.update(self.brain.visible_sessions(), now)
+        # Forget sessions the engine has forgotten, so a companion left running
+        # for days does not keep an entry per pid that ever existed.
+        self._insisted = {pid: rung for pid, rung in self._insisted.items()
+                          if pid in levels}
+        if ceiling <= 1 or not levels:
+            return
+        if self.focus.silences(now) or (self.options.quiet_hours and self.brain.quiet()):
+            return
+        pid, level = max(levels.items(), key=lambda item: item[1])
+        level = min(level, ceiling)
+        if level <= 1:
+            return
+        # Only when the rung goes up. Re-running the same rung every twenty
+        # seconds is a character that walks to the middle of the screen three
+        # times a minute and never gets anywhere.
+        if self._insisted.get(pid, 0) >= level:
+            return
+        self._insisted[pid] = level
+        self.docked = False
+        self.target = self._approach_target()
+        if level >= 3:
+            self.insist_clip = clip_or_fallback("wave")
+            self.insist_until = now + INSIST_GESTURE_SECONDS
+        if level >= 4:
+            # The same machine the drag retaliation uses, and deliberately the
+            # only one: a second way to move the cursor is a second way to get
+            # it wrong. _ensure_pointer is a no-op after the first call.
+            self._ensure_pointer()
+            if self.pointer:
+                self.insist_clip = clip_or_fallback("point")
+                self.insist_until = now + INSIST_TUG_SECONDS
+                self._begin_tug(now, INSIST_TUG_SECONDS, self.target)
+        self._wake()
 
     def _maybe_refill(self):
         """Buy another batch of lines, if the desktop has actually changed.
@@ -461,7 +1092,36 @@ class Companion(QWidget):
         width = min(BUBBLE_MAX, metrics.horizontalAdvance(self.bubble) + 24)
         rect = metrics.boundingRect(0, 0, width - 24, 0, Qt.TextWordWrap, self.bubble)
         self.bubble_size = (width, rect.height() + 18)
+        self.bubble_pad = self._bubble_pad_for(width)
         self.resize(BUDDY_PX + width + 12, max(BUDDY_PX + 10, self.bubble_size[1] + 24))
+        self._place()
+
+    def _bubble_pad_for(self, width):
+        """How far left of the character the window has to reach, in pixels.
+
+        The bubble used to be drawn at a fixed offset to the right of the
+        sprite while the window grew to the right as well, and max_x only ever
+        reserves the character's own width — so parked against the right-hand
+        edge of a screen, the bubble was laid out past the end of it and was
+        simply not on screen. The dodge in _poll that steps away from the
+        edges before speaking does not cover it: that one only runs when it is
+        not docked, and docked in a corner is exactly the case.
+
+        The side is chosen from the room there actually is on the screen it is
+        standing on, and the window is anchored so the character does not move
+        when the bubble opens. Zero means the bubble opens to the right, which
+        is the common case and the one that leaves the window where it was.
+        """
+        needed = width + 12
+        screen = self._screen_at(self.pos_x, self.pos_y)
+        room_right = screen.right() - (self.pos_x + BUDDY_PX)
+        room_left = self.pos_x - screen.left()
+        # Right unless the left genuinely has more: on a screen too narrow for
+        # either side the bubble is clipped whatever happens, and clipped on
+        # the side with less room is worse.
+        if room_right >= needed or room_right >= room_left:
+            return 0
+        return int(needed)
 
     def _bubble_font(self):
         f = QFont()
@@ -536,9 +1196,14 @@ class Companion(QWidget):
         nothing is resampled — it looks like the character is crawling. Moving
         only in whole source pixels costs one pixel of positional precision
         and buys a sprite that holds still while it walks.
+
+        pos_x is the character, not the window. With a bubble open on the left
+        the window starts bubble_pad pixels further left and the sprite is
+        drawn that far into it, so the character stays where it was standing
+        when it began to speak.
         """
         step = sprites.SCALE
-        self.move(round(self.pos_x / step) * step,
+        self.move(round((self.pos_x - self.bubble_pad) / step) * step,
                   round(self.pos_y / step) * step)
 
     def _tick(self):
@@ -547,7 +1212,12 @@ class Companion(QWidget):
 
         if self.bubble and now > self.bubble_until:
             self.bubble = ""
+            # The window shrinks back around the character, and the left-hand
+            # anchor goes with it, or it would stay shifted by the width of a
+            # bubble that is no longer drawn.
+            self.bubble_pad = 0
             self.resize(BUDDY_PX, BUDDY_PX + 10)
+            self._place()
 
         moving = False
         if self.dragging and self.hand is not None:
@@ -573,6 +1243,10 @@ class Companion(QWidget):
                 self.settled_at = now
                 self._wake()
             elif self.docked:
+                self._doze()
+            elif self.focus.silences(now):
+                # Settled for the block. Picking a new target here is a
+                # character wandering off during the thing it is sitting out.
                 self._doze()
             elif now >= self.next_move:
                 self.target = self._pick_target()
@@ -602,7 +1276,6 @@ class Companion(QWidget):
         Damping is raised to dt*60 so the feel is the same whether this is
         running at the active rate or the idle one.
         """
-        import math
         hand_x, hand_y = self.hand
         self.vel_x = ((self.vel_x + (hand_x - self.pos_x) * SWING_STIFFNESS * dt)
                       * (SWING_DAMPING ** (dt * 60)))
@@ -655,6 +1328,28 @@ class Companion(QWidget):
         if self.pointer is not None:
             return
         self.pointer = virtual_pointer.VirtualPointer().open() or False
+
+    def _begin_tug(self, now, seconds, target):
+        """Start a run that carries the pointer along with it.
+
+        One entry point, used by both the drag retaliation and the last rung of
+        the insistence ladder. A second way of moving someone's cursor is a
+        second way of getting it wrong, and this one is already the version
+        that survived measurement: a curved route, a speed profile, and deltas
+        rather than absolute positions.
+        """
+        self.tug_until = now + seconds
+        self.tugged_at = now
+        self.tug_from = None
+        self.target = target
+        self.tug_route = self._make_route((self.pos_x, self.pos_y), target)
+        self.tug_began = now
+        self.docked = False
+        self.next_move = self.tug_until + 1.0
+        # Back to the animating rate first. Idle ticks are 200ms, and a pull
+        # that advances six percent of the gap five times a second is not a
+        # tug, it is a slow leak.
+        self._wake()
 
     def _make_route(self, start, end):
         """A curve, not a line.
@@ -775,17 +1470,31 @@ class Companion(QWidget):
                 self._say(self._t("stopThat"))
         elif now < self.alert_until:
             clip = "alert"
+        elif self.insist_clip and now < self.insist_until:
+            # Above talking: the gesture is the escalation, and a session that
+            # has been waiting ten minutes has already been talked at.
+            clip = self.insist_clip
         elif self.bubble:
-            clip = "talk"
+            # `read` is the talking pose with the book in it; how often it is
+            # chosen is the --memes setting, decided when the line arrived.
+            clip = "read" if self.prop_line else "talk"
         elif now < self.tug_until:
             clip = "furious"
         elif moving:
             clip = "walk"
         elif self.docked and now - self.settled_at > SLEEP_AFTER:
             clip = "sleep"
+        elif self.focus.silences(now):
+            # Sitting out the block. Below moving, so it still walks back when
+            # the block is ending.
+            clip = "sit"
         else:
             clip = "idle"
 
+        # Never a raw name: the poses for focus and insistence are drawn
+        # separately from this file, and the animator raises on a clip the
+        # sheet has not got — inside the frame timer, which ends the process.
+        clip = clip_or_fallback(clip)
         self.anim.set_clip(clip)
         # Only blink where a blink means anything. Asleep the eyes are already
         # shut, and mid-stride it is lost.
@@ -797,32 +1506,66 @@ class Companion(QWidget):
     def paintEvent(self, _event):
         p = QPainter(self)
 
-        # The bubble is chrome and wants smoothing; the sprite is pixel art
-        # and must not have it. Two states of the same painter, in that order.
+        # The bubble is chrome and wants smoothing; the sprite and its shadow
+        # are pixel art and must not have it. Two states of the same painter,
+        # in that order, with the shadow in the second one and under the feet.
         if self.bubble:
             p.setRenderHint(QPainter.Antialiasing, True)
             self._paint_bubble(p)
 
         p.setRenderHint(QPainter.Antialiasing, False)
         p.setRenderHint(QPainter.SmoothPixmapTransform, False)
+        # A character being carried is off the ground and casts nothing.
+        if self.options.shadow and not self.dragging:
+            self._paint_shadow(p)
         frame = self.frame
         if self.dragging:
             frame = self.swing_frame() or frame
         img = self.sheet.get(frame + (":flip" if self.facing < 0 else ""))
         if img is not None:
-            p.drawImage(0, self.height() - BUDDY_PX, img)
+            p.drawImage(self.bubble_pad, self.height() - BUDDY_PX, img)
+
+        if self.focus.active:
+            p.setRenderHint(QPainter.Antialiasing, True)
+            self._paint_focus(p, time.monotonic())
         p.end()
+
+    def _paint_shadow(self, p):
+        """The contact shadow under the feet, which is what plants it on the desk.
+
+        The image comes from the sheet rather than being drawn here. It is
+        pixel art on the same grid as the body, so it is blitted with the same
+        no-smoothing rules and lines up with the feet; an ellipse from the
+        painter would be the one antialiased thing touching the sprite.
+
+        It is a separate image and not rows inside the body grids precisely so
+        that this method can decide when it appears: it must not shear with a
+        dragged sprite, and a character in the air has no contact to cast it.
+        Switched off entirely by --no-shadow.
+        """
+        image = self.sheet.get("shadow")
+        if image is None:
+            return          # a sheet built before the art existed
+        left = self.bubble_pad + (BUDDY_PX - image.width()) // 2
+        top = self.height() - image.height()
+        p.drawImage(left, top, image)
 
     def _paint_bubble(self, p):
         w, h = self.bubble_size
-        x = BUDDY_PX + 12
+        # The tail points at the character, so it turns with the side the
+        # bubble opens on: on the left the bubble ends where the sprite starts.
+        if self.bubble_pad:
+            x, tail_in, tail_out = 0, w, w + 9
+        else:
+            x = BUDDY_PX + 12
+            tail_in, tail_out = x, x - 9
         rect = QRectF(x, 2, w, h)
 
         path = QPainterPath()
         path.addRoundedRect(rect, 10, 10)
-        path.moveTo(x, h / 2 - 5)
-        path.lineTo(x - 9, h / 2 + 2)
-        path.lineTo(x, h / 2 + 9)
+        path.moveTo(tail_in, h / 2 - 5)
+        path.lineTo(tail_out, h / 2 + 2)
+        path.lineTo(tail_in, h / 2 + 9)
 
         p.setPen(QPen(QColor(255, 255, 255, 38), 1))
         p.setBrush(QColor(28, 30, 34, 238))
@@ -833,11 +1576,53 @@ class Companion(QWidget):
         p.drawText(rect.adjusted(12, 9, -12, -9),
                    Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignVCenter, self.bubble)
 
+    def _paint_focus(self, p, now):
+        """How much of the block is left, drawn inside the character's square.
+
+        Inside it on purpose. The window's size and position carry the docking,
+        the side the bubble opens on and the pointer carry; a strip added above
+        the sprite would move all three for a readout. The bar drains rather
+        than fills, because what the person wants off it is how long is left.
+        """
+        left = self.bubble_pad
+        top = self.height() - BUDDY_PX
+        remaining = 1.0 - self.focus.fraction(now)
+        ending = self.focus.phase(now) == focus_engine.PHASE_ENDING
+        colour = QColor(255, 176, 92) if ending else QColor(120, 190, 255)
+
+        track = QRectF(left + FOCUS_BAR_INSET,
+                       top + BUDDY_PX - FOCUS_BAR_H - 2,
+                       BUDDY_PX - FOCUS_BAR_INSET * 2, FOCUS_BAR_H)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(18, 20, 24, 210))
+        p.drawRoundedRect(track, 2, 2)
+        filled = QRectF(track)
+        filled.setWidth(track.width() * max(0.0, min(1.0, remaining)))
+        p.setBrush(colour)
+        p.drawRoundedRect(filled, 2, 2)
+
+        label = _fmt_remaining(self.focus.remaining(now))
+        font = QFont()
+        font.setPointSizeF(7.0)
+        font.setBold(True)
+        p.setFont(font)
+        p.setPen(QColor(18, 20, 24, 220))
+        box = QRectF(left, top + 1, BUDDY_PX, 11)
+        # Drawn twice, dark then light, so the number stays readable over both
+        # the sprite and whatever wallpaper shows through around it.
+        p.drawText(box.adjusted(1, 1, 1, 1), Qt.AlignRight | Qt.AlignVCenter, label)
+        p.setPen(colour)
+        p.drawText(box, Qt.AlignRight | Qt.AlignVCenter, label)
+
     # ── interaction ──
 
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
+            # Most important first, and the existing entries keep their order
+            # below the new ones: focus is the thing the menu gets opened for.
             menu = QMenu(self)
+            self._add_focus_menu(menu)
+            self._add_escort_menu(menu)
             if self.docked:
                 free = QAction(self._t("roam"), self)
                 free.triggered.connect(self._undock)
@@ -852,7 +1637,12 @@ class Companion(QWidget):
         self.anim.play_once("land")
         self._ensure_pointer()
         self.press_pos = event.globalPosition()
-        self.drag_offset = event.globalPosition() - QPointF(self.x(), self.y())
+        # Against the character's own top-left, not the window's. With a bubble
+        # open on the left the two are a bubble's width apart, and the offset
+        # taken from the window would make the sprite jump that far on the
+        # first drag event.
+        self.drag_offset = event.globalPosition() - QPointF(self.x() + self.bubble_pad,
+                                                            self.y())
         self.dragging = False
         self._wake()
 
@@ -902,10 +1692,7 @@ class Companion(QWidget):
                         or self.drag_distance >= DRAG_TUG_DISTANCE
                         or len(self.recent_drags) >= DRAG_TUG_AFTER)
             if insistent or (provoked and now - self.tugged_at > TUG_COOLDOWN):
-                self.tug_until = now + random.uniform(TUG_SECONDS - 1, TUG_SECONDS)
-                self.tugged_at = now
                 self.recent_drags = []
-                self.tug_from = None
                 # Somewhere far, so the run is worth watching. Picked as the
                 # furthest of a handful of candidates rather than at random:
                 # a kidnapping that ends four pixels away is a shrug.
@@ -924,16 +1711,10 @@ class Companion(QWidget):
                 hi_y = max(lo_y, screen.bottom() - BUDDY_PX - 8)
                 candidates = [(float(random.randint(lo_x, hi_x)),
                                float(random.randint(lo_y, hi_y))) for _ in range(6)]
-                self.target = max(candidates,
-                                  key=lambda t: (t[0] - here[0]) ** 2 + (t[1] - here[1]) ** 2)
-                self.tug_route = self._make_route(here, self.target)
-                self.tug_began = now
-                self.docked = False
-                self.next_move = self.tug_until + 1.0
-                # Back to the animating rate first. Idle ticks are 200ms, and a
-                # pull that advances six percent of the gap five times a second
-                # is not a tug, it is a slow leak.
-                self._wake()
+                target = max(candidates,
+                             key=lambda t: (t[0] - here[0]) ** 2 + (t[1] - here[1]) ** 2)
+                self._begin_tug(now, random.uniform(TUG_SECONDS - 1, TUG_SECONDS),
+                                target)
                 self._say(self._t("tugging"))
             return
         # A click, not a drag: go to whatever most needs attention.
@@ -987,6 +1768,71 @@ class Companion(QWidget):
                              start_new_session=True)
         except (OSError, subprocess.SubprocessError):
             pass
+
+    # ── the menu's own entries ──
+
+    def _add_focus_menu(self, menu):
+        """Start or end a block. The same entry either way, because there is
+        never both a block to start and a block to end."""
+        if self.focus.active:
+            action = QAction(self._t("focusStop"), self)
+            action.triggered.connect(lambda _checked=False: self.stop_focus())
+        else:
+            action = QAction(
+                self._t("focusStart").replace("{n}", str(self.options.focus_minutes)),
+                self)
+            action.triggered.connect(lambda _checked=False: self.start_focus())
+        menu.addAction(action)
+        menu.addSeparator()
+
+    def _add_escort_menu(self, menu):
+        """Lock onto one session, or let go of the one it is locked onto.
+
+        The lock is by pid rather than by name: two sessions open on the same
+        directory have the same name, and picking one of those from a menu
+        would be a coin toss over which one is escorted.
+        """
+        if self.escort.locked_on is not None:
+            action = QAction(self._t("escortStop"), self)
+            action.triggered.connect(lambda _checked=False: self._escort_release())
+            menu.addAction(action)
+            menu.addSeparator()
+            return
+        sessions = [s for s in ((self.brain.sessions or {}).get("sessions") or [])
+                    if isinstance(s, dict)]
+        if not sessions:
+            return
+        sub = menu.addMenu(self._t("escort"))
+        for session, label in zip(sessions[:8], _menu_labels(sessions[:8])):
+            action = QAction(label, self)
+            action.triggered.connect(
+                lambda _checked=False, s=session: self._escort_lock(s))
+            sub.addAction(action)
+        menu.addSeparator()
+
+    def _maybe_auto_escort(self):
+        """With --escort on, lock onto whatever most needs a human.
+
+        Taken once and let go by Escort.filter itself, which releases when the
+        session disappears or leaves the state it was locked in — so the next
+        poll picks up the next one rather than holding a pid that is gone. A
+        lock the user set by hand is never overwritten: locked_on being set is
+        the whole condition.
+        """
+        if not self.options.escort or self.escort.locked_on is not None:
+            return
+        target = self.brain.attention
+        if not isinstance(target, dict) or target.get("pid") is None:
+            return
+        self.escort.lock(target.get("pid"), target.get("state"))
+
+    def _escort_lock(self, session):
+        self.escort.lock(session.get("pid"))
+        self._say(self._t("escorting").replace("{name}", str(session.get("name") or "?")))
+
+    def _escort_release(self):
+        self.escort.release()
+        self._say(self._t("escortReleased"))
 
     # ── asking about a repository ──
 
@@ -1047,11 +1893,28 @@ class Companion(QWidget):
         """Put words in the bubble now, outside the poll cycle."""
         self.said = text
         self.bubble = text
+        self.prop_line = self._roll_prop()
         self.bubble_until = time.monotonic() + SPEAK_SECONDS * 2
         self._resize_for_bubble()
         self._wake()
 
+    def _roll_prop(self):
+        """Whether this line is delivered holding something.
+
+        Once per line, never per frame: rolled on the frame timer the book
+        would flicker in and out thirty times a second. `off` never holds
+        anything, which is the plain sprite the setting promises.
+        """
+        return random.random() < MEME_PROP_CHANCE.get(self.options.memes, 0.0)
+
     def _t(self, key):
+        """The companion's own chrome, in both languages.
+
+        Separate from buddy_lines.LINES on purpose: that table is what the
+        character says about the desktop and is chosen by a signal. These are
+        menu entries and acknowledgements of something the user just did, and
+        they have exactly one wording each.
+        """
         table = {
             "en": {"quit": "Quit companion", "roam": "Let it roam again",
                    "stopThat": "Put me down. I have places to be.",
@@ -1059,39 +1922,59 @@ class Companion(QWidget):
                    "dropped": "...fine. Keep your mouse.",
                    "askAbout": "How is it going in...",
                    "thinking": "Looking at {name}...",
-                   "noAnswer": "No answer came back. It happens."},
+                   "noAnswer": "No answer came back. It happens.",
+                   "focusStart": "Start a {n} minute focus block",
+                   "focusStop": "End the focus block",
+                   "focusStarted": "{n} minutes. I will be over here.",
+                   "focusStopped": "Block called off. Back to it.",
+                   "focusOver": "That is the block. How did it go?",
+                   "focusReason": "Focus block",
+                   "escort": "Stay with...",
+                   "escortStop": "Stop staying with it",
+                   "escorting": "Watching {name}, and nothing else.",
+                   "escortReleased": "Looking around again."},
             "pt": {"quit": "Fechar o companion", "roam": "Deixar passear de novo",
                    "stopThat": "Me larga. Tenho compromissos.",
                    "tugging": "Certo. Agora é a minha vez. Vem comigo.",
                    "dropped": "...tá bom. Fica com o teu mouse.",
                    "askAbout": "Como vai o...",
                    "thinking": "Deixa eu ver o {name}...",
-                   "noAnswer": "Não veio resposta. Acontece."},
+                   "noAnswer": "Não veio resposta. Acontece.",
+                   "focusStart": "Começar um foco de {n} minutos",
+                   "focusStop": "Encerrar o foco",
+                   "focusStarted": "{n} minutos. Fico aqui do lado.",
+                   "focusStopped": "Foco cancelado. Voltando ao normal.",
+                   "focusOver": "Acabou o bloco. Como foi?",
+                   "focusReason": "Bloco de foco",
+                   "escort": "Ficar de olho em...",
+                   "escortStop": "Parar de acompanhar",
+                   "escorting": "Só o {name}, mais nada.",
+                   "escortReleased": "Voltando a olhar tudo."},
         }
         return table.get(self.lang, table["en"])[key]
 
 
 def main():
-    brand = "codex" if "--codex" in sys.argv else "claude"
-    lang = "pt" if "--pt" in sys.argv else "en"
-    alerts_only = "--alerts-only" in sys.argv
-    live = "--live" in sys.argv
+    options = parse_args(sys.argv[1:])
 
     app = QApplication(sys.argv)
     app.setApplicationName("Usage Buddies Companion")
     app.setQuitOnLastWindowClosed(True)
 
-    companion = Companion(brand, lang, alerts_only, live)
+    companion = Companion(options=options)
     companion.show()
 
-    if "--self-test" in sys.argv:
+    if options.self_test:
         # Proves it moves in both axes and exits: this runs where nobody is
         # around to watch, and "it walks" is the one claim worth checking.
         # The poll picks its own target when it has something to say, which
         # would overwrite the one under test. Stopping the timer is not enough:
-        # __init__ also schedules a one-shot that fires regardless.
+        # __init__ also schedules a one-shot that fires regardless. The command
+        # channel is silenced for the same reason: a focus block asked for by
+        # the widget seconds ago would sit the character down mid-walk.
         companion.poll_timer.stop()
         companion._poll = lambda: None
+        companion._command_changed = lambda *_a: None
         start = (companion.pos_x, companion.pos_y)
         companion.docked = False
         companion.target = (

@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,11 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 COMPANION = REPO / "scripts" / "usage-buddy-companion.py"
 CTL = REPO / "scripts" / "companion-ctl.sh"
+
+# Noon, local, on a fixed date. Some of what the companion says depends on the
+# hour of day, and a suite whose result depends on when it is run is a suite
+# nobody trusts the failures of.
+_MIDDAY = time.mktime((2026, 9, 2, 12, 0, 0, 2, 245, -1))
 
 
 def _brain(**over):
@@ -305,7 +311,14 @@ def test_a_quiet_system_still_has_things_to_say():
         {"efficiency": {"cacheHitRate": 0.9, "readPerOutput": 5},
          "compaction": {"count": 0},
          "toolUse": {"byTool": {"Bash": 10, "Read": 10}}})
-    said = [b.line() for _ in range(8)]
+    # At a fixed hour of the working day. Left on the real clock this failed
+    # between midnight and five in the morning and only then: the night-owl
+    # remark is true for every draw in that window and its table holds four
+    # lines, so the variety being asked for here cannot exist. Measured
+    # against the committed version too — the hour has always decided it, and
+    # a test that fails at 3am and passes at 3pm teaches everyone to re-run
+    # the suite instead of reading it.
+    said = [b.line(wall=_MIDDAY) for _ in range(8)]
     assert all(said), "went silent with nothing wrong"
     # Not 8: the quiet categories hold seven and six lines, and the
     # no-repeats window is shared between them, so the eighth draw can be
