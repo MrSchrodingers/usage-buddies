@@ -14,7 +14,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts"))
-import buddy_sprites as sprites            # noqa: E402
+import buddy_sprites as sprites
 
 BRANDS = ("claude", "codex")
 LEGAL = set(".osbhwpa")

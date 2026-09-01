@@ -72,6 +72,20 @@ SNAP_MARGIN = 26         # how close to an edge a drop counts as "put me here"
 # the same alert forever or goes mute.
 LINES = {
     "en": {
+        "background": [
+            "{name} says it is done. It has {n} still running.",
+            "The turn ended in {name}; the work did not. {n} still going.",
+            "{name}: agent still working. Do not close that terminal.",
+            "Careful with {name} — {n} running in the background.",
+            "{name} looks finished and is not. {n} still out there.",
+        ],
+        "allQuiet": [
+            "{name} stopped, and so did everything it started. {idle} ago.",
+            "Nothing moving in {name}: no turn, no agents. {idle}.",
+            "{name} is properly done — the session and its background work.",
+            "{name} has been fully still for {idle}. That one is finished.",
+            "Everything in {name} has stopped, background included.",
+        ],
         "asking": [
             "{name} asked you something and is just sitting there.",
             "{name} needs a decision. It will wait forever — that is the problem.",
@@ -153,6 +167,20 @@ LINES = {
         ],
     },
     "pt": {
+        "background": [
+            "{name} diz que acabou. Tem {n} ainda rodando.",
+            "O turno acabou em {name}; o trabalho não. {n} em andamento.",
+            "{name}: agente ainda trabalhando. Não fecha esse terminal.",
+            "Cuidado com o {name} — {n} rodando em background.",
+            "{name} parece pronto e não está. {n} ainda por aí.",
+        ],
+        "allQuiet": [
+            "{name} parou, e tudo que ele começou também. Faz {idle}.",
+            "Nada se move em {name}: nem turno, nem agente. {idle}.",
+            "{name} terminou de verdade — a sessão e o que rodava atrás.",
+            "{name} está totalmente parado há {idle}. Esse acabou.",
+            "Tudo em {name} parou, background incluído.",
+        ],
         "asking": [
             "{name} te perguntou algo e está lá, parado.",
             "{name} precisa de uma decisão. Ele espera pra sempre — esse é o problema.",
@@ -325,11 +353,25 @@ class Brain(QObject):
             return self._pick("waiting", name=s.get("name", "?"),
                               idle=_fmt_idle(s.get("idleSeconds", 0)))
 
+        # A session that stopped *and* has nothing left running is the one
+        # worth calling finished. Kept apart from plain "idle" because quiet
+        # with an agent still going is not the same news as quiet all the way
+        # down, and only the second one means go and look.
         idle = self._all("idle")
         if idle:
             s = self._rotate(idle)
-            return self._pick("idle", name=s.get("name", "?"),
+            key = "idle" if s.get("background") else "allQuiet"
+            return self._pick(key, name=s.get("name", "?"),
                               idle=_fmt_idle(s.get("idleSeconds", 0)))
+
+        # Below everything that wants a human: background work is information,
+        # not a summons. It exists so the companion stops announcing a session
+        # as finished while its agent is still writing.
+        busy = self._all("background")
+        if busy:
+            s = self._rotate(busy)
+            return self._pick("background", name=s.get("name", "?"),
+                              n=s.get("background", 1))
 
         if self.alerts_only:
             return None

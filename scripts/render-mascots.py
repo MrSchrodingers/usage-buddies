@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import buddy_sprites as sprites  # noqa: E402
+import buddy_sprites as sprites
 
 ICONS = Path(__file__).resolve().parent.parent / "plasmoid" / "contents" / "icons"
 MASCOTS = {"clawd.svg": "claude", "rex.svg": "codex"}

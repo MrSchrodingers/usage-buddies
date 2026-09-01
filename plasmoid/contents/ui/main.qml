@@ -543,6 +543,17 @@ PlasmoidItem {
                     console.warn("usage-buddies: failed to parse widget-data.json:", e);
                 }
             }
+            // Load-bearing, and it was missing. connectSource on a string that
+            // is already connected does nothing, and the command here is the
+            // same on every read — so without this the widget read the file
+            // once at startup and then displayed that number forever. It looked
+            // like a slow refresh rather than a dead one, because the countdown
+            // beside it ticks on its own timer and kept moving.
+            //
+            // The neighbouring sources disconnect and did keep refreshing;
+            // measured by watching plasmashell's children, the tollens and
+            // session probes ran every 20-30s while this one never ran twice.
+            disconnectSource(source);
         }
     }
 

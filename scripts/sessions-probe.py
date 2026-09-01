@@ -41,6 +41,9 @@ SETTLED_SECONDS = 20
 IDLE_SECONDS = 600
 # Reading the tail is enough to classify; whole transcripts run to megabytes.
 TAIL_BYTES = 64 * 1024
+# An auxiliary file untouched for this long is finished work, not running work.
+BACKGROUND_WINDOW = 180
+TASK_DIR = Path(os.environ.get("TMPDIR", "/tmp")) / f"claude-{os.getuid()}"
 
 
 def _slug(path: str) -> str:
@@ -118,11 +121,119 @@ def _newest_transcript(cwd: str):
     return newest
 
 
-def classify(records, idle_seconds):
+def _background_bash_ids(transcript: Path):
+    """Ids of tasks this session launched with run_in_background.
+
+    Read structurally, not by scanning the text: `backgroundTaskId` is a key
+    under `toolUseResult`, and a transcript also contains tool *output* that
+    can quote the same string. Scanning matched this probe's own diagnostic
+    output echoed back into a transcript and invented a running task.
+    """
+    ids = set()
+    try:
+        fh = transcript.open(encoding="utf-8", errors="replace")
+    except OSError:
+        return ids
+    with fh:
+        for line in fh:
+            if '"backgroundTaskId"' not in line:
+                continue
+            try:
+                result = json.loads(line).get("toolUseResult")
+            except json.JSONDecodeError:
+                continue
+            if isinstance(result, dict) and result.get("backgroundTaskId"):
+                ids.add(result["backgroundTaskId"])
+    return ids
+
+
+def background_activity(transcript: Path, now=None):
+    """Work still running after the turn that started it ended.
+
+    A subagent writes to its own file, not to the main transcript, so when the
+    parent turn ends the main transcript stops growing while the agent keeps
+    working. Idle time measured from the main transcript alone counts up
+    through work that is very much still happening — which is a session
+    reported as finished while it is not.
+
+    Two signals, each an mtime, because an mtime only moves when something
+    writes:
+
+      agents  a file under subagents/ touched more recently than the main
+              transcript
+      bash    tasks/<id>.output touched recently, for an id that a structural
+              read confirmed was launched in the background
+
+    The id filter on the bash side is not optional: that directory also
+    collects output from ordinary foreground tool calls, and counting it whole
+    reports every session as busy whenever it runs anything at all.
+
+    Completion markers in the log are deliberately not used. The one shape
+    that announces a finished task also appears in tool results that merely
+    quote it, and there is no field position that tells the two apart.
+
+    Returns (count, newest_mtime); the mtime is the newest activity of any
+    kind, so idle time can be measured from work the main transcript cannot
+    see.
+    """
+    now = now or time.time()
+    try:
+        base = transcript.stat().st_mtime
+    except OSError:
+        return 0, 0.0
+
+    session = transcript.stem
+    fresh = []
+    for f in (transcript.parent / session / "subagents").glob("agent-*.jsonl"):
+        fresh.append(f)
+
+    bash_ids = _background_bash_ids(transcript)
+    if bash_ids:
+        tasks = TASK_DIR / transcript.parent.name / session / "tasks"
+        fresh += [tasks / f"{i}.output" for i in bash_ids]
+
+    count, newest = 0, base
+    for f in fresh:
+        try:
+            m = f.stat().st_mtime
+        except OSError:
+            continue
+        if m <= base or now - m > BACKGROUND_WINDOW:
+            continue
+        count += 1
+        newest = max(newest, m)
+    return count, newest
+
+
+def session_idle(transcript: Path, now=None):
+    """How long this session has been quiet, and how much work is still live.
+
+    Idle counts from the newest activity of any kind, not from the main
+    transcript. An agent that is working writes to its own file while the main
+    one stops moving, so measuring only the main one times a running session
+    out as abandoned — which is the session announced as finished while its
+    agent is still going.
+    """
+    now = now or time.time()
+    count, newest = background_activity(transcript, now=now)
+    try:
+        newest = max(newest, transcript.stat().st_mtime)
+    except OSError:
+        return count, None
+    return count, int(now - newest)
+
+
+def classify(records, idle_seconds, background=0):
     """What the session is doing, most-urgent first.
 
     Ordering matters: a session asking a question is blocked on a human no
     matter how long ago it spoke, while one that merely finished can wait.
+
+    `background` outranks a finished turn but not a question. A turn ends when
+    the assistant stops writing, which is not the same as the work stopping:
+    an agent launched during that turn keeps going afterwards. Announcing that
+    as finished sends someone to look at a session that is still moving, and
+    it is the more expensive error — the opposite one only delays a nudge.
     """
     if not records:
         return "unknown", None
@@ -138,6 +249,9 @@ def classify(records, idle_seconds):
         return "asking", "AskUserQuestion"
 
     stop = message.get("stop_reason")
+    if background:
+        return "background", f"{background} em background"
+
     if stop in ("end_turn", "stop_sequence"):
         # Only once it has settled: a turn that ended two seconds ago is
         # probably about to continue.
@@ -228,14 +342,13 @@ def collect() -> dict:
         idle = None
         records = []
         record = None
+        background = 0
         if transcript is not None:
-            try:
-                idle = int(time.time() - transcript.stat().st_mtime)
-            except OSError:
-                idle = None
+            background, idle = session_idle(transcript)
             records = _tail_records(transcript)
 
-        state, detail = classify(records, idle if idle is not None else 0)
+        state, detail = classify(records, idle if idle is not None else 0,
+                                 background=background)
         record = records[0] if records else None
         name = os.path.basename(live["cwd"].rstrip("/")) or live["cwd"]
         sessions.append({
@@ -246,11 +359,15 @@ def collect() -> dict:
             "state": state,
             "detail": detail or "",
             "idleSeconds": idle if idle is not None else -1,
+            "background": background,
             "ageSeconds": live["ageSeconds"],
             "hasTranscript": transcript is not None,
         })
 
-    order = {"asking": 0, "waiting": 1, "idle": 2, "working": 3, "unknown": 4}
+    # background sits below the states that want a human and above working:
+    # it is information, not a summons.
+    order = {"asking": 0, "waiting": 1, "idle": 2, "background": 3,
+             "working": 4, "unknown": 5}
     sessions.sort(key=lambda s: (order.get(s["state"], 9), -s["idleSeconds"]))
 
     counts = {}
