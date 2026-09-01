@@ -962,8 +962,11 @@ def build_car(brand, flame=0):
             if drop <= 4:
                 half = int((19.36 - drop * drop) ** 0.5)
                 span(y, cx - half, cx + half, "3")
-        for i in range(5):                                # five spokes
-            angle = i * 2 * math.pi / 5
+        # Spokes rotate with the flame frame. A wheel whose spokes never move
+        # is a sticker, and at five spokes a third of a turn per frame reads
+        # as spinning rather than as stepping.
+        for i in range(5):
+            angle = i * 2 * math.pi / 5 + flame * (2 * math.pi / 15)
             put(cx + round(3 * math.cos(angle)),
                 CAR_GROUND - 6 + round(3 * math.sin(angle)), "1")
         put(cx, CAR_GROUND - 6, "1")

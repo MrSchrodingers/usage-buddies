@@ -825,3 +825,124 @@ def test_a_wide_grid_is_not_rasterised_square():
     image = sprites.to_qimage(grid, sprites.PALETTES["claude"], 2)
     assert (image.width(), image.height()) == (80, 6), \
         f"a 40x3 grid rasterised as {image.width()}x{image.height()}"
+
+
+# ── how it drives ──────────────────────────────────────────────────────────
+
+@needs_qt
+def test_the_getaway_is_a_curve_not_a_line():
+    """A straight run at a constant rate is a sprite being interpolated, and
+    it reads as one however fast it goes."""
+    import math
+    mod, c = _companion()
+    c.dragging = False
+    start, dest = (600.0, 700.0), (2100.0, 400.0)
+    c.pos_x, c.pos_y = start
+    c.tug_route = c._make_route(start, dest)
+    c.tug_began, c.tug_until = 0.0, 7.0
+
+    path = []
+    for i in range(71):
+        c._drive(i * 0.1)
+        path.append((c.pos_x, c.pos_y))
+
+    sx, sy = start
+    ex, ey = dest
+    def offset(p):
+        along = ((p[0]-sx)*(ex-sx) + (p[1]-sy)*(ey-sy)) / ((ex-sx)**2 + (ey-sy)**2)
+        return math.hypot(p[0] - (sx + along*(ex-sx)), p[1] - (sy + along*(ey-sy)))
+    assert max(offset(p) for p in path) > 80, "drove in a straight line"
+
+
+@needs_qt
+def test_it_spins_its_wheels_before_it_goes():
+    """Slow off the line, quick through the middle, settling rather than
+    stopping dead. Measured on the machine this was written for: 155 pixels in
+    the first third, 974 in the second, 536 in the last."""
+    import math
+    mod, c = _companion()
+    c.dragging = False
+    c.pos_x, c.pos_y = 600.0, 700.0
+    c.tug_route = c._make_route((600.0, 700.0), (2100.0, 400.0))
+    c.tug_began, c.tug_until = 0.0, 7.0
+
+    path = []
+    for i in range(71):
+        c._drive(i * 0.1)
+        path.append((c.pos_x, c.pos_y))
+
+    third = len(path) // 3
+    def travelled(a, b):
+        return sum(math.hypot(path[i+1][0]-path[i][0], path[i+1][1]-path[i][1])
+                   for i in range(a, b))
+    first, middle, last = (travelled(0, third), travelled(third, 2*third),
+                           travelled(2*third, len(path)-1))
+    assert middle > first * 3, f"no launch: {first:.0f} then {middle:.0f}"
+    assert middle > last, f"never settles: {middle:.0f} then {last:.0f}"
+
+
+@needs_qt
+def test_the_suspension_moves():
+    """A car crossing a desk without its body moving on the springs is a
+    photograph being slid."""
+    import math
+    mod, c = _companion()
+    c.dragging = False
+    c.pos_x, c.pos_y = 600.0, 700.0
+    # a route with no vertical component at all, so any y movement is the
+    # suspension and nothing else
+    c.tug_route = ((600.0, 700.0), (1350.0, 700.0), (2100.0, 700.0))
+    c.tug_began, c.tug_until = 0.0, 7.0
+    ys = []
+    for i in range(20, 50):
+        c._drive(i * 0.1)
+        ys.append(round(c.pos_y, 1))
+    assert len(set(ys)) > 4, f"the body never moved on its springs: {sorted(set(ys))}"
+    assert max(ys) - min(ys) < 20, "that is not suspension, that is flying"
+
+
+def test_the_wheels_turn():
+    """Spokes that never move make a sticker of the wheel."""
+    import sys as _sys
+    _sys.path.insert(0, str(REPO / "scripts"))
+    import buddy_sprites as sprites
+    spokes = []
+    for flame in range(sprites.CAR_FLAMES):
+        grid = sprites.build_car("claude", flame)
+        spokes.append(frozenset(
+            (x, y) for y, row in enumerate(grid) for x, ch in enumerate(row)
+            if ch == "1" and sprites.CAR_GROUND - 11 < y < sprites.CAR_GROUND - 1
+            and 40 < x < 60))
+    assert len(set(spokes)) > 1, "the spokes are in the same place every frame"
+
+
+@needs_qt
+def test_it_burns_rubber_before_it_moves():
+    """Distinct from the easing curve, which is why this is its own test: a
+    smootherstep alone already starts slowly, so 'the first third is shorter
+    than the second' passes with the wheelspin deleted.
+
+    What the wheelspin actually is: it does not advance along the route at all
+    for a moment, and it shudders in place while not advancing."""
+    import math
+    mod, c = _companion()
+    c.dragging = False
+    origin = (600.0, 700.0)
+    c.pos_x, c.pos_y = origin
+    c.tug_route = ((600.0, 700.0), (1350.0, 300.0), (2100.0, 400.0))
+    c.tug_began, c.tug_until = 0.0, 7.0
+
+    spin_ends = mod.TUG_SPIN * 7.0
+    during, xs = [], []
+    step = spin_ends / 12
+    for i in range(12):
+        c._drive(step * i + step * 0.5)
+        during.append(math.hypot(c.pos_x - origin[0], c.pos_y - origin[1]))
+        xs.append(round(c.pos_x, 2))
+
+    assert max(during) < 30, f"it left the line during the wheelspin: {max(during):.0f}px"
+    assert len(set(xs)) > 4, f"it sat perfectly still instead of shuddering: {set(xs)}"
+
+    c._drive(7.0 * 0.6)
+    assert math.hypot(c.pos_x - origin[0], c.pos_y - origin[1]) > 400, \
+        "never left after the wheelspin"

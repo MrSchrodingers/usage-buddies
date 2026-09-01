@@ -72,6 +72,12 @@ DRAG_TUG_AFTER = 2       # drags inside that window before it pulls back
 DRAG_TUG_DISTANCE = 900  # or one drag that hauls it this far, in pixels
 TUG_SECONDS = 7.0        # how long it holds on, hard cap
 TUG_RUN_SPEED = 340.0    # px/s while it is running off with the pointer
+TUG_SPIN = 0.14          # fraction of the getaway spent burning rubber before
+                         # it actually goes anywhere
+TUG_ARC = 0.34           # how far the route bows away from the straight line,
+                         # as a fraction of its length
+TUG_BOUNCE = 3.4         # suspension travel, px
+TUG_SHAKE = 2.2          # how much it shudders during the wheelspin, px
 TUG_STEP = 6             # largest delta sent to the pointer at once, in px.
                          # libinput accelerates: one big jump travels much
                          # further than the same distance in small steps, and
@@ -588,6 +594,8 @@ class Companion(QWidget):
         self.tug_until = 0.0
         self.tugged_at = 0.0
         self.tug_from = None
+        self.tug_route = None
+        self.tug_began = 0.0
         self.pointer = None
 
         self.resize(BUDDY_PX, BUDDY_PX)
@@ -768,6 +776,10 @@ class Companion(QWidget):
         moving = False
         if self.dragging and self.hand is not None:
             self._swing(dt)
+        elif now < self.tug_until and self.tug_route:
+            self._drive(now)
+            moving = True
+            self._wake()
         elif not self.dragging:
             tx, ty = self.target
             dx, dy = tx - self.pos_x, ty - self.pos_y
@@ -891,6 +903,68 @@ class Companion(QWidget):
         if self.pointer is not None:
             return
         self.pointer = virtual_pointer.VirtualPointer().open() or False
+
+    def _make_route(self, start, end):
+        """A curve, not a line.
+
+        Three points of a quadratic Bézier: the two ends and a control point
+        pushed off to one side of the straight run between them. A getaway that
+        travels in a straight line at a constant speed is a sprite being
+        interpolated, and it reads as one however fast it goes.
+
+        The bow is clamped inside the screen it started on, so the curve cannot
+        carry it across a monitor boundary and lose the pointer.
+        """
+        import math
+        sx, sy = start
+        ex, ey = end
+        mx, my = (sx + ex) / 2, (sy + ey) / 2
+        dx, dy = ex - sx, ey - sy
+        length = math.hypot(dx, dy) or 1.0
+        side = random.choice((-1, 1))
+        bow = length * TUG_ARC * side
+        cx = mx - dy / length * bow
+        cy = my + dx / length * bow
+        screen = self._screen_at(sx, sy)
+        cx = max(screen.left() + 8, min(screen.right() - BUDDY_PX - 8, cx))
+        cy = max(screen.top() + 8, min(screen.bottom() - BUDDY_PX - 8, cy))
+        return ((sx, sy), (cx, cy), (ex, ey))
+
+    def _drive(self, now):
+        """Where along the route it is, and what the suspension is doing.
+
+        The speed profile is the point. It holds still and shudders while the
+        wheels spin, then a smootherstep to the far end — slow off the line,
+        quick through the middle, settling rather than stopping dead. A
+        constant rate over the same path still reads as a tween.
+        """
+        import math
+        if not self.tug_route:
+            return
+        span = max(0.001, self.tug_until - self.tug_began)
+        t = min(1.0, max(0.0, (now - self.tug_began) / span))
+
+        if t < TUG_SPIN:
+            eased = 0.0
+            shake = math.sin(now * 47) * TUG_SHAKE
+        else:
+            u = (t - TUG_SPIN) / (1 - TUG_SPIN)
+            eased = u * u * u * (u * (u * 6 - 15) + 10)
+            shake = 0.0
+
+        (x0, y0), (x1, y1), (x2, y2) = self.tug_route
+        inv = 1 - eased
+        x = inv * inv * x0 + 2 * inv * eased * x1 + eased * eased * x2
+        y = inv * inv * y0 + 2 * inv * eased * y1 + eased * eased * y2
+
+        # Suspension, strongest where it is going fastest.
+        speed = math.sin(math.pi * min(1.0, max(0.0, eased)))
+        y += math.sin(now * 21) * TUG_BOUNCE * speed
+
+        self.facing = 1 if x >= self.pos_x else -1
+        self.pos_x = max(self.min_x, min(self.max_x, x + shake))
+        self.pos_y = max(self.min_y, min(self.max_y, y))
+        self._place()
 
     def _tug(self, now):
         """It has the pointer, and it is running off with it.
@@ -1122,6 +1196,8 @@ class Companion(QWidget):
                                float(random.randint(lo_y, hi_y))) for _ in range(6)]
                 self.target = max(candidates,
                                   key=lambda t: (t[0] - here[0]) ** 2 + (t[1] - here[1]) ** 2)
+                self.tug_route = self._make_route(here, self.target)
+                self.tug_began = now
                 self.docked = False
                 self.next_move = self.tug_until + 1.0
                 # Back to the animating rate first. Idle ticks are 200ms, and a
