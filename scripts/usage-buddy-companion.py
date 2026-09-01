@@ -69,8 +69,10 @@ DRAG_PATIENCE = 3.5      # seconds of continuous dragging before it complains
 DRAG_MEMORY = 90.0       # window over which repeated drags accumulate
 DRAG_TUG_AFTER = 2       # drags inside that window before it pulls back
 DRAG_TUG_DISTANCE = 900  # or one drag that hauls it this far, in pixels
-TUG_SECONDS = 6.0        # how long it pulls, hard cap
-TUG_STRENGTH = 0.06      # fraction of the gap closed per frame: a tug, not a
+TUG_SECONDS = 7.0        # how long it holds on, hard cap
+TUG_RUN_SPEED = 340.0    # px/s while it is running off with the pointer
+TUG_BREAK = 260.0        # pull the pointer this far from it and it loses grip
+TUG_STRENGTH = 0.34      # fraction of the gap closed per frame: a tug, not a
                          # lock — pull harder and you win, which is the whole
                          # difference between a joke and a hijacked desktop
 TUG_COOLDOWN = 420.0     # and then it leaves you alone for a while
@@ -81,12 +83,12 @@ DRAG_TUG_SECONDS = 5.0   # or one drag held this long, which is the same message
 # Tuned by eye at 30fps — stiff enough to keep up, loose enough to overshoot.
 SWING_STIFFNESS = 62.0
 SWING_DAMPING = 0.86     # per 1/60s, so the feel does not change with the rate
-SWING_MAX_LEAN = 260.0   # px/s of horizontal speed that reaches the deepest pose
+SWING_MAX_LEAN = 190.0   # px/s of horizontal speed that reaches the deepest pose
 
 # The wobble. This is the part that is in the sprite rather than in the window:
 # the body itself stretches and squashes, on its own spring, so it keeps
 # jiggling for a moment after the movement stops instead of snapping rigid.
-WOBBLE_SPEED = 300.0     # px/s of vertical speed that reaches full stretch
+WOBBLE_SPEED = 190.0     # px/s of speed that reaches full stretch
 WOBBLE_K = 34.0          # how hard it is pulled back toward its resting shape
 WOBBLE_DAMP = 0.90       # per 1/60s; lower settles sooner and jiggles less
 ALERT_SECONDS = 1.4      # the double-take when something needs the human
@@ -740,11 +742,14 @@ class Companion(QWidget):
             moving = abs(dx) > 1.5 or abs(dy) > 1.5
 
             if moving:
+                running = now < self.tug_until
+                speed_x = TUG_RUN_SPEED if running else WALK_SPEED
+                speed_y = TUG_RUN_SPEED * 0.6 if running else CLIMB_SPEED
                 if abs(dx) > 1.5:
-                    self.pos_x += min(abs(dx), WALK_SPEED * dt) * (1 if dx > 0 else -1)
+                    self.pos_x += min(abs(dx), speed_x * dt) * (1 if dx > 0 else -1)
                     self.facing = 1 if dx > 0 else -1
                 if abs(dy) > 1.5:
-                    self.pos_y += min(abs(dy), CLIMB_SPEED * dt) * (1 if dy > 0 else -1)
+                    self.pos_y += min(abs(dy), speed_y * dt) * (1 if dy > 0 else -1)
                 self.settled_at = now
                 self._wake()
             elif self.docked:
@@ -816,28 +821,31 @@ class Companion(QWidget):
         """
         lean = max(-1.0, min(1.0, -self.vel_x / SWING_MAX_LEAN))
         wob = max(-1.0, min(1.0, self.wobble))
-        return sprites.wobble_frame(int(round(lean * 2)), int(round(wob * 2)))
+        return sprites.wobble_frame(int(round(lean * 3)), int(round(wob * 3)))
 
     def _tug(self, now):
-        """Pull the pointer back, briefly, after being dragged around a lot.
+        """It has the pointer, and it is running.
 
-        A fraction of the remaining gap per frame, not a setPos to a fixed
-        point: the pointer drifts toward the character and any real movement
-        beats it, so it reads as a small creature tugging at a sleeve rather
-        than as something that has taken the mouse away. Hard time cap, and a
-        long cooldown after.
+        Not a pull toward where it is standing — that was a sleeve being
+        tugged, and what it should read as is being carried off. It picks
+        somewhere across the screen, runs there, and the pointer is dragged
+        along a fraction of the gap per frame.
 
-        Stops early if the pointer is already close, so it never fights over
-        the last few pixels.
+        A fraction, still, and never a setPos to a fixed point: pull hard
+        enough and the pointer gets further away than TUG_BREAK, at which
+        point it loses its grip and says so. That is the whole safety
+        argument — you can always win, and winning is a visible event rather
+        than a struggle against something that keeps grabbing back. Plus a
+        hard time cap and a long cooldown.
         """
         if now >= self.tug_until or self.dragging:
             return
         pointer = QCursor.pos()
-        target_x = self.x() + BUDDY_PX / 2
-        target_y = self.y() + BUDDY_PX / 2
-        dx, dy = target_x - pointer.x(), target_y - pointer.y()
-        if abs(dx) < 12 and abs(dy) < 12:
+        dx = (self.x() + BUDDY_PX / 2) - pointer.x()
+        dy = (self.y() + BUDDY_PX / 2) - pointer.y()
+        if (dx * dx + dy * dy) ** 0.5 > TUG_BREAK:
             self.tug_until = 0.0
+            self._say(self._t("dropped"))
             return
         self._wake()
         QCursor.setPos(int(pointer.x() + dx * TUG_STRENGTH),
@@ -980,6 +988,14 @@ class Companion(QWidget):
                 self.tug_until = now + random.uniform(TUG_SECONDS - 1, TUG_SECONDS)
                 self.tugged_at = now
                 self.recent_drags = []
+                # Somewhere far, so the run is worth watching. Picked as the
+                # furthest of a handful of candidates rather than at random:
+                # a kidnapping that ends four pixels away is a shrug.
+                here = (self.pos_x, self.pos_y)
+                self.target = max((self._pick_target() for _ in range(6)),
+                                  key=lambda t: (t[0] - here[0]) ** 2 + (t[1] - here[1]) ** 2)
+                self.docked = False
+                self.next_move = self.tug_until + 1.0
                 # Back to the animating rate first. Idle ticks are 200ms, and a
                 # pull that advances six percent of the gap five times a second
                 # is not a tug, it is a slow leak.
@@ -1105,13 +1121,15 @@ class Companion(QWidget):
         table = {
             "en": {"quit": "Quit companion", "roam": "Let it roam again",
                    "stopThat": "Put me down. I have places to be.",
-                   "tugging": "Fine. My turn.",
+                   "tugging": "Right. My turn. Come along.",
+                   "dropped": "...fine. Keep your mouse.",
                    "askAbout": "How is it going in...",
                    "thinking": "Looking at {name}...",
                    "noAnswer": "No answer came back. It happens."},
             "pt": {"quit": "Fechar o companion", "roam": "Deixar passear de novo",
                    "stopThat": "Me larga. Tenho compromissos.",
-                   "tugging": "Certo. Agora é a minha vez.",
+                   "tugging": "Certo. Agora é a minha vez. Vem comigo.",
+                   "dropped": "...tá bom. Fica com o teu mouse.",
                    "askAbout": "Como vai o...",
                    "thinking": "Deixa eu ver o {name}...",
                    "noAnswer": "Não veio resposta. Acontece."},

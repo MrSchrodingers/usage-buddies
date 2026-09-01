@@ -76,7 +76,7 @@ def test_the_tug_is_bounded_and_gradual():
     from PySide6.QtCore import QPoint
 
     c.move(400, 400)
-    QCursor.setPos(900, 900)
+    QCursor.setPos(520, 500)          # inside its reach; further and it lets go
     before = QCursor.pos()
     c.tug_until = time.monotonic() + 5
     c.dragging = False
@@ -131,16 +131,19 @@ def test_one_drag_never_earns_a_tug(monkeypatch):
 
 
 def test_the_tug_has_a_hard_ceiling_and_a_long_cooldown():
-    """Read from the constants: a tug that could run indefinitely, or repeat
-    immediately, is not a joke any more."""
+    """Read from the constants. Taking the pointer away from someone working
+    is only acceptable because all four of these hold at once: it ends, it
+    cannot repeat soon, it never jumps the pointer in one frame, and it can
+    be broken by pulling away."""
     source = COMPANION.read_text()
     scope = {}
     for line in source.splitlines():
         if line.startswith(("TUG_", "DRAG_")):
             exec(line.split("#")[0], {}, scope)
-    assert scope["TUG_SECONDS"] <= 10, "pulls for too long"
+    assert scope["TUG_SECONDS"] <= 10, "holds on for too long"
     assert scope["TUG_COOLDOWN"] >= 300, "can repeat too soon"
-    assert 0 < scope["TUG_STRENGTH"] <= 0.15, "not a tug, a teleport"
+    assert 0 < scope["TUG_STRENGTH"] < 0.6, "closes too much of the gap per frame"
+    assert 0 < scope["TUG_BREAK"] <= 400, "cannot be shaken off by pulling away"
 
 
 # ── the swing ──────────────────────────────────────────────────────────────
@@ -199,8 +202,8 @@ def test_the_lean_trails_the_direction_of_travel():
     c.vel_x = -mod.SWING_MAX_LEAN
     left = c.swing_frame()
     assert right != left
-    assert right == sprites.wobble_frame(-2, 0), f"moving right leaned right: {right}"
-    assert left == sprites.wobble_frame(2, 0), f"moving left leaned left: {left}"
+    assert right == sprites.wobble_frame(-3, 0), f"moving right leaned right: {right}"
+    assert left == sprites.wobble_frame(3, 0), f"moving left leaned left: {left}"
 
 
 @needs_qt
@@ -383,3 +386,58 @@ def test_the_shape_has_its_own_spring_not_a_readout_of_speed():
     assert crossings >= 2, (
         f"the shape never passed through its resting state ({crossings} crossings) — "
         "it is following the speed, not springing back")
+
+
+@needs_qt
+def test_pulling_away_breaks_its_grip():
+    """The safety argument. Holding the pointer is only defensible because you
+    can always take it back, and taking it back is one deliberate movement —
+    not a fight against something that keeps grabbing again."""
+    mod, c = _companion()
+    said = []
+    from PySide6.QtGui import QCursor
+    c.move(400, 400)
+    c.dragging = False
+    c.tug_until = time.monotonic() + 5
+
+    type(c)._say_backup = type(c)._say
+    try:
+        type(c)._say = lambda self, text: said.append(text)
+        QCursor.setPos(400 + int(mod.TUG_BREAK) + 200, 400)
+        away = QCursor.pos()
+        c._tug(time.monotonic())
+        assert QCursor.pos() == away, "still dragging the pointer after it was pulled free"
+        assert c.tug_until == 0.0, "kept trying"
+        assert said, "let go without a word"
+    finally:
+        type(c)._say = type(c)._say_backup
+
+
+@needs_qt
+def test_it_runs_somewhere_worth_watching():
+    """A kidnapping that ends four pixels away is a shrug."""
+    mod, c = _companion(); import random
+    said = []
+    type(c)._say_backup = type(c)._say
+    try:
+        type(c)._say = lambda self, text: said.append(text)
+        type(c)._snap_backup = type(c)._snap
+        type(c)._snap = lambda self: None
+        c.pos_x, c.pos_y = float(c.min_x + 20), float(c.max_y - 20)
+        c.recent_drags = []
+        c.tugged_at = 0.0
+        c.tug_until = 0.0
+        c.dragging = True
+        c.drag_started = time.monotonic() - (mod.DRAG_TUG_SECONDS + 1)
+
+        from PySide6.QtCore import QPointF, Qt
+        from PySide6.QtGui import QMouseEvent
+        c.mouseReleaseEvent(QMouseEvent(QMouseEvent.MouseButtonRelease, QPointF(0, 0),
+                                        Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
+        assert c.tug_until > time.monotonic()
+        travel = abs(c.target[0] - c.pos_x) + abs(c.target[1] - c.pos_y)
+        span = (c.max_x - c.min_x) + (c.max_y - c.min_y)
+        assert travel > span * 0.2, f"ran {travel:.0f}px across a {span:.0f}px desktop"
+    finally:
+        type(c)._say = type(c)._say_backup
+        type(c)._snap = type(c)._snap_backup

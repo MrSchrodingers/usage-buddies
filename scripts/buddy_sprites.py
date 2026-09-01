@@ -675,8 +675,8 @@ def build_frames(brand):
 # Held, the body both leans and wobbles. Lean is the shear, wobble is rows
 # repeated or dropped. Five by five, generated from the one dangle pose — the
 # alternative is twenty-five grids to keep in step with each other.
-LEANS = {-2: -3, -1: -2, 0: 0, 1: 2, 2: 3}
-WOBBLES = {-2: -2, -1: -1, 0: 0, 1: 1, 2: 2}
+LEANS = {-3: -5, -2: -4, -1: -2, 0: 0, 1: 2, 2: 4, 3: 5}
+WOBBLES = {-3: -3, -2: -2, -1: -1, 0: 0, 1: 2, 2: 4, 3: 5}
 
 
 def wobble_frame(lean, wob):
