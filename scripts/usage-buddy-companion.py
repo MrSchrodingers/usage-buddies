@@ -526,13 +526,6 @@ class Companion(QWidget):
         # rotation and non-integer scale are the two things that turn pixel
         # art to mush, and the way to not do them is to have no transform.
         self.sheet = sprites.build_sheet(brand)
-        # The car is only ever on screen for seven seconds at a time, but it is
-        # 52 pixels wide against the character's 28, so the window has to grow
-        # for it. Built up front: seven seconds is not long enough to spend any
-        # of it rasterising.
-        self.car = sprites.build_car_sheet(brand)
-        self.car_size = (sprites.CAR_W * sprites.CAR_SCALE,
-                         sprites.CAR_H * sprites.CAR_SCALE)
         self.anim = sprites.Animator("idle")
         self.frame = "stand_open"
         self.alert_until = 0.0
@@ -812,32 +805,8 @@ class Companion(QWidget):
             self._place()
 
         self._tug(now)
-        self._fit_to_car()
         self._animate(dt, now, moving)
         self.update()
-
-    def _fit_to_car(self):
-        """Grow the window for the car and shrink it back afterwards.
-
-        Only on the transition: resizing a top-level window every frame makes
-        the compositor do real work thirty times a second for no reason.
-        """
-        if self.in_car():
-            # The car wins over the bubble, and it has to: the getaway opens by
-            # saying something, so the bubble is always up when the car appears.
-            # Bailing here left the window at 56 by 66 while a 384 by 126 car
-            # was drawn into it from y=-60 — and the only part of the picture
-            # inside that rectangle is the burning tyre tracks. On screen: an
-            # orange flame dragging the cursor, and nothing else.
-            wanted = self.car_size
-        elif self.bubble:
-            if self.width() == self.car_size[0]:
-                self._resize_for_bubble()      # just got out; give it back
-            return
-        else:
-            wanted = (BUDDY_PX, BUDDY_PX + 10)
-        if (self.width(), self.height()) != wanted:
-            self.resize(*wanted)
 
     def _swing(self, dt):
         """Chase the cursor on a spring instead of tracking it exactly.
@@ -1042,30 +1011,8 @@ class Companion(QWidget):
 
     # ── painting ──
 
-    def in_car(self):
-        return time.monotonic() < self.tug_until and not self.dragging
-
-    def car_frame(self):
-        """Which flame. Fast enough to flicker, slow enough to see."""
-        step = int(time.monotonic() * 14) % sprites.CAR_FLAMES
-        return f"car{step}" + (":flip" if self.facing < 0 else "")
-
     def paintEvent(self, _event):
         p = QPainter(self)
-
-        image = self.car.get(self.car_frame()) if self.in_car() else None
-        # Only if it fits. A car drawn into a window smaller than itself is a
-        # slice of car, and the slice that lands inside a 56-pixel window is
-        # the jet — an orange flame towing the cursor with nothing attached to
-        # it. Falling back to the ordinary sprite is a worse joke and a much
-        # better failure.
-        if image is not None and (self.width() >= image.width()
-                                  and self.height() >= image.height()):
-            p.setRenderHint(QPainter.Antialiasing, False)
-            p.setRenderHint(QPainter.SmoothPixmapTransform, False)
-            p.drawImage(0, self.height() - image.height(), image)
-            p.end()
-            return
 
         # The bubble is chrome and wants smoothing; the sprite is pixel art
         # and must not have it. Two states of the same painter, in that order.
