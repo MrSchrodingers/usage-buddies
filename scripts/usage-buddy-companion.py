@@ -76,11 +76,12 @@ TUG_STEP = 6             # largest delta sent to the pointer at once, in px.
                          # libinput accelerates: one big jump travels much
                          # further than the same distance in small steps, and
                          # the point is to carry the pointer, not launch it.
-TUG_STRENGTH = 0.34      # fraction of the gap closed per frame: a tug, not a
-                         # lock — pull harder and you win, which is the whole
-                         # difference between a joke and a hijacked desktop
 TUG_COOLDOWN = 420.0     # and then it leaves you alone for a while
 DRAG_TUG_SECONDS = 5.0   # or one drag held this long, which is the same message
+DRAG_TUG_ALWAYS = 10.0   # held this long there is no cooldown: at ten seconds
+                         # of hauling it around you are asking for it, and
+                         # having to wait seven minutes to ask again turns a
+                         # deliberate act into a lottery
 
 # The swing. The body is not glued to the cursor: it hangs from it on a spring
 # and trails, which is what makes a dragged sprite read as having weight.
@@ -1015,10 +1016,15 @@ class Companion(QWidget):
             self.recent_drags = [t for t in self.recent_drags if now - t <= DRAG_MEMORY]
             self._snap()
             self.anim.play_once("land")
-            long_pull = (now - self.drag_started >= DRAG_TUG_SECONDS
-                         or self.drag_distance >= DRAG_TUG_DISTANCE)
-            if ((len(self.recent_drags) >= DRAG_TUG_AFTER or long_pull)
-                    and now - self.tugged_at > TUG_COOLDOWN):
+            held_for = now - self.drag_started
+            # Two tiers. Everything short of ten seconds is something you might
+            # have done by accident, so it waits out the cooldown. Ten seconds
+            # of holding on is not an accident, and it fires every time.
+            insistent = held_for >= DRAG_TUG_ALWAYS
+            provoked = (held_for >= DRAG_TUG_SECONDS
+                        or self.drag_distance >= DRAG_TUG_DISTANCE
+                        or len(self.recent_drags) >= DRAG_TUG_AFTER)
+            if insistent or (provoked and now - self.tugged_at > TUG_COOLDOWN):
                 self.tug_until = now + random.uniform(TUG_SECONDS - 1, TUG_SECONDS)
                 self.tugged_at = now
                 self.recent_drags = []

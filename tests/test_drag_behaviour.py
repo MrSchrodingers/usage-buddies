@@ -97,6 +97,8 @@ def test_the_tug_has_a_hard_ceiling_and_a_long_cooldown():
     assert scope["TUG_SECONDS"] <= 10, "holds on for too long"
     assert scope["TUG_COOLDOWN"] >= 300, "can repeat too soon"
     assert 0 < scope["TUG_STEP"] <= 20, "sends the pointer in jumps big enough to fling it"
+    assert scope["DRAG_TUG_ALWAYS"] > scope["DRAG_TUG_SECONDS"], \
+        "the no-cooldown tier is not above the ordinary one"
 
 
 # ── the swing ──────────────────────────────────────────────────────────────
@@ -533,3 +535,53 @@ def test_movement_keeps_its_fractional_remainder():
             if kind == virtual_pointer.EV_REL and code == virtual_pointer.REL_X:
                 total += value
     assert total == 6, f"ten moves of 0.6px carried {total}px, not 6"
+
+
+@needs_qt
+def test_ten_seconds_of_holding_on_always_works(monkeypatch):
+    """Below ten seconds is something that might have happened by accident, so
+    it waits out the cooldown. Ten seconds of hauling it around is a decision,
+    and having to wait seven minutes to make it again turns a deliberate act
+    into a lottery."""
+    mod, c = _companion()
+    monkeypatch.setattr(type(c), "_say", lambda self, text: None)
+    monkeypatch.setattr(type(c), "_snap", lambda self: None)
+
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    def release_after(seconds, last_tug_ago):
+        c.recent_drags = []
+        c.drag_distance = 0.0
+        c.tug_until = 0.0
+        c.tugged_at = time.monotonic() - last_tug_ago
+        c.dragging = True
+        c.drag_started = time.monotonic() - seconds
+        c.mouseReleaseEvent(QMouseEvent(QMouseEvent.MouseButtonRelease, QPointF(0, 0),
+                                        Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
+        return c.tug_until > time.monotonic()
+
+    assert release_after(mod.DRAG_TUG_ALWAYS + 1, last_tug_ago=1), \
+        "ten seconds did not fire while the cooldown was running"
+    assert release_after(mod.DRAG_TUG_ALWAYS + 1, last_tug_ago=0.5), \
+        "twice in a row did not work either"
+
+
+@needs_qt
+def test_a_short_provocation_still_waits_out_the_cooldown(monkeypatch):
+    """Otherwise every idle fidget takes the mouse away."""
+    mod, c = _companion()
+    monkeypatch.setattr(type(c), "_say", lambda self, text: None)
+    monkeypatch.setattr(type(c), "_snap", lambda self: None)
+
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    c.recent_drags = []
+    c.drag_distance = 0.0
+    c.tug_until = 0.0
+    c.tugged_at = time.monotonic() - 5          # well inside the cooldown
+    c.dragging = True
+    c.drag_started = time.monotonic() - (mod.DRAG_TUG_SECONDS + 1)
+    c.mouseReleaseEvent(QMouseEvent(QMouseEvent.MouseButtonRelease, QPointF(0, 0),
+                                    Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
+    assert c.tug_until == 0.0, "a five-second drag ignored the cooldown"
