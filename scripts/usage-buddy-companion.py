@@ -53,6 +53,8 @@ import repo_brief                                                               
 import buddy_voice                                                               # noqa: E402
 import buddy_signals as signals                                                  # noqa: E402
 import buddy_focus as focus_engine                                               # noqa: E402
+import buddy_actions as actions                                                  # noqa: E402
+import buddy_peers as peers                                                      # noqa: E402
 from buddy_lines import LINES                                                    # noqa: E402
 import virtual_pointer                                                           # noqa: E402
 
@@ -148,6 +150,11 @@ CLIP_FALLBACK = {
     "panic": "furious",
     "celebrate": "alert",
     "nod": "idle",
+    "shake": "idle",
+    "yawn": "sleep",
+    "peek": "idle",
+    "turn": "idle",
+    "type": "idle",
 }
 
 
@@ -159,6 +166,46 @@ def clip_or_fallback(name, default="idle"):
     if alternative in sprites.CLIPS:
         return alternative
     return default if default in sprites.CLIPS else next(iter(sprites.CLIPS))
+
+
+# How long a mood clip holds the sprite after a line that earned one. The same
+# length as the insistence gesture: long enough to be read next to the sentence
+# that caused it, short enough that the character is not still panicking while
+# the bubble is halfway through its sixteen seconds.
+MOOD_SECONDS = 4.0
+
+# Which lines are delivered in a panic, taken off buddy_signals' own priority
+# table rather than listed here. Everything from twoRed to creditsLow is the
+# band that means the ability to keep working is about to end; a list of keys
+# in this file would be one more place to forget when a signal joins that band,
+# which is how twoRed spent its whole life written and unreachable.
+PANIC_BAND = (signals.PRIORITY["twoRed"], signals.PRIORITY["creditsLow"])
+
+# And the one signal that means a session finished and left nothing running.
+CELEBRATE_KEY = "allQuiet"
+
+# The shortest gap between two turn-around one-shots. The facing is recomputed
+# every frame while the getaway drives, and a route that doubles back flips it
+# repeatedly; without a floor the turn would replay on every flip.
+TURN_MIN_GAP = 1.0
+
+# Where one companion stands to talk to another: a sprite of clear air between
+# them, so neither is drawn on top of the other.
+MEET_GAP = BUDDY_PX + 12
+
+# Why a refused drop gets a sentence. A drop that is rejected in silence is
+# indistinguishable from one the character never noticed, and the person tries
+# again with the same folder. The keys are buddy_actions' seven reasons; the
+# wording lives in _t with the rest of the chrome.
+DROP_REASON_LINE = {
+    actions.REASON_NOT_LOCAL: "dropNotLocal",
+    actions.REASON_UNSAFE: "dropUnsafe",
+    actions.REASON_MISSING: "dropMissing",
+    actions.REASON_NOT_A_FOLDER: "dropNotAFolder",
+    actions.REASON_NOT_A_REPOSITORY: "dropNotARepo",
+    actions.REASON_UNREADABLE: "dropUnreadable",
+    actions.REASON_TOO_MANY: "dropTooMany",
+}
 
 
 # ── the command line ───────────────────────────────────────────────────────
@@ -179,7 +226,11 @@ MEME_LEVELS = ("off", "light", "full")
 MEME_PROP_CHANCE = {"off": 0.0, "light": 0.15, "full": 0.6}
 
 # Defaults are the widget's defaults (plasmoid/contents/config/main.xml), so a
-# companion started by hand behaves like one started by the applet.
+# companion started by hand behaves like one started by the applet. The
+# switches follow the same rule, which is why the two that default to on are
+# spelled as negatives: a --quiet-hours that had to be passed to switch a
+# default-on setting on would mean the widget saying nothing and the setting
+# being off, so the widget's "off" would be unsendable.
 DEFAULT_INSISTENCE = "walk"
 DEFAULT_MEMES = "light"
 DEFAULT_FOCUS_MINUTES = focus_engine.FOCUS_MINUTES
@@ -240,7 +291,7 @@ def parse_args(argv):
     # than "expected one argument", which is another exit.
     parser.add_argument("--focus-minutes", nargs="?", default=None, const=None)
     parser.add_argument("--insistence", nargs="?", default=None, const=None)
-    parser.add_argument("--quiet-hours", action="store_true")
+    parser.add_argument("--no-quiet-hours", action="store_true")
     parser.add_argument("--memes", nargs="?", default=None, const=None)
     parser.add_argument("--no-shadow", action="store_true")
     parser.add_argument("--escort", action="store_true")
@@ -254,7 +305,7 @@ def parse_args(argv):
         focus_minutes=_clamped_int(known.focus_minutes, FOCUS_MINUTES_MIN,
                                    FOCUS_MINUTES_MAX, DEFAULT_FOCUS_MINUTES),
         insistence=_one_of(known.insistence, INSISTENCE_STEPS, DEFAULT_INSISTENCE),
-        quiet_hours=known.quiet_hours,
+        quiet_hours=not known.no_quiet_hours,
         memes=_one_of(known.memes, MEME_LEVELS, DEFAULT_MEMES),
         shadow=not known.no_shadow,
         escort=known.escort,
@@ -431,11 +482,39 @@ class NotificationInhibitor:
 
 
 def _read_json(path):
+    """The file as a mapping, or an empty one.
+
+    A payload that is valid JSON but not an object — `1`, `[]`, `"broken"` —
+    is what a file caught mid-write or edited by hand looks like, and every
+    reader here goes on to call .get on it. Rejecting it at the door is one
+    check instead of one per reader, and the readers still check the fields
+    they take out: this only guarantees the outermost shape.
+    """
     try:
         with open(path, encoding="utf-8") as f:
-            return json.load(f)
+            payload = json.load(f)
     except (OSError, json.JSONDecodeError):
         return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _session_rows(payload):
+    """The session rows of a sessions payload, by type rather than truthiness.
+
+    `or []` catches only the falsy, and `{"sessions": 1}` is valid JSON,
+    truthy, and a TypeError as soon as anything iterates it. The failure is
+    not one bad frame: the same file is still on disk at the next poll, so it
+    raises every twenty seconds — with the traceback going to a log nobody
+    reads and the character walking around as if nothing were wrong, having
+    stopped speaking and stopped escalating for good.
+
+    The rows are filtered as well as the list, because a single integer inside
+    it breaks the .get that every reader does next.
+    """
+    rows = payload.get("sessions") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
 
 
 def _fmt_remaining(seconds):
@@ -511,6 +590,11 @@ class Brain(QObject):
         self.escort = escort if escort is not None else focus_engine.Escort()
         self.sessions = {}
         self.usage = {}
+        # The key behind the last line, for the half of the reaction that is
+        # not words. The text alone cannot be read backwards into a category —
+        # the tables are prose, and with --live the wording comes from the
+        # model — so the sprite would have no way of knowing what it just said.
+        self.spoke = None
         self._recent = []
         self._subjects = []
 
@@ -520,7 +604,19 @@ class Brain(QObject):
 
     @property
     def attention(self):
-        return (self.sessions or {}).get("attention")
+        """The session the collector says needs a human, or None.
+
+        Typed here rather than at each caller, because both of them treat it
+        as a session and one hands its pid to a subprocess: `"attention": "ti"`
+        in the file is a TypeError inside a click handler, and an entry with no
+        pid is a KeyError in the same place. A row without a pid is no answer
+        to "which session", so it is None like the rest.
+        """
+        payload = self.sessions if isinstance(self.sessions, dict) else {}
+        row = payload.get("attention")
+        if not isinstance(row, dict) or row.get("pid") is None:
+            return None
+        return row
 
     def _all(self, *states):
         """Sessions in the named states — all of them when none is named —
@@ -532,16 +628,14 @@ class Brain(QObject):
         then discarding the result, which is a companion that goes quiet
         instead of one that concentrates.
         """
-        rows = [s for s in ((self.sessions or {}).get("sessions") or [])
-                if isinstance(s, dict)]
-        rows = self.escort.filter(rows)
+        rows = self.escort.filter(_session_rows(self.sessions))
         if states:
             rows = [s for s in rows if s.get("state") in states]
         return rows
 
     def payload(self):
         """The sessions payload as the detectors should see it: escorted."""
-        payload = dict(self.sessions or {})
+        payload = dict(self.sessions) if isinstance(self.sessions, dict) else {}
         payload["sessions"] = self._all()
         return payload
 
@@ -632,6 +726,7 @@ class Brain(QObject):
         a block to run out.
         """
         now = time.monotonic() if now is None else now
+        self.spoke = None
         quiet = self.quiet_hours and self.quiet(wall)
         for signal in signals.detect(self.payload(), self.usage, wall):
             # The list is sorted by priority, so the first signal past the
@@ -644,6 +739,7 @@ class Brain(QObject):
                 vars_.update(self._subject_vars(signal.key, chosen))
             text = self._pick(signal.key, now=now, **vars_)
             if text:
+                self.spoke = signal.key
                 return text
             # Silenced by the block, or a category with no lines: try the next
             # signal down rather than jumping straight to a joke.
@@ -653,7 +749,11 @@ class Brain(QObject):
         # Nothing is wrong. Alternate between saying so and saying something
         # else entirely, so silence has texture. Still through _pick, so a
         # focus block silences this too.
-        return self._pick(random.choice(("ambient", "philosophy")), now=now)
+        key = random.choice(("ambient", "philosophy"))
+        text = self._pick(key, now=now)
+        if text:
+            self.spoke = key
+        return text
 
 
 def _menu_labels(sessions):
@@ -714,6 +814,9 @@ class Companion(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setMouseTracking(True)
         self.setCursor(Qt.OpenHandCursor)
+        # A folder dropped on the character is a question about that
+        # repository; dropEvent is where the payload is judged.
+        self.setAcceptDrops(True)
 
         # Every frame in both directions, built once. Baking the mirror here
         # means the paint path is a single drawImage with no transform on it:
@@ -808,6 +911,29 @@ class Companion(QWidget):
         self.tug_route = None
         self.tug_began = 0.0
         self.pointer = None
+        # Thrown rather than put down. The samples are the last few hand
+        # positions, which buddy_actions turns into a velocity at the moment of
+        # release; `flying` is the flag that says the character is in the air
+        # under its own momentum instead of being carried by something.
+        self.throw_samples = []
+        self.flying = False
+
+        # The other mascot. One presence file per process, both halves on a
+        # one-second cadence inside PeerDirectory, and the state machine of an
+        # encounter in Encounter; all this class does is act on the verdict.
+        self.yard = peers.PeerDirectory()
+        self.encounter = peers.Encounter()
+        self.greeted = None      # the peer already reacted to, once per meeting
+        self.meeting = False     # whether one was in flight on the last frame
+
+        # Written by the poll, read on the frame path: the pose the last line
+        # was delivered in, and whether anything is running right now.
+        self.mood_clip = ""
+        self.mood_until = 0.0
+        self.working = False
+        # The facing the turn-around one-shot last fired for.
+        self._faced = self.facing
+        self._turned_at = 0.0
 
         self.resize(BUDDY_PX, BUDDY_PX)
         self._place()
@@ -839,6 +965,14 @@ class Companion(QWidget):
         # rejected by the timestamp, so this can only ever act on a command
         # written in the moment between starting and here.
         QTimer.singleShot(250, self._command_changed)
+
+        # The presence file has to go when the process does. Without this a
+        # companion closed from its own menu stays visible to the other one
+        # for buddy_peers.STALE_SECONDS, which is five seconds of the survivor
+        # walking over to greet a mascot that is not there.
+        application = QApplication.instance()
+        if application is not None:
+            application.aboutToQuit.connect(self._retire)
 
     # ── commands from the widget ──
 
@@ -955,6 +1089,11 @@ class Companion(QWidget):
     def _poll(self):
         now = time.monotonic()
         self.brain.refresh()
+        # Read once per poll rather than on the frame path: it comes out of a
+        # file the collector writes, and the idle pose is the only thing that
+        # wants it.
+        self.working = any(row.get("state") == "working"
+                           for row in self.brain.visible_sessions())
         # A directory that did not exist when this started does now, once the
         # collector has run; the watch is cheap to re-check and lost otherwise.
         self._rewatch_command()
@@ -975,6 +1114,13 @@ class Companion(QWidget):
             self.bubble = line
             self.prop_line = self._roll_prop()
             self.bubble_until = now + SPEAK_SECONDS
+            # The pose the line arrives in, which is the sprite's half of what
+            # the sentence says. Bounded rather than tied to the bubble: the
+            # bubble is up for sixteen seconds, and nothing panics for sixteen
+            # seconds without becoming wallpaper.
+            mood = self._mood_for(self.brain.spoke)
+            self.mood_clip = clip_or_fallback(mood) if mood else ""
+            self.mood_until = now + MOOD_SECONDS if mood else 0.0
             # The double-take only fires for something that wants the human.
             # Ambient remarks get no jump, or the jump stops meaning anything.
             if self.brain.attention:
@@ -988,6 +1134,42 @@ class Companion(QWidget):
             self._wake()
         elif not line:
             self.said = ""
+
+    @staticmethod
+    def _mood_for(key):
+        """The clip a spoken line is delivered in, or "" for most of them.
+
+        Two triggers, both measured elsewhere and neither invented here: the
+        band of signals that means the work is about to stop being possible,
+        and the one signal that means a session finished with nothing of its
+        own left running.
+        """
+        if not key:
+            return ""
+        if key == CELEBRATE_KEY:
+            return "celebrate"
+        priority = signals.PRIORITY.get(key)
+        if priority is not None and PANIC_BAND[0] <= priority <= PANIC_BAND[1]:
+            return "panic"
+        return ""
+
+    def _corner_bounds(self):
+        """The rectangle of legal top-left corners, in buddy_actions' order."""
+        return (self.min_x, self.min_y, self.max_x, self.max_y)
+
+    def _screen_rects(self):
+        """The screens as plain rectangles, for the modules that have no Qt."""
+        return [(g.x(), g.y(), g.width(), g.height()) for g in self.screens]
+
+    def _session_window(self, pid):
+        """KWin's geometry for a session's window, or None.
+
+        Blocking — 38-54 ms measured, worse with many windows open — so this
+        belongs on the poll and never on a frame. None is ordinary rather than
+        exceptional: no busctl, no KWin, a terminal that has since closed, or a
+        session whose window is on another machine's display.
+        """
+        return actions.window_geometry(pid)
 
     def _approach_target(self):
         """Somewhere on the current screen it cannot be missed.
@@ -1038,7 +1220,17 @@ class Companion(QWidget):
         self._insisted[pid] = level
         self.docked = False
         self.target = self._approach_target()
+        # From rung 3 up this is an escalation about one particular session, so
+        # it is worth what KWin charges to find that session's window. Asked
+        # for here because this runs on the poll: on the frame path the same
+        # call would cost a second of animation.
+        window = self._session_window(pid) if level >= 3 else None
         if level >= 3:
+            perch = actions.perch_position(window, BUDDY_PX, self._corner_bounds())
+            if perch is not None:
+                # Sitting on the window that wants a human says which one it
+                # is. The middle of the screen only says that one of them does.
+                self.target = perch
             self.insist_clip = clip_or_fallback("wave")
             self.insist_until = now + INSIST_GESTURE_SECONDS
         if level >= 4:
@@ -1047,6 +1239,25 @@ class Companion(QWidget):
             # it wrong. _ensure_pointer is a no-op after the first call.
             self._ensure_pointer()
             if self.pointer:
+                # Where the pointer has to end up, when that can be answered.
+                # None covers every case buddy_actions will not deliver into —
+                # no geometry, minimised, off-screen, the other monitor — and
+                # the fallback is the behaviour this rung already had: the
+                # middle of the screen it is standing on. The rung's safety was
+                # never in the destination (it is the time cap, the small
+                # deltas and the route that stays on one screen), so an unknown
+                # window costs the aim rather than the summons.
+                #
+                # Known and not corrected here: the pointer arrives displaced
+                # by the gap between the cursor and the character at the moment
+                # the run began. There is no way to read the pointer's absolute
+                # position under XWayland to measure that gap — see _tug.
+                aim = actions.delivery_target(window, BUDDY_PX,
+                                              self._corner_bounds(),
+                                              (self.pos_x, self.pos_y),
+                                              self._screen_rects())
+                if aim is not None:
+                    self.target = aim
                 self.insist_clip = clip_or_fallback("point")
                 self.insist_until = now + INSIST_TUG_SECONDS
                 self._begin_tug(now, INSIST_TUG_SECONDS, self.target)
@@ -1060,7 +1271,7 @@ class Companion(QWidget):
         """
         if self.voice is None or self.refilling is not None:
             return
-        state = buddy_voice.situation(self.brain.sessions or {}, self.brain.usage or {})
+        state = buddy_voice.situation(self.brain.sessions, self.brain.usage)
         now = time.monotonic()
         if not self.voice.should_refill(state, now):
             return
@@ -1084,6 +1295,14 @@ class Companion(QWidget):
             return
         self.refilling = None
         raw = bytes(process.readAllStandardOutput()).decode("utf-8", "replace")
+        # Destroyed here rather than on the signal, and this is the only place
+        # it can be. A QProcess parented to the widget outlives its run and is
+        # freed with the companion, which for --live is one object every four
+        # minutes for as long as the desktop session lasts. Both `finished` and
+        # `errorOccurred` can arrive for one process, so a deleteLater bound to
+        # either signal would schedule the same object twice; the guard above
+        # is what makes this run exactly once.
+        process.deleteLater()
         lines, _meta = buddy_voice.harvest(raw)
         self.voice.delivered(lines)
 
@@ -1219,9 +1438,15 @@ class Companion(QWidget):
             self.resize(BUDDY_PX, BUDDY_PX + 10)
             self._place()
 
+        self._mingle(now)
+
         moving = False
         if self.dragging and self.hand is not None:
             self._swing(dt)
+        elif self.flying:
+            self._fly(dt, now)
+            moving = True
+            self._wake()
         elif now < self.tug_until and self.tug_route:
             self._drive(now)
             moving = True
@@ -1303,6 +1528,48 @@ class Companion(QWidget):
         self._place()
         self._wake()
 
+    def _launch(self, now, velocity):
+        """Let go of it mid-gesture and it keeps the hand's speed.
+
+        A tug in flight is called off here rather than left to run out, and a
+        release that becomes a throw never starts one — the precedence is in
+        mouseReleaseEvent, and this is the half of it that clears the state.
+        """
+        self.vel_x, self.vel_y = velocity
+        self.flying = True
+        self.docked = False
+        self.tug_until = 0.0
+        self.tug_route = None
+        self.tug_from = None
+        self.target = (self.pos_x, self.pos_y)
+        self.next_move = now + IDLE_MAX
+        self._wake()
+
+    def _fly(self, dt, now):
+        """One step of a throw. buddy_actions owns the arc; this owns the sprite.
+
+        The landing releases it back into roaming rather than docking it. _snap
+        is the answer to a placement, and a body that skidded to a halt against
+        the bottom of the screen was not placed there — docking it would end
+        every throw with the mascot asleep in whichever corner it rolled to.
+        """
+        step = actions.integrate((self.pos_x, self.pos_y), (self.vel_x, self.vel_y),
+                                 dt, self._corner_bounds())
+        self.pos_x, self.pos_y = step.x, step.y
+        self.vel_x, self.vel_y = step.vx, step.vy
+        if abs(step.vx) > 1.0:
+            self.facing = 1 if step.vx > 0 else -1
+        if step.bounced:
+            self._play_once("land")
+        self._place()
+        if step.resting:
+            self.flying = False
+            self.vel_x = self.vel_y = 0.0
+            self.target = (self.pos_x, self.pos_y)
+            self.settled_at = now
+            self.next_move = now + random.uniform(IDLE_MIN, IDLE_MAX)
+            self._play_once("land")
+
     def swing_frame(self):
         """The pose for the current speed: how far it leans, and how far it is
         stretched or squashed.
@@ -1315,6 +1582,88 @@ class Companion(QWidget):
         lean = max(-1.0, min(1.0, -self.vel_x / SWING_MAX_LEAN))
         wob = max(-1.0, min(1.0, self.wobble))
         return sprites.wobble_frame(int(round(lean * 3)), int(round(wob * 3)))
+
+    def _mingle(self, now):
+        """Notice the other mascot, if there is one, and react to it once.
+
+        Presence goes out on every frame and costs nothing on almost all of
+        them: PeerDirectory writes and reads on a cadence of a second and
+        answers from its cache in between.
+
+        The encounter is suspended in five states, and all five are the same
+        objection — the position this process is publishing is not where the
+        character is going to be. Dragged and thrown it is wherever the hand or
+        the arc puts it; during a tug it is covering 340 px/s, four times the
+        walking speed the notice radius was measured against. Docked, it is
+        somewhere it was put on purpose, and walking off to say hello is
+        exactly what putting it in a corner says not to do. And a focus block
+        is a decision not to be interrupted, which two mascots greeting each
+        other in the middle of one plainly is.
+
+        Publishing carries on through all five, because being seen costs
+        nothing and going quiet would make this companion disappear from the
+        other one's directory every time it was picked up.
+        """
+        me = self.yard.publish(self.options.brand, self.pos_x, self.pos_y, now)
+        if (self.dragging or self.flying or self.docked
+                or now < self.tug_until or self.focus.silences(now)):
+            return
+        meeting = self.encounter.update(me, self.yard.peers(now), now)
+        if meeting is None or meeting.phase == peers.PHASE_PART:
+            # Released back into wandering, and not by PHASE_PART alone. That
+            # one is emitted when the pair walks apart or the meeting times
+            # out, but the peer that stops publishing mid-meeting — closed
+            # from its own menu, or killed — ends the encounter with a None
+            # and no PART at all. `busy` is false in both cases, which is why
+            # the ending is read off that rather than off the phase.
+            if self.meeting and not self.encounter.busy:
+                self.next_move = now
+            self.meeting = False
+            self.greeted = None
+            return
+        self.meeting = True
+        # Neither of them wanders off mid-encounter: the roaming timer is held
+        # ahead of now for as long as this lasts.
+        self.next_move = max(self.next_move, now + IDLE_MIN)
+        if meeting.phase == peers.PHASE_APPROACH:
+            if meeting.role == peers.ROLE_MOVER:
+                self.target = self._beside(meeting.peer)
+            else:
+                # The waiter stands still. Both walking is a chase and both
+                # waiting is two statues; buddy_peers.approaches decides which
+                # of the two this process is, from the pids alone and with no
+                # message between them.
+                self.target = (self.pos_x, self.pos_y)
+            return
+        # Standing next to each other: stop, turn to it, and react once.
+        self.target = (self.pos_x, self.pos_y)
+        self.facing = 1 if meeting.peer.x >= self.pos_x else -1
+        self._greet(meeting)
+
+    def _beside(self, peer):
+        """Where to stand to be next to a peer, on the side it is already on."""
+        x = peer.x - MEET_GAP if peer.x >= self.pos_x else peer.x + MEET_GAP
+        return (max(self.min_x, min(self.max_x, x)),
+                max(self.min_y, min(self.max_y, peer.y)))
+
+    def _greet(self, meeting):
+        """Say something to the other one, once per meeting.
+
+        The reaction is this file's and not the module's: buddy_peers exposes
+        same_brand and the peer's brand precisely so that meeting one of its
+        own kind and meeting the other provider's are allowed to be two
+        different things. A nod for its own, a shake of the head for the other.
+        """
+        if self.greeted == meeting.peer.pid:
+            return
+        self.greeted = meeting.peer.pid
+        if meeting.same_brand:
+            self._play_once("nod")
+            self._say(self._t("greetSame"))
+        else:
+            self._play_once("shake")
+            self._say(self._t("greetOther").replace("{name}",
+                                                    str(meeting.peer.brand)))
 
     def _ensure_pointer(self):
         """A virtual mouse, made ready before it is needed.
@@ -1455,6 +1804,32 @@ class Companion(QWidget):
                 self.pointer = False
                 return
 
+    def _play_once(self, name):
+        """A one-shot clip, or nothing at all.
+
+        Two guards in one place. Nothing raw ever reaches the Animator — the
+        name goes through clip_or_fallback, because the sheet may not have the
+        pose yet and Animator.advance looks its clip up on every frame. And a
+        looping clip is never played as a one-shot: advance() leaves one only
+        when its frames run out, so a fallback that resolved to a loop would
+        leave the character stuck in it for good. Skipping is the same decision
+        clip_or_fallback makes, one step further along.
+        """
+        clip = clip_or_fallback(name)
+        if not sprites.CLIPS[clip]["loop"]:
+            self.anim.play_once(clip)
+
+    def _against_edge(self):
+        """Whether it is standing right up against an edge of the desktop.
+
+        Docking is what usually puts it there, and looking out past something
+        only reads as looking when there is an edge to look past.
+        """
+        return (self.pos_x - self.min_x < SNAP_MARGIN
+                or self.max_x - self.pos_x < SNAP_MARGIN
+                or self.pos_y - self.min_y < SNAP_MARGIN
+                or self.max_y - self.pos_y < SNAP_MARGIN)
+
     def _animate(self, dt, now, moving):
         """Pick the clip from what is actually happening, then step the clock.
 
@@ -1468,12 +1843,20 @@ class Companion(QWidget):
             if held_for > DRAG_PATIENCE and not self.drag_complained:
                 self.drag_complained = True
                 self._say(self._t("stopThat"))
+        elif self.flying:
+            # In the air under its own momentum. The dangle is the pose being
+            # carried uses, for the same reason: nothing is under its feet.
+            clip = "held"
         elif now < self.alert_until:
             clip = "alert"
         elif self.insist_clip and now < self.insist_until:
             # Above talking: the gesture is the escalation, and a session that
             # has been waiting ten minutes has already been talked at.
             clip = self.insist_clip
+        elif self.mood_clip and now < self.mood_until:
+            # Also above talking: the pose and the sentence are one statement,
+            # and the pose is the half that is read first.
+            clip = self.mood_clip
         elif self.bubble:
             # `read` is the talking pose with the book in it; how often it is
             # chosen is the --memes setting, decided when the line arrived.
@@ -1488,6 +1871,14 @@ class Companion(QWidget):
             # Sitting out the block. Below moving, so it still walks back when
             # the block is ending.
             clip = "sit"
+        elif self.docked and self._against_edge():
+            # Parked against an edge, it looks out over it. Docked in a corner
+            # it otherwise stands facing the wallpaper until SLEEP_AFTER.
+            clip = "peek"
+        elif self.working:
+            # Something is running, so it types along with it, and goes back to
+            # plain idle the moment nothing is.
+            clip = "type"
         else:
             clip = "idle"
 
@@ -1495,7 +1886,21 @@ class Companion(QWidget):
         # separately from this file, and the animator raises on a clip the
         # sheet has not got — inside the frame timer, which ends the process.
         clip = clip_or_fallback(clip)
+        if clip == "sleep" and self.anim.base != "sleep":
+            # The way into sleep, not the sleep itself. Before set_clip, so the
+            # one-shot resumes into the clip that is about to be set: it used
+            # to cut from standing to curled up between two frames.
+            self._play_once("yawn")
         self.anim.set_clip(clip)
+        # Turning around is a one-shot over whatever it is doing rather than a
+        # state of its own. Without it the sprite is replaced by its own mirror
+        # image between one frame and the next; with no floor under it, the
+        # facing the getaway recomputes every frame would replay it endlessly.
+        if self.facing != self._faced:
+            self._faced = self.facing
+            if not self.dragging and now - self._turned_at >= TURN_MIN_GAP:
+                self._turned_at = now
+                self._play_once("turn")
         # Only blink where a blink means anything. Asleep the eyes are already
         # shut, and mid-stride it is lost.
         self.anim.maybe_blink(dt, allowed=clip in ("idle", "talk"))
@@ -1634,8 +2039,11 @@ class Companion(QWidget):
             menu.exec(QCursor.pos())
             return
 
-        self.anim.play_once("land")
+        self._play_once("land")
         self._ensure_pointer()
+        # Caught in mid-air. The flight is the character moving under its own
+        # momentum, and a hand on it is the end of that by definition.
+        self.flying = False
         self.press_pos = event.globalPosition()
         # Against the character's own top-left, not the window's. With a bubble
         # open on the left the two are a bubble's width apart, and the offset
@@ -1659,6 +2067,7 @@ class Companion(QWidget):
             self.drag_complained = False
             self.vel_x = self.vel_y = 0.0
             self.drag_distance = 0.0
+            self.throw_samples = []
         self.dragging = True
         self.setCursor(Qt.ClosedHandCursor)
         # Where the hand is, not where the body goes. _tick runs the spring;
@@ -1670,19 +2079,36 @@ class Companion(QWidget):
             self.drag_distance += (abs(new_hand[0] - self.hand[0])
                                    + abs(new_hand[1] - self.hand[1]))
         self.hand = new_hand
+        # The gesture, for the release to read a throw out of. Trimmed here
+        # rather than in the module: buddy_actions.throw_velocity walks back
+        # only as far as its own window, and an unbounded list would grow for
+        # as long as somebody keeps dragging.
+        self.throw_samples.append((time.monotonic(), new_hand[0], new_hand[1]))
+        del self.throw_samples[:-actions.THROW_HISTORY]
 
     def mouseReleaseEvent(self, event):
         self.setCursor(Qt.OpenHandCursor)
         if self.dragging:
             self.dragging = False
             self.hand = None
-            self.vel_x = self.vel_y = 0.0
             now = time.monotonic()
             self.settled_at = now
             self.recent_drags.append(now)
             self.recent_drags = [t for t in self.recent_drags if now - t <= DRAG_MEMORY]
-            self._snap()
-            self.anim.play_once("land")
+            # A release is either a throw or a placement, and the hand's own
+            # speed is what tells them apart. Below buddy_actions' floor —
+            # which is this companion's walking pace — the character was being
+            # put somewhere, and being put somewhere is what _snap answers,
+            # docking included. Above it, it leaves the hand and falls.
+            velocity = actions.throw_velocity(self.throw_samples)
+            self.throw_samples = []
+            thrown = velocity != (0.0, 0.0)
+            if thrown:
+                self._launch(now, velocity)
+            else:
+                self.vel_x = self.vel_y = 0.0
+                self._snap()
+                self._play_once("land")
             held_for = now - self.drag_started
             # Two tiers. Everything short of ten seconds is something you might
             # have done by accident, so it waits out the cooldown. Ten seconds
@@ -1691,7 +2117,18 @@ class Companion(QWidget):
             provoked = (held_for >= DRAG_TUG_SECONDS
                         or self.drag_distance >= DRAG_TUG_DISTANCE
                         or len(self.recent_drags) >= DRAG_TUG_AFTER)
-            if insistent or (provoked and now - self.tugged_at > TUG_COOLDOWN):
+            # A throw takes precedence over the tug, and _launch has already
+            # called off one that was running. Both want the same position for
+            # the next few seconds — the tug drives it along a Bézier at a
+            # bounded 340 px/s while a flight integrates up to 2400, and the
+            # pointer is carried by whatever the character's per-frame delta
+            # turns out to be — so a tug started out of a throw would fling the
+            # cursor at ballistic speed, which is the one thing the carry was
+            # measured not to do. The provocation is not forgiven, only
+            # deferred: this drag is still in recent_drags, and the next
+            # release that is a placement collects on it.
+            if not thrown and (insistent
+                               or (provoked and now - self.tugged_at > TUG_COOLDOWN)):
                 self.recent_drags = []
                 # Somewhere far, so the run is worth watching. Picked as the
                 # furthest of a handful of candidates rather than at random:
@@ -1719,6 +2156,91 @@ class Companion(QWidget):
             return
         # A click, not a drag: go to whatever most needs attention.
         self._go_to_session()
+
+    def dragEnterEvent(self, event):
+        """Take anything that carries paths; dropEvent decides what they are.
+
+        Refusing here means no drop cursor over the character at all, which
+        reads as a mascot that does not take drops. The verdict — and the
+        sentence that explains it — belongs on the drop, where there is
+        something concrete to say it about.
+        """
+        mime = event.mimeData()
+        if mime is not None and mime.hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        """A folder dropped on the character is a question about that repo.
+
+        Everything in the payload is untrusted: it ends up as a working
+        directory and inside a prompt. buddy_actions.dropped_repositories owns
+        that judgement — what is here turns its verdict into a sentence and, at
+        most, into one reading.
+
+        Encoded rather than pretty: QUrl.toString() decodes percent escapes,
+        and buddy_actions unquotes what it is given, so a folder with a literal
+        % in its name would be decoded twice and name a different directory.
+        """
+        event.acceptProposedAction()
+        mime = event.mimeData()
+        uris = [] if mime is None else [bytes(url.toEncoded()) for url in mime.urls()]
+        drop = actions.dropped_repositories(uris)
+        if not drop.accepted:
+            if drop.rejected:
+                # The first reason, not all of them: a bubble is one sentence
+                # wide, and a drop of six things that were all the wrong kind
+                # has one thing wrong with it.
+                self._say(self._drop_refusal(drop.rejected[0][1]))
+            return
+        if self.asking is not None:
+            # The same one-at-a-time rule the menu has, and for the same
+            # reason: each reading is a billed `claude -p`, and an impatient
+            # hand would otherwise leave several in flight at once.
+            self._say(self._t("dropBusy"))
+            return
+        if len(drop.accepted) > 1:
+            # Refused rather than reading the first. Reading one of six and
+            # ignoring the rest in silence is the same defect the rejection
+            # lines exist to remove: from the outside it is indistinguishable
+            # from a drop that half worked. One folder is also the only shape
+            # the bubble can answer, since the answer is one paragraph about
+            # one repository.
+            self._say(self._t("dropOneAtATime"))
+            return
+        path = drop.accepted[0]
+        self._ask_about({"cwd": path, "name": os.path.basename(path) or path})
+
+    def _drop_refusal(self, reason):
+        """The sentence for a rejected drop.
+
+        Through a table with a fallback because _t looks its key up with no
+        default: a reason this file has not heard of — a newer buddy_actions
+        against an older companion — would otherwise be a KeyError raised
+        inside a Qt event handler, which does not cost the drop, it costs the
+        mascot.
+        """
+        return self._t(DROP_REASON_LINE.get(reason, "dropRejected"))
+
+    def closeEvent(self, event):
+        """Take the presence file with it.
+
+        Not the same path as aboutToQuit: a window closed by the compositor
+        does not necessarily end the process, and a file left behind keeps this
+        companion visible to the other one for five seconds after it is gone.
+        """
+        self._retire()
+        super().closeEvent(event)
+
+    def _retire(self):
+        """Give up the presence file.
+
+        A method on the widget rather than the directory's own bound retire,
+        which is what aboutToQuit was connected to first. PeerDirectory is not
+        a QObject, so a connection to a method of one gives Qt no receiver to
+        key the connection on: it would outlive the widget, and it would go on
+        pointing at whichever directory object existed when it was made.
+        """
+        self.yard.retire()
 
     def _snap(self):
         """Dropped near an edge, it stays put; dropped mid-screen, it resumes.
@@ -1757,10 +2279,14 @@ class Companion(QWidget):
         session worth jumping to.
         """
         target = self.brain.attention
-        if not target:
-            sessions = (self.brain.sessions or {}).get("sessions") or []
-            target = sessions[0] if sessions else None
-        if not target or not FOCUS_HELPER.exists():
+        if target is None:
+            rows = _session_rows(self.brain.sessions)
+            target = rows[0] if rows else None
+        # The pid is checked here and not left to the try below: a missing key
+        # is a KeyError and a session that is a string is a TypeError, and
+        # neither is in the tuple that except catches. Both are one left click
+        # away, which is the mascot's only click.
+        if target is None or target.get("pid") is None or not FOCUS_HELPER.exists():
             return
         try:
             subprocess.Popen([str(FOCUS_HELPER), str(target["pid"])],
@@ -1798,8 +2324,7 @@ class Companion(QWidget):
             menu.addAction(action)
             menu.addSeparator()
             return
-        sessions = [s for s in ((self.brain.sessions or {}).get("sessions") or [])
-                    if isinstance(s, dict)]
+        sessions = _session_rows(self.brain.sessions)
         if not sessions:
             return
         sub = menu.addMenu(self._t("escort"))
@@ -1822,7 +2347,7 @@ class Companion(QWidget):
         if not self.options.escort or self.escort.locked_on is not None:
             return
         target = self.brain.attention
-        if not isinstance(target, dict) or target.get("pid") is None:
+        if target is None:
             return
         self.escort.lock(target.get("pid"), target.get("state"))
 
@@ -1840,7 +2365,7 @@ class Companion(QWidget):
         """One entry per live session. User-initiated only: nothing here runs
         on a timer, because a read costs real tokens and unasked-for spending
         is not a feature."""
-        sessions = (self.brain.sessions or {}).get("sessions") or []
+        sessions = _session_rows(self.brain.sessions)
         if not sessions or repo_brief.claude_binary() is None:
             return          # nothing to ask about, or nothing to ask with
         sub = menu.addMenu(self._t("askAbout"))
@@ -1886,6 +2411,8 @@ class Companion(QWidget):
             return
         self.asking = None
         raw = bytes(process.readAllStandardOutput()).decode("utf-8", "replace")
+        # After the output is read and once only: see _refilled.
+        process.deleteLater()
         text, _meta = repo_brief.parse(raw)
         self._say(text or self._t("noAnswer"))
 
@@ -1932,7 +2459,19 @@ class Companion(QWidget):
                    "escort": "Stay with...",
                    "escortStop": "Stop staying with it",
                    "escorting": "Watching {name}, and nothing else.",
-                   "escortReleased": "Looking around again."},
+                   "escortReleased": "Looking around again.",
+                   "dropBusy": "One at a time. I am still reading the last one.",
+                   "dropOneAtATime": "One folder at a time. Pick the one you mean.",
+                   "dropRejected": "I cannot open that one.",
+                   "dropNotLocal": "That is not a folder on this machine.",
+                   "dropUnsafe": "That path is not one I will open.",
+                   "dropMissing": "There is nothing at that path any more.",
+                   "dropNotAFolder": "That is a file. Drop the folder it is in.",
+                   "dropNotARepo": "No .git in there. Not a repository.",
+                   "dropUnreadable": "That folder will not let me look at it.",
+                   "dropTooMany": "That is a lot of folders. One of them.",
+                   "greetSame": "Look at that. There are two of us.",
+                   "greetOther": "Well. {name} is out here too."},
             "pt": {"quit": "Fechar o companion", "roam": "Deixar passear de novo",
                    "stopThat": "Me larga. Tenho compromissos.",
                    "tugging": "Certo. Agora é a minha vez. Vem comigo.",
@@ -1949,7 +2488,19 @@ class Companion(QWidget):
                    "escort": "Ficar de olho em...",
                    "escortStop": "Parar de acompanhar",
                    "escorting": "Só o {name}, mais nada.",
-                   "escortReleased": "Voltando a olhar tudo."},
+                   "escortReleased": "Voltando a olhar tudo.",
+                   "dropBusy": "Uma de cada vez. Ainda estou lendo a anterior.",
+                   "dropOneAtATime": "Uma pasta por vez. Escolhe qual.",
+                   "dropRejected": "Essa aí eu não consigo abrir.",
+                   "dropNotLocal": "Isso não é uma pasta desta máquina.",
+                   "dropUnsafe": "Esse caminho eu não abro.",
+                   "dropMissing": "Não tem mais nada nesse caminho.",
+                   "dropNotAFolder": "Isso é um arquivo. Arrasta a pasta dele.",
+                   "dropNotARepo": "Não tem .git aí dentro. Não é repositório.",
+                   "dropUnreadable": "Essa pasta não me deixa olhar.",
+                   "dropTooMany": "É pasta demais de uma vez. Uma só.",
+                   "greetSame": "Olha só. Somos dois.",
+                   "greetOther": "Opa. O {name} também anda por aqui."},
         }
         return table.get(self.lang, table["en"])[key]
 
@@ -1975,6 +2526,11 @@ def main():
         companion.poll_timer.stop()
         companion._poll = lambda: None
         companion._command_changed = lambda *_a: None
+        # And it does not mingle. A mascot already running on this desktop
+        # publishes a position, and the walk under test would become a walk
+        # over to say hello to it; silencing this also keeps a throwaway
+        # process out of the other companions' presence directory.
+        companion._mingle = lambda *_a: None
         start = (companion.pos_x, companion.pos_y)
         companion.docked = False
         companion.target = (

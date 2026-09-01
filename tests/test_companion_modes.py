@@ -815,9 +815,9 @@ def test_the_prop_is_decided_once_per_line_and_not_once_per_frame():
 
 
 @needs_qt
-def test_without_the_flag_the_hour_of_day_silences_nothing():
-    """The setting is opt-in. A companion that goes quiet at night without
-    being asked to reads as broken, not as tactful."""
+def test_with_the_setting_off_the_hour_of_day_silences_nothing():
+    """The setting has an off, and off has to mean off. A companion that goes
+    quiet at night after being told not to reads as broken, not as tactful."""
     mod = _load()
     brain = mod.Brain("en")
     brain.usage = {"lifetime": {"peakHours": PEAK_HOURS},
@@ -876,8 +876,8 @@ def test_the_flags_that_were_already_there_still_mean_what_they_did():
 
 @needs_qt
 @pytest.mark.parametrize("argv,field,expected", [
-    (["--quiet-hours"], "quiet_hours", True),
-    ([], "quiet_hours", False),
+    (["--no-quiet-hours"], "quiet_hours", False),
+    ([], "quiet_hours", True),
     (["--no-shadow"], "shadow", False),
     ([], "shadow", True),
     (["--escort"], "escort", True),
@@ -920,3 +920,173 @@ def test_self_test_still_prints_its_json_and_exits_zero():
     report = json.loads(result.stdout.strip().splitlines()[-1])
     assert set(report) == {"movedX", "movedY", "geometry", "frameMs"}, report
     assert report["movedX"] > 10 and report["movedY"] > 10, report
+
+
+# ── the defaults the widget and the companion have to share ────────────────
+
+# Which entry in main.xml decides which field of Options, and how its text
+# becomes that field's value. The mapping is written here because it is the
+# only part that is not in either file; the values are read from main.xml, so
+# a default changed there and forgotten here fails rather than drifting. A
+# second copy of the numbers in this file would agree with itself forever.
+XML_TO_OPTION = {
+    "buddyFocusMinutes": ("focus_minutes", int),
+    "buddyInsistence": ("insistence", str),
+    "buddyQuietHours": ("quiet_hours", lambda text: text == "true"),
+    "buddyMemes": ("memes", str),
+    "buddyShadow": ("shadow", lambda text: text == "true"),
+    "buddyEscort": ("escort", lambda text: text == "true"),
+    "buddyVoice": ("live", lambda text: text == "claude"),
+}
+
+# buddyMode decides whether the companion runs at all, which is
+# companion-ctl.sh's business rather than a value on its command line.
+UNMAPPED_BUDDY_ENTRIES = {"buddyMode"}
+
+
+def _kcfg_defaults():
+    """Every entry in main.xml, name to default text, namespace-insensitive."""
+    import xml.etree.ElementTree as ET
+    root = ET.parse(REPO / "plasmoid" / "contents" / "config" / "main.xml").getroot()
+    out = {}
+    for entry in root.iter():
+        if not entry.tag.endswith("entry"):
+            continue
+        default = ""
+        for child in entry:
+            if child.tag.endswith("default"):
+                default = (child.text or "").strip()
+        out[entry.get("name")] = default
+    return out
+
+
+@needs_qt
+@pytest.mark.parametrize("entry", sorted(XML_TO_OPTION))
+def test_the_companions_defaults_are_the_widgets_defaults(entry):
+    """The invariant was written in a comment above parse_args and never
+    checked, and one of the seven had already drifted: buddyQuietHours
+    defaulted to true in the widget and false in the parser, so the same
+    desktop got a companion that talks at night when it was started by hand
+    and one that does not when it was started by the applet.
+
+    Read from main.xml rather than from a list here: a copy of the values in
+    this file would go stale in exactly the silence this is watching for.
+    """
+    mod = _load()
+    defaults = _kcfg_defaults()
+    assert entry in defaults, f"{entry} is not declared in main.xml at all"
+    field, convert = XML_TO_OPTION[entry]
+    expected = convert(defaults[entry])
+    actual = getattr(mod.parse_args([]), field)
+    assert actual == expected, (
+        f"{entry} is {defaults[entry]!r} in main.xml and {actual!r} in "
+        f"parse_args([]).{field}")
+
+
+def test_every_companion_setting_is_mapped_or_named_as_unmapped():
+    """The parity test above only covers what is in its table, so a setting
+    added to main.xml and never mapped would pass it by being absent."""
+    buddy = {name for name in _kcfg_defaults() if name.startswith("buddy")}
+    assert buddy == set(XML_TO_OPTION) | UNMAPPED_BUDDY_ENTRIES, (
+        "a buddy setting is neither compared with the companion's default nor "
+        f"declared as not being one: {sorted(buddy.symmetric_difference(set(XML_TO_OPTION) | UNMAPPED_BUDDY_ENTRIES))}")
+
+
+# ── a file that is valid JSON and the wrong shape ──────────────────────────
+
+# All of these are things sessions.json can contain: a collector caught
+# mid-write, a hand-edited file, an older or newer writer. None of them is
+# falsy, which is what `or {}` and `or []` catch and the whole reason they are
+# not enough.
+BROKEN_PAYLOADS = [
+    {"sessions": 1},
+    {"sessions": "ti"},
+    {"sessions": {"one": 1}},
+    {"sessions": [1, "ti", None]},
+    {"sessions": [{"name": "ok", "state": "waiting", "idleSeconds": 5}, 7]},
+    {"attention": "ti", "sessions": []},
+    {"attention": {"name": "no pid"}, "sessions": []},
+    {"attention": 7, "sessions": []},
+    [],
+    1,
+    "broken",
+]
+
+
+@needs_display
+@pytest.mark.parametrize("payload", BROKEN_PAYLOADS,
+                         ids=lambda p: repr(p)[:32])
+def test_a_payload_of_the_wrong_shape_does_not_end_the_poll(payload, monkeypatch):
+    """Measured consequence, which is worse than a crash: PySide6 prints the
+    traceback and the timer keeps firing, so the character goes on walking
+    around while brain.line() raises every twenty seconds — it never speaks
+    again, and _insist, which is called after it, never runs at all. The file
+    is still on disk next tick, so it does not recover.
+    """
+    mod, c = _companion()
+    insisted = []
+    monkeypatch.setattr(type(c), "_insist", lambda self, now: insisted.append(now))
+    monkeypatch.setattr(type(c), "_say", lambda self, text: None)
+    monkeypatch.setattr(mod.subprocess, "Popen", lambda cmd, **kw: None)
+    monkeypatch.setattr(mod, "FOCUS_HELPER", Path("/bin/true"))
+    c.brain.refresh = lambda: None
+    c.brain.sessions = payload
+    c.brain.usage = {}
+
+    assert c.brain.line() is None or isinstance(c.brain.line(), str)
+    # The class's own poll: _companion replaces the instance's with a no-op,
+    # and a test that called that one would pass on any companion at all.
+    type(c)._poll(c)
+    assert insisted, "the poll died before the insistence ladder"
+
+    # The same payload through everything else that reads it: the two menus,
+    # which are one right-click away, and the click that raises a terminal.
+    from PySide6.QtWidgets import QMenu
+    menu = QMenu()
+    c._add_escort_menu(menu)
+    c._add_repo_menu(menu)
+    c._go_to_session()
+
+
+@needs_display
+def test_a_click_still_raises_a_terminal_when_the_payload_is_ordinary(monkeypatch):
+    """The negative above passes on a companion whose click does nothing at
+    all, so here is the positive: the pid still reaches the helper."""
+    mod, c = _companion()
+    called = []
+    monkeypatch.setattr(mod.subprocess, "Popen", lambda cmd, **kw: called.append(cmd))
+    monkeypatch.setattr(mod, "FOCUS_HELPER", Path("/bin/true"))
+    c.brain.sessions = {"attention": {"pid": 4242, "name": "repo", "state": "asking"},
+                        "sessions": [{"pid": 4242, "name": "repo", "state": "asking"}]}
+    c._go_to_session()
+    assert called and called[0][-1] == "4242", called
+
+
+# ── the readings do not pile up ────────────────────────────────────────────
+
+@needs_display
+def test_a_finished_reading_is_destroyed_rather_than_kept(tmp_path, monkeypatch):
+    """Every reading is a QProcess parented to the widget, and a parent keeps
+    its children until it dies. With --live the refill runs on its own timer,
+    up to fifteen an hour, on a process whose normal lifetime is a desktop
+    session — so this is thousands of dead QProcess objects in a week.
+    """
+    import time
+    from PySide6.QtCore import QEvent, QProcess
+    from PySide6.QtWidgets import QApplication
+    mod, c = _companion()
+    monkeypatch.setattr(type(c), "_say", lambda self, text: None)
+    # A command that exists, says nothing and exits at once. The point is the
+    # object's lifetime, not what came back on stdout.
+    monkeypatch.setattr(mod.repo_brief, "build_command",
+                        lambda prompt, lang="en", model="haiku": ["/bin/echo", "{}"])
+    app = QApplication.instance()
+    for _ in range(10):
+        c._ask_about({"cwd": str(tmp_path), "name": "hub"})
+        deadline = time.monotonic() + 10.0
+        while c.asking is not None and time.monotonic() < deadline:
+            app.processEvents()
+        assert c.asking is None, "the reading never finished"
+    app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    alive = [child for child in c.children() if isinstance(child, QProcess)]
+    assert not alive, f"{len(alive)} finished readings are still parented to it"

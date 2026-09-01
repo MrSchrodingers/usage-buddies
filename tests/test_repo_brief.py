@@ -156,6 +156,11 @@ def test_a_failed_call_says_so_instead_of_going_silent(monkeypatch):
     class _Empty:
         def readAllStandardOutput(self):
             return b""
+
+        def deleteLater(self):
+            """The real QProcess is destroyed once the output has been read;
+            without this the stub is a QProcess that cannot be freed, and the
+            test would pass on a companion that leaks one per reading."""
     c.asking = _Empty()
     c._answered(c.asking)
     assert said and said[-1], "said nothing after a call that returned nothing"
