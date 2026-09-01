@@ -473,6 +473,38 @@ def _shift(rows, dy):
     return list(rows[-dy:]) + [BLANK_ROW] * (-dy)
 
 
+def shear(rows, lean):
+    """Lean a sprite by shifting each row sideways in proportion to its depth.
+
+    This is how a pixel grid leans. Rotation resamples and there is no correct
+    version of it below 90 degrees; a per-row integer shift moves whole pixels
+    and leaves every edge as hard as it was. The top row does not move and the
+    bottom moves by `lean`, so a hanging body pivots from where it is held.
+
+    Used for the swing while the character is being dragged: the body trails
+    the hand, which is the difference between something hanging and something
+    glued to the cursor.
+    """
+    filled = [i for i, row in enumerate(rows) if set(row) != {"."}]
+    if not filled or lean == 0:
+        return list(rows)
+    top, bottom = filled[0], filled[-1]
+    span = max(1, bottom - top)
+    out = []
+    for i, row in enumerate(rows):
+        if i < top:
+            out.append(row)
+            continue
+        shift = int(round(lean * (i - top) / span))
+        if shift > 0:
+            out.append(("." * shift + row)[:GRID])
+        elif shift < 0:
+            out.append((row[-shift:] + "." * -shift)[:GRID])
+        else:
+            out.append(row)
+    return out
+
+
 def mirror(rows):
     """Horizontal flip on the grid rather than with a painter scale.
     Mirroring is the one exact transform on a pixel grid, and doing it here
@@ -585,7 +617,18 @@ def build_frames(brand):
         eye_dy = POSE_EYE_DY[key].get(pose, 0)
         out[name] = compose(brand, body, legs[leg_key], EYES[eye],
                             body_dy=body_dy, eye_dy=eye_dy)
+
+    # Swing poses are the dangle sheared, not redrawn: the shape is identical
+    # and only its lean changes, so authoring them separately would be four
+    # more grids to keep in step with the one that matters.
+    base = out["dangle_wide"]
+    for name, lean in SWING.items():
+        out[name] = shear(base, lean)
     return out
+
+
+SWING = {"dangle_swing_l2": -3, "dangle_swing_l1": -2,
+         "dangle_swing_r1": 2, "dangle_swing_r2": 3}
 
 
 def frame_names():

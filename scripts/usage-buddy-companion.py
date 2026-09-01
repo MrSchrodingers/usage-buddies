@@ -73,6 +73,14 @@ TUG_STRENGTH = 0.06      # fraction of the gap closed per frame: a tug, not a
                          # lock — pull harder and you win, which is the whole
                          # difference between a joke and a hijacked desktop
 TUG_COOLDOWN = 420.0     # and then it leaves you alone for a while
+DRAG_TUG_SECONDS = 9.0   # or one drag held this long, which is the same message
+
+# The swing. The body is not glued to the cursor: it hangs from it on a spring
+# and trails, which is what makes a dragged sprite read as having weight.
+# Tuned by eye at 30fps — stiff enough to keep up, loose enough to overshoot.
+SWING_STIFFNESS = 62.0
+SWING_DAMPING = 0.86     # per 1/60s, so the feel does not change with the rate
+SWING_MAX_LEAN = 260.0   # px/s of horizontal speed that reaches the deepest pose
 ALERT_SECONDS = 1.4      # the double-take when something needs the human
 SNAP_MARGIN = 26         # how close to an edge a drop counts as "put me here"
 
@@ -529,6 +537,9 @@ class Companion(QWidget):
         # zero that is the age of the monotonic clock — so a companion that has
         # only just been picked up would start out already exasperated.
         self.drag_started = time.monotonic()
+        self.hand = None          # where the cursor is; the body chases it
+        self.vel_x = 0.0
+        self.vel_y = 0.0
         self.drag_complained = False
         self.recent_drags = []
         self.tug_until = 0.0
@@ -710,7 +721,9 @@ class Companion(QWidget):
             self.resize(BUDDY_PX, BUDDY_PX + 10)
 
         moving = False
-        if not self.dragging:
+        if self.dragging and self.hand is not None:
+            self._swing(dt)
+        elif not self.dragging:
             tx, ty = self.target
             dx, dy = tx - self.pos_x, ty - self.pos_y
             moving = abs(dx) > 1.5 or abs(dy) > 1.5
@@ -742,6 +755,39 @@ class Companion(QWidget):
         self._animate(dt, now, moving)
         self.update()
 
+    def _swing(self, dt):
+        """Chase the cursor on a spring instead of tracking it exactly.
+
+        A window moved to the pointer every frame has no weight — it is the
+        pointer wearing a costume. Accelerating toward the hand and damping
+        the result makes the body lag going into a movement and overshoot
+        coming out of one, which is the whole of the effect.
+
+        Damping is raised to dt*60 so the feel is the same whether this is
+        running at the active rate or the idle one.
+        """
+        import math
+        hand_x, hand_y = self.hand
+        self.vel_x = ((self.vel_x + (hand_x - self.pos_x) * SWING_STIFFNESS * dt)
+                      * (SWING_DAMPING ** (dt * 60)))
+        self.vel_y = ((self.vel_y + (hand_y - self.pos_y) * SWING_STIFFNESS * dt)
+                      * (SWING_DAMPING ** (dt * 60)))
+        self.pos_x = max(self.min_x, min(self.max_x, self.pos_x + self.vel_x * dt))
+        self.pos_y = max(self.min_y, min(self.max_y, self.pos_y + self.vel_y * dt))
+        self._place()
+        self._wake()
+
+    def swing_frame(self):
+        """Which lean the current horizontal speed calls for.
+
+        The body trails, so it leans away from where it is going: pulled right,
+        the bottom is still back on the left.
+        """
+        lean = max(-1.0, min(1.0, -self.vel_x / SWING_MAX_LEAN))
+        step = int(round(lean * 2))
+        return {-2: "dangle_swing_l2", -1: "dangle_swing_l1", 0: None,
+                1: "dangle_swing_r1", 2: "dangle_swing_r2"}[step]
+
     def _tug(self, now):
         """Pull the pointer back, briefly, after being dragged around a lot.
 
@@ -763,6 +809,7 @@ class Companion(QWidget):
         if abs(dx) < 12 and abs(dy) < 12:
             self.tug_until = 0.0
             return
+        self._wake()
         QCursor.setPos(int(pointer.x() + dx * TUG_STRENGTH),
                        int(pointer.y() + dy * TUG_STRENGTH))
 
@@ -809,7 +856,10 @@ class Companion(QWidget):
 
         p.setRenderHint(QPainter.Antialiasing, False)
         p.setRenderHint(QPainter.SmoothPixmapTransform, False)
-        img = self.sheet.get(self.frame + (":flip" if self.facing < 0 else ""))
+        frame = self.frame
+        if self.dragging:
+            frame = self.swing_frame() or frame
+        img = self.sheet.get(frame + (":flip" if self.facing < 0 else ""))
         if img is not None:
             p.drawImage(0, self.height() - BUDDY_PX, img)
         p.end()
@@ -863,30 +913,41 @@ class Companion(QWidget):
         if not self.dragging and moved < 6:
             return          # a click with a shaky hand is still a click
         if not self.dragging:
+            # A fresh grab: reset the spring so the body does not arrive
+            # carrying momentum from the last time it was thrown around.
             self.drag_started = time.monotonic()
             self.drag_complained = False
+            self.vel_x = self.vel_y = 0.0
         self.dragging = True
         self.setCursor(Qt.ClosedHandCursor)
+        # Where the hand is, not where the body goes. _tick runs the spring;
+        # setting the position here is what made it feel welded to the pointer.
         target = event.globalPosition() - self.drag_offset
-        self.pos_x = max(self.min_x, min(self.max_x, target.x()))
-        self.pos_y = max(self.min_y, min(self.max_y, target.y()))
-        self._place()
+        self.hand = (max(self.min_x, min(self.max_x, target.x())),
+                     max(self.min_y, min(self.max_y, target.y())))
 
     def mouseReleaseEvent(self, event):
         self.setCursor(Qt.OpenHandCursor)
         if self.dragging:
             self.dragging = False
+            self.hand = None
+            self.vel_x = self.vel_y = 0.0
             now = time.monotonic()
             self.settled_at = now
             self.recent_drags.append(now)
             self.recent_drags = [t for t in self.recent_drags if now - t <= DRAG_MEMORY]
             self._snap()
             self.anim.play_once("land")
-            if (len(self.recent_drags) >= DRAG_TUG_AFTER
+            long_pull = now - self.drag_started >= DRAG_TUG_SECONDS
+            if ((len(self.recent_drags) >= DRAG_TUG_AFTER or long_pull)
                     and now - self.tugged_at > TUG_COOLDOWN):
                 self.tug_until = now + random.uniform(TUG_SECONDS - 1, TUG_SECONDS)
                 self.tugged_at = now
                 self.recent_drags = []
+                # Back to the animating rate first. Idle ticks are 200ms, and a
+                # pull that advances six percent of the gap five times a second
+                # is not a tug, it is a slow leak.
+                self._wake()
                 self._say(self._t("tugging"))
             return
         # A click, not a drag: go to whatever most needs attention.

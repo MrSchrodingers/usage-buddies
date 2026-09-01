@@ -141,3 +141,127 @@ def test_the_tug_has_a_hard_ceiling_and_a_long_cooldown():
     assert scope["TUG_SECONDS"] <= 10, "pulls for too long"
     assert scope["TUG_COOLDOWN"] >= 300, "can repeat too soon"
     assert 0 < scope["TUG_STRENGTH"] <= 0.15, "not a tug, a teleport"
+
+
+# ── the swing ──────────────────────────────────────────────────────────────
+
+@needs_qt
+def test_the_body_lags_behind_the_hand():
+    """A window moved to the pointer every frame has no weight — it is the
+    pointer wearing a costume. The body accelerates toward the hand, so during
+    a fast pull it is always somewhere behind it."""
+    mod, c = _companion()
+    c.pos_x, c.pos_y = 500.0, 500.0
+    c.vel_x = c.vel_y = 0.0
+    c.dragging = True
+    c.hand = (900.0, 500.0)
+
+    gaps = []
+    for _ in range(6):
+        c._swing(0.033)
+        gaps.append(c.hand[0] - c.pos_x)
+
+    assert gaps[0] > 0, "arrived instantly"
+    assert all(g > 0 for g in gaps), f"never trailed: {gaps}"
+    assert gaps[-1] < gaps[0], f"never caught up at all: {gaps}"
+
+
+@needs_qt
+def test_it_overshoots_and_settles():
+    """The overshoot is the point: a spring that only ever approaches reads as
+    easing, not as weight on a string."""
+    mod, c = _companion()
+    c.pos_x, c.pos_y = 500.0, 500.0
+    c.vel_x = c.vel_y = 0.0
+    c.dragging = True
+    c.hand = (700.0, 500.0)
+
+    passed_it = False
+    for _ in range(120):
+        c._swing(0.033)
+        if c.pos_x > c.hand[0] + 1:
+            passed_it = True
+    assert passed_it, "approached without ever passing the hand"
+    assert abs(c.pos_x - c.hand[0]) < 6, f"never settled: {c.pos_x}"
+
+
+@needs_qt
+def test_the_lean_trails_the_direction_of_travel():
+    """Pulled right, the bottom of the body is still back on the left."""
+    mod, c = _companion()
+    c.vel_x = 0.0
+    assert c.swing_frame() is None, "leaning while still"
+
+    c.vel_x = mod.SWING_MAX_LEAN
+    right = c.swing_frame()
+    c.vel_x = -mod.SWING_MAX_LEAN
+    left = c.swing_frame()
+    assert right and left and right != left
+    assert right.endswith("l2"), f"moving right leaned right: {right}"
+    assert left.endswith("r2"), f"moving left leaned left: {left}"
+
+
+@needs_qt
+def test_every_lean_is_a_frame_that_exists():
+    mod, c = _companion()
+    for velocity in (-900, -200, -40, 0, 40, 200, 900):
+        c.vel_x = velocity
+        frame = c.swing_frame()
+        if frame is not None:
+            assert frame in c.sheet, f"{frame} is not in the sheet"
+
+
+@needs_qt
+def test_one_long_pull_earns_the_tug_on_its_own(monkeypatch):
+    """Holding it and dragging for ten seconds is the same message as
+    picking it up three times."""
+    mod, c = _companion()
+    monkeypatch.setattr(type(c), "_say", lambda self, text: None)
+    monkeypatch.setattr(type(c), "_snap", lambda self: None)
+    c.recent_drags = []
+    c.tugged_at = 0.0
+    c.tug_until = 0.0
+    c.dragging = True
+    c.drag_started = time.monotonic() - (mod.DRAG_TUG_SECONDS + 1)
+
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    release = QMouseEvent(QMouseEvent.MouseButtonRelease, QPointF(0, 0),
+                          Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
+    c.mouseReleaseEvent(release)
+    assert c.tug_until > time.monotonic(), "a ten-second drag earned nothing"
+
+
+@needs_qt
+def test_the_spring_is_reached_through_the_frame_tick():
+    """Calling _swing directly proves the maths and nothing else. If the tick
+    stops routing through it, the drag goes back to welding the sprite to the
+    pointer and every test above still passes."""
+    mod, c = _companion()
+    c.pos_x, c.pos_y = 500.0, 500.0
+    c.vel_x = c.vel_y = 0.0
+    c.dragging = True
+    c.hand = (900.0, 500.0)
+    c.bubble = ""
+    c._tick()
+    assert c.pos_x != 500.0, "the tick did not move it at all"
+    assert c.pos_x < 900.0, "the tick teleported it onto the hand"
+
+
+@needs_qt
+def test_what_is_painted_changes_with_the_swing():
+    """The lean has to reach the screen. Picking a frame nobody draws is the
+    same as not having one."""
+    mod, c = _companion()
+    import buddy_sprites as sprites
+    c.dragging = True
+    c.frame = "dangle_wide"
+    c.facing = 1
+    c.resize(sprites.SIZE, sprites.SIZE)
+
+    c.vel_x = 0.0
+    still = c.grab().toImage()
+    c.vel_x = -mod.SWING_MAX_LEAN
+    leaning = c.grab().toImage()
+
+    assert still != leaning, "the sprite looks identical whether it is swinging or not"
