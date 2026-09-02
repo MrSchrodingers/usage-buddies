@@ -74,6 +74,13 @@ PRIORITY = {
     "idle": 46,
     "background": 50,
 
+    # 56 — hello, once per run. Below every band that means a person is
+    # wanted, so a session already waiting when the mascot starts is heard
+    # first and the greeting is simply lost; above diagnosis, because a
+    # standing condition that will still be true in ten minutes would
+    # otherwise beat the one line that only has this moment to be said.
+    "greeting": 56,
+
     # 60 — diagnosis. True for hours, actionable at leisure, and repeated too
     # often it becomes wallpaper. Standing conditions live here even when they
     # need a human (mcpAuth): they will still be true in ten minutes, and
@@ -290,13 +297,26 @@ def _name(row):
     return _text(row.get("name")) or "?"
 
 
-_Context = namedtuple("_Context", "sessions usage rows now hour")
+_Context = namedtuple("_Context", "sessions usage rows now hour greet")
 
 
 # ── the detectors ──────────────────────────────────────────────────────────
 #
 # One function per concern, each returning a list. They are independent: a
 # detector that cannot answer returns [] and the rest still run.
+
+def _greeting(ctx):
+    """Hello, offered once by the process that just started.
+
+    The only detector that reads a caller's flag rather than the payloads: no
+    file says "you have just been launched", and the companion is the only
+    thing that knows. It stays here rather than in the companion so the key
+    keeps a priority in the one table that orders everything else — a greeting
+    chosen next to the ladder instead of inside it would speak over a session
+    that is waiting, which is the whole reason the ladder exists.
+    """
+    return [_signal("greeting")] if ctx.greet else []
+
 
 def _sessions_wanting_a_human(ctx):
     found = []
@@ -571,6 +591,7 @@ def _hour_of_day(ctx):
 
 
 _DETECTORS = (
+    _greeting,
     _sessions_wanting_a_human,
     _quota,
     _limit_eta,
@@ -591,13 +612,18 @@ _DETECTORS = (
 )
 
 
-def detect(sessions, usage, now=None):
+def detect(sessions, usage, now=None, greet=False):
     """Every signal the two payloads justify, most urgent first.
 
     `sessions` is the sessions.json payload and `usage` the widget-data.json
     one; either may be empty, partial or wrong-typed. `now` is a Unix
     timestamp, defaulting to the wall clock — passed in so the hour-of-day
     signals can be tested without waiting for midnight.
+
+    `greet` is the one input that does not come from a file: the caller sets
+    it while it still owes the person a hello, and clears it once anything has
+    been said. It is an argument rather than state in here because this module
+    keeps none — two callers on one desktop would otherwise share a greeting.
 
     Returns a list, never None, and raises nothing. The caller takes the first
     entry; the rest are there so a caller that wants to skip a category it has
@@ -606,7 +632,7 @@ def detect(sessions, usage, now=None):
     when = time.time() if now is None else (_num(now) or time.time())
     ctx = _Context(sessions=_dict(sessions), usage=_dict(usage),
                    rows=_rows(sessions), now=when,
-                   hour=time.localtime(when).tm_hour)
+                   hour=time.localtime(when).tm_hour, greet=bool(greet))
     found = []
     for detector in _DETECTORS:
         try:

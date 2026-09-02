@@ -80,8 +80,12 @@ def test_every_signal_renders_without_a_leftover_placeholder(key, monkeypatch):
     """
     mod = _load()
     scenarios = _scenarios()
-    payload, usage, when = scenarios[key][0]
-    signal = {s.key: s for s in mod.signals.detect(payload, usage, when)}[key]
+    # Splatted rather than unpacked: the greeting scenario carries a fourth
+    # argument, because nothing in either payload says the process has just
+    # started and the caller has to.
+    arguments = scenarios[key][0]
+    payload, usage = arguments[0], arguments[1]
+    signal = {s.key: s for s in mod.signals.detect(*arguments)}[key]
 
     for lang in ("en", "pt"):
         brain = mod.Brain(lang)
@@ -140,14 +144,21 @@ def test_the_rotation_between_sessions_survived_the_signal_engine():
 def test_alerts_only_is_decided_by_priority_not_by_a_list_of_keys():
     """The mode used to mute everything below the session states by listing
     them. A quota window at 97% is an alert by every reading except that list,
-    and it was silent — the whole band was written and unreachable."""
+    and it was silent — the whole band was written and unreachable.
+
+    Drawn until the category is exhausted rather than once. Half the lines in a
+    category carry its number and half say something else about it, so a single
+    draw asserting on "97" passes or fails on which sentence came up, and a
+    test that fails one run in two teaches everyone to re-run the suite.
+    """
     mod = _load()
     brain = mod.Brain("en", alerts_only=True)
     brain.sessions = {"total": 0, "sessions": [], "attention": None}
     brain.usage = {"rateLimits": {"session": {"percentUsed": 97}}}
-    line = brain.line()
-    assert line, "a critical quota was muted by alerts-only"
-    assert "97" in line, line
+    said = [brain.line() for _ in mod.LINES["en"]["quotaCritical"]]
+    assert all(said), "a critical quota was muted by alerts-only"
+    assert brain.spoke == "quotaCritical", brain.spoke
+    assert any("97" in line for line in said), said
 
 
 @needs_qt

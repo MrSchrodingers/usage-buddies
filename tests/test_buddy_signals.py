@@ -90,6 +90,10 @@ PEAK_HOURS = {"9": 19, "10": 43, "11": 63, "12": 41, "13": 28, "14": 76,
 # The near-miss is the same payload with the justifying number moved to the
 # other side of its threshold. A negative built by emptying the payload would
 # pass for a detector that fires on anything at all.
+#
+# A scenario is the argument list for detect() and is splatted into it: most
+# are (sessions, usage, now), and the greeting carries the fourth argument that
+# arms it. Anything reading SCENARIOS has to splat rather than unpack.
 
 def _scenarios():
     quiet = _sessions(_session())
@@ -199,6 +203,13 @@ def _scenarios():
         "nightOwl": (
             (quiet, {}, NIGHT),
             (quiet, {}, NOON)),
+        # The only scenario with a fourth element, and the only signal whose
+        # justification is not in either payload: no file records that the
+        # process has just started, so the caller says so. The near-miss is the
+        # same desktop with the flag down, which is every poll after the first.
+        "greeting": (
+            (quiet, {}, NOON, True),
+            (quiet, {}, NOON, False)),
     }
 
 

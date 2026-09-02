@@ -629,6 +629,13 @@ class Brain(QObject):
         # the tables are prose, and with --live the wording comes from the
         # model — so the sprite would have no way of knowing what it just said.
         self.spoke = None
+        # Whether a hello is still owed. Off by default and armed by the
+        # Companion when it starts, because a Brain is also built to answer a
+        # single question in a test or a probe, and greeting there is noise.
+        # Cleared by the first line that actually reaches the bubble, so an
+        # alert waiting at start-up spends it rather than delaying it: the
+        # greeting has this moment or none.
+        self.greeting_due = False
         self._recent = []
         self._subjects = []
 
@@ -793,7 +800,8 @@ class Brain(QObject):
         now = time.monotonic() if now is None else now
         self.spoke = None
         quiet = self.quiet_hours and self.quiet(wall)
-        for signal in signals.detect(self.payload(), self.usage, wall):
+        for signal in signals.detect(self.payload(), self.usage, wall,
+                                     greet=self.greeting_due):
             # The list is sorted by priority, so the first signal past the
             # alert boundary means every remaining one is past it too.
             if (self.alerts_only or quiet) and signal.priority > self.ALERT_PRIORITY:
@@ -805,6 +813,7 @@ class Brain(QObject):
             text = self._pick(signal.key, now=now, **vars_)
             if text:
                 self.spoke = signal.key
+                self.greeting_due = False
                 return text
             # Silenced by the block, or a category with no lines: try the next
             # signal down rather than jumping straight to a joke.
@@ -818,6 +827,7 @@ class Brain(QObject):
         text = self._pick(key, now=now)
         if text:
             self.spoke = key
+            self.greeting_due = False
         return text
 
 
@@ -1083,6 +1093,10 @@ class Companion(QWidget):
 
         self.brain = Brain(lang, alerts_only, focus=self.focus, escort=self.escort,
                            quiet_hours=self.options.quiet_hours)
+        # Bonzi said hello when it appeared, and a mascot that arrives on a
+        # desktop without a word is furniture. Once per run: the flag is armed
+        # here and the Brain drops it on the first thing it manages to say.
+        self.brain.greeting_due = True
         # Decided once per line rather than per frame: rolled every tick, the
         # book would appear and vanish thirty times a second.
         self.prop_line = False
