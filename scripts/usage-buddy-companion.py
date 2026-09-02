@@ -583,6 +583,16 @@ class Brain(QObject):
 
     RECENT = 12          # lines to remember before allowing a repeat
     SUBJECT_RECENT = 3   # sessions to cycle past before returning to one
+    # Categories to cycle past before returning to one, which is a different
+    # problem from repeating a line and was not solved by solving that one.
+    # The ladder ranks by urgency and the first signal allowed is the one
+    # spoken, so a condition that persists owns the mascot for as long as it
+    # lasts. Measured on this desktop: with a service incident open and five
+    # sessions running, twenty consecutive polls produced twenty incident
+    # lines, and the quota at 83%, the cache, the read ratio and the branch —
+    # all firing — were never once reached. Four is the shortest memory that
+    # gets the quota heard while an incident is still the first thing said.
+    CATEGORY_RECENT = 4
 
     # What counts as an alert, by priority rather than by a list of keys.
     # `background` is the last signal in the band that is about a session or
@@ -637,6 +647,7 @@ class Brain(QObject):
         # greeting has this moment or none.
         self.greeting_due = False
         self._recent = []
+        self._categories = []
         self._subjects = []
 
     def refresh(self):
@@ -800,12 +811,35 @@ class Brain(QObject):
         now = time.monotonic() if now is None else now
         self.spoke = None
         quiet = self.quiet_hours and self.quiet(wall)
+        narrowed = self.alerts_only or quiet or self.escort.locked_on is not None
         for signal in signals.detect(self.payload(), self.usage, wall,
                                      greet=self.greeting_due):
             # The list is sorted by priority, so the first signal past the
             # alert boundary means every remaining one is past it too.
             if (self.alerts_only or quiet) and signal.priority > self.ALERT_PRIORITY:
                 break
+            # Said too recently. Skipping it lets the signal below be heard;
+            # the ladder still decides the order, it just stops being the only
+            # thing that decides.
+            #
+            # Not while something else has already narrowed what may be said.
+            # Rationing buys variety, and variety is not the goal of a mode
+            # that deliberately admits one subject: alerts-only skipped a
+            # critical quota straight into the break below and said nothing at
+            # all, and an escort holding one session wandered off it into a
+            # philosophy line. Both were caught by tests that already existed.
+            #
+            # The exemption is the same one a focus block uses, and for the
+            # same reason: a session blocked on a question is the only thing
+            # here that cannot wait, so it is the only thing that is never
+            # rationed. A first version exempted everything above the alert
+            # boundary and changed nothing — measured, twenty polls went from
+            # twenty incident lines to twenty limit-soon lines, because the
+            # persistent signals are exactly the ones that boundary protects.
+            if (signal.key in self._categories
+                    and not narrowed
+                    and signal.key not in focus_engine.FocusSession.ALLOWED):
+                continue
             vars_ = dict(signal.vars)
             chosen = self._rotate(self._candidates(signal.key))
             if chosen is not None:
@@ -814,6 +848,7 @@ class Brain(QObject):
             if text:
                 self.spoke = signal.key
                 self.greeting_due = False
+                self._remember_category(signal.key)
                 return text
             # Silenced by the block, or a category with no lines: try the next
             # signal down rather than jumping straight to a joke.
@@ -828,7 +863,14 @@ class Brain(QObject):
         if text:
             self.spoke = key
             self.greeting_due = False
+            self._remember_category(key)
         return text
+
+    def _remember_category(self, key):
+        """One place, so a route that speaks without recording cannot be added
+        by accident — the ambient fallback was already a second route."""
+        self._categories.append(key)
+        del self._categories[:-self.CATEGORY_RECENT]
 
 
 def _menu_labels(sessions):

@@ -1317,3 +1317,73 @@ def test_a_finished_reading_is_destroyed_rather_than_kept(tmp_path, monkeypatch)
     app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     alive = [child for child in c.children() if isinstance(child, QProcess)]
     assert not alive, f"{len(alive)} finished readings are still parented to it"
+
+
+# ── one condition does not own the mascot ──────────────────────────────────
+
+# A fixed local midday, so a suite run at 03:00 does not see night-owl
+# signals the assertions below never accounted for.
+_MIDDAY = next(t for t in (1_700_000_000 + 900 * i for i in range(96))
+               if time.localtime(t).tm_hour == 12)
+
+
+def _persistent_desktop():
+    """A quiet-hours-proof payload with several conditions true at once, which
+    is the ordinary state of a machine running five sessions."""
+    sessions = {"sessions": [
+        {"pid": 1, "name": "alpha", "state": "waiting", "idleSeconds": 120,
+         "background": 0, "branch": "main", "cwd": "/w/alpha"},
+        {"pid": 2, "name": "beta", "state": "background", "idleSeconds": 5,
+         "background": 2, "branch": "main", "cwd": "/w/beta"}]}
+    usage = {
+        "serviceStatus": {"indicator": "minor", "description": "Minor Outage",
+                          "active_incidents": [{"name": "Elevated errors"}]},
+        "limitEta": {"minutesToLimit": 42, "label": "~42m"},
+        "rateLimits": {"session": {"percentUsed": 83.0, "windowHours": 5}},
+        "compaction": {"count": 13},
+        "efficiency": {"readPerOutput": 577.0, "cacheHitRate": 0.98},
+    }
+    return sessions, usage
+
+
+def test_one_lasting_condition_does_not_own_every_line():
+    """The ladder ranks by urgency and the first allowed signal is the one
+    spoken, so a condition that persists owns the mascot for as long as it
+    lasts. Measured on the operator's desktop with a service incident open and
+    five sessions running: twenty consecutive polls produced twenty incident
+    lines, while the quota at 83%, the compaction count and the read ratio
+    were all firing and never once reached.
+
+    Rationing lines rather than categories does not fix it — there are eight
+    lines per category and the twenty-first poll starts them over.
+    """
+    mod = _load()
+    brain = mod.Brain("en")
+    brain.sessions, brain.usage = _persistent_desktop()
+    spoken = []
+    for _ in range(20):
+        if brain.line(now=0.0, wall=_MIDDAY):
+            spoken.append(brain.spoke)
+    assert len(set(spoken)) >= 4, (
+        "twenty polls reached only %d categories: %s"
+        % (len(set(spoken)), sorted(set(spoken))))
+    assert "quotaHigh" in spoken, (
+        "the quota was at 83%% and was never mentioned in twenty polls: %s"
+        % sorted(set(spoken)))
+
+
+def test_a_session_asking_is_never_rationed():
+    """The rotation must not make the one thing that cannot wait wait. A
+    blocked session is exempt for the same reason a focus block lets it
+    through, and the exemption is read from that same set rather than spelled
+    twice."""
+    mod = _load()
+    brain = mod.Brain("en")
+    sessions, usage = _persistent_desktop()
+    sessions["sessions"].append(
+        {"pid": 3, "name": "gamma", "state": "asking", "idleSeconds": 30,
+         "background": 0, "branch": "main", "cwd": "/w/gamma"})
+    brain.sessions, brain.usage = sessions, usage
+    spoken = [brain.spoke for _ in range(12) if brain.line(now=0.0, wall=_MIDDAY)]
+    assert spoken.count("asking") == 12, (
+        "a blocked session was rationed like chatter: %s" % spoken)
