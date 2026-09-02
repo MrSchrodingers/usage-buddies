@@ -327,6 +327,8 @@ install_collector() {
         || warn "Failed to copy buddy_peers.py" "The companion will not start"
     cp "$REPO_DIR/scripts/buddy_hoop.py" "$HOME/.local/bin/" \
         || warn "Failed to copy buddy_hoop.py" "The companion will not start"
+    cp "$REPO_DIR/scripts/buddy_idle.py" "$HOME/.local/bin/" \
+        || warn "Failed to copy buddy_idle.py" "The companion will not start"
     ok "Session monitor installed"
 
     # Optional harness probe. Installed unconditionally and inert without

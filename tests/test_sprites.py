@@ -575,6 +575,509 @@ def test_the_score_frames_move_the_net_and_leave_the_board_alone():
         f"two hoop frames are the same drawing: {sorted(nets)}"
 
 
+# ── the overlays: particles, moods and props ───────────────────────────────
+# Three more families of drawing, on canvases of their own, and they arrived in
+# a single commit with no tests at all. That was invisible rather than obvious:
+# `PROP_*` is excluded from the 28-square sweep by name, and PARTICLES, MOODS,
+# PARTICLE_EFFECTS, PROPS, PROP_ANCHORS and PROP_TRIGGERS are dictionaries,
+# which the sweep never walked in the first place. Everything below exists
+# because being outside the sweep was being outside every check there was.
+#
+# They also carry a failure mode neither the bodies nor the hoop have. A body
+# is composed, and what it came out as is the grid. An overlay is *placed*: a
+# name looked up in one table, an offset read out of another, and an anchor
+# read off whichever frame is being painted. A name that resolves to nothing
+# raises on the one frame that asks for it, which is late but loud. An offset
+# that is wrong draws the right object in the wrong place and raises nothing at
+# all, which is the mode most of the tests below are pinned to.
+
+EFFECT_LEGAL = set(sprites.EFFECT_PALETTE)
+ANCHORS = {"head", "left", "right", "feet"}
+
+# Props whose drawing is its own mirror. Declared rather than computed, so that
+# a prop which quietly lost the part that gives it a facing — the umbrella's
+# handle, the mug's ear — shows up here instead of as a `:flip` image identical
+# to the one it was supposed to differ from.
+SYMMETRIC_PROPS = {"helmet", "hourglass"}
+
+
+def _all_grid_names():
+    """Every module-level grid, swept or not.
+
+    `_swept_grid_names` with the exclusions taken back off, so the two can be
+    subtracted and what comes out is the list of drawings nothing sweeps. One
+    filter rather than two, because two copies of a filter is how an exclusion
+    widens on one side only.
+    """
+    return {n for n in dir(sprites)
+            if n.isupper()
+            and isinstance(getattr(sprites, n), list)
+            and getattr(sprites, n)
+            and isinstance(getattr(sprites, n)[0], str)}
+
+
+def _cells(grid, col=0, row=0):
+    """The drawn pixels of a grid placed at (col, row), as (row, column)."""
+    return {(row + r, col + c)
+            for r, line in enumerate(grid)
+            for c, ch in enumerate(line) if ch != "."}
+
+
+def _near(cells, ink, reach):
+    """True if any of `cells` is within `reach` pixels of any of `ink`.
+
+    Chebyshev, and by dilating one cell at a time rather than measuring every
+    pair: 108 frames by six props by two facings is enough comparisons that the
+    quadratic version is felt.
+    """
+    return any((r + dr, c + dc) in ink
+               for r, c in cells
+               for dr in range(-reach, reach + 1)
+               for dc in range(-reach, reach + 1))
+
+
+@pytest.mark.parametrize("name", sorted(sprites.PARTICLES))
+def test_every_particle_is_a_rectangle_of_effect_palette_colours(name):
+    """A row one character short shifts every pixel after it by one.
+
+    On a body that is a smear across the middle of the creature; on a five-
+    pixel Z there is no letter left at all. The alphabet is checked against
+    EFFECT_PALETTE rather than the body's: `c`, `e`, `i`, `g`, `j`, `v` and `x`
+    do not exist in a brand palette and `b`, `s` and `h` do not exist here, so a
+    character with no entry in the palette it is painted with is a KeyError on
+    a machine with a display, which is not where these tests run.
+    """
+    grid = sprites.PARTICLES[name]
+    widths = {len(row) for row in grid}
+    assert len(widths) == 1, f"{name}: ragged rows, widths {sorted(widths)}"
+    assert _ink(grid), f"{name} is blank; it would never appear"
+    for i, row in enumerate(grid):
+        undrawable = set(row) - {"."} - EFFECT_LEGAL
+        assert not undrawable, f"{name} row {i}: undrawable {undrawable}"
+
+
+@pytest.mark.parametrize("level", sorted(sprites.MOODS))
+def test_every_mood_band_is_the_declared_size_in_effect_palette_colours(level):
+    """MOOD_H is not a description of the bands, it is what places them.
+
+    `mood_overlay` hands the band back at `top - MOOD_H`, so a band with an
+    eleventh row is a band drawn one row into the character's head and one with
+    nine rows floats a row above it. Neither raises. MOOD_W is the same bargain
+    sideways: the band is exactly as wide as the sprite so that centring is
+    free, and one column narrower is a crown off centre on every frame.
+    """
+    grid = sprites.MOODS[level]
+    assert len(grid) == sprites.MOOD_H, f"{level}: {len(grid)} rows"
+    for i, row in enumerate(grid):
+        assert len(row) == sprites.MOOD_W, f"{level} row {i}: {len(row)} columns"
+        undrawable = set(row) - {"."} - EFFECT_LEGAL
+        assert not undrawable, f"{level} row {i}: undrawable {undrawable}"
+    assert _ink(grid), f"{level} is blank; it would never appear"
+
+
+def test_every_effect_colour_is_drawn_and_every_drawn_colour_has_a_colour():
+    """The hoop's bargain, on the palette the particles and the bands share.
+
+    A palette entry nothing uses is a colour someone chose and then lost track
+    of; a character no palette has is a KeyError the moment it is painted. One
+    sweep over both families, because they are painted out of the one table and
+    a letter retired from the particles may still be the crown's gold.
+    """
+    used = {ch for grid in list(sprites.PARTICLES.values()) + list(sprites.MOODS.values())
+            for row in grid for ch in row} - {"."}
+    assert used == EFFECT_LEGAL, \
+        f"drawn but unpainted: {used - EFFECT_LEGAL}; " \
+        f"painted but undrawn: {EFFECT_LEGAL - used}"
+
+
+@pytest.mark.parametrize("name", sorted(sprites.PROPS))
+def test_every_prop_is_a_rectangle_of_body_palette_colours(name):
+    """A prop is painted with the character's own palette, once per brand.
+
+    So the alphabet has to hold in *both*: a letter in one palette and not the
+    other is a KeyError on one brand only, which is the half of a bug that gets
+    shipped. The props stay inside the body's alphabet on purpose — an object
+    in a colour from nowhere reads as pasted on — and that is exactly what
+    makes the check worth running, because `w` and `p` mean eye white and pupil
+    everywhere else in this file and here they are a label and some coffee.
+    """
+    grid = sprites.PROPS[name]
+    widths = {len(row) for row in grid}
+    assert len(widths) == 1, f"{name}: ragged rows, widths {sorted(widths)}"
+    assert _ink(grid), f"{name} is blank; it would never appear"
+    for brand in BRANDS:
+        palette = set(sprites.PALETTES[brand])
+        for i, row in enumerate(grid):
+            undrawable = set(row) - {"."} - palette
+            assert not undrawable, \
+                f"{name} row {i} on {brand}: undrawable {undrawable}"
+
+
+# Every module-level grid the 28-square sweep does not reach, and why each one
+# is out. A list rather than a rule, because the thing being guarded against is
+# a *new* canvas arriving with no checks at all — which is what happened to the
+# props — and a rule is what let it in the last time.
+UNSWEPT = {
+    "SHADOW": "three rows of its own two characters; it has its own tests",
+    "HOOP_BOARD": "96 by 72 in a palette of its own; it has its own tests",
+    "PROP_BOOK": "a five-column band pasted into the read pose, like the eyes",
+    "PROP_UMBRELLA": "an overlay: larger than the sprite and placed off it",
+    "PROP_EXTINGUISHER": "an overlay",
+    "PROP_MUG": "an overlay",
+    "PROP_HELMET": "an overlay",
+    "PROP_HOURGLASS": "an overlay",
+    "PROP_PARTY_HAT": "an overlay",
+}
+
+
+def test_nothing_has_left_the_28_square_sweep_without_saying_so():
+    """The hoop's exclusion test, widened from one grid to all of them.
+
+    That one names the grid it excludes and the bodies that have to stay in. It
+    passes just as happily when a *seventh* grid appears that nothing sweeps and
+    nothing else checks either, which is exactly what happened: six prop
+    drawings arrived under a prefix the sweep already excluded, and the suite
+    stayed green because there was nothing left to notice them.
+
+    So the unswept grids are written down with a reason each. A new canvas
+    either joins the sweep or is named here, and a name that stops needing its
+    exclusion has to come back out — the assertion runs both ways, because a
+    list that may be wrong in one direction is not a list of anything.
+    """
+    swept = set(_swept_grid_names())
+    unswept = _all_grid_names() - swept
+    assert unswept == set(UNSWEPT), \
+        f"unswept and undeclared: {sorted(unswept - set(UNSWEPT))}; " \
+        f"declared but swept after all or gone: {sorted(set(UNSWEPT) - unswept)}"
+    for name in ("CLAUDE_BODY", "CLAUDE_SQUASH", "CLAUDE_STRETCH",
+                 "CODEX_BODY", "CODEX_SQUASH", "CODEX_STRETCH"):
+        assert name in swept, f"the sweep has stopped looking at {name}"
+
+
+def test_every_effect_is_keyed_by_a_clip_that_exists():
+    """`PARTICLE_EFFECTS.get(animator.clip)` is how one of these is asked for.
+
+    So the key has to be a clip name. One that is not names an effect nothing
+    can ever look up: the art is drawn, it is in the sheet, it costs frames to
+    build and it never once appears on a desktop. Nothing raises, because a
+    `.get` that misses is a `.get` that returns None.
+    """
+    unknown = set(sprites.PARTICLE_EFFECTS) - set(sprites.CLIPS)
+    assert not unknown, f"effects keyed by no clip: {sorted(unknown)}"
+
+
+def test_every_effect_names_particles_that_exist_and_anchors_that_resolve():
+    """An anchor is a string, and there are four of them.
+
+    `particle_layout` looks it up in the dictionary `frame_anchors` returns, so
+    "foot" for "feet" is a KeyError on the one frame that plays the effect —
+    which is the landing, which is the frame nobody is watching for. A particle
+    name that misses is the same. Both are checked against what the code
+    actually produces rather than against a list copied into this file; a copy
+    drifts, and then the test is describing an anchor nothing resolves.
+    """
+    assert set(sprites.frame_anchors("claude", "stand_open")) == ANCHORS, \
+        "frame_anchors no longer offers the four anchors the effects name"
+    for effect, motes in sprites.PARTICLE_EFFECTS.items():
+        assert motes, f"{effect} has no motes; it would draw nothing"
+        for anchor, steps in motes:
+            assert anchor in ANCHORS, f"{effect}: no anchor called {anchor!r}"
+            assert steps, f"{effect}: a mote with no steps in it"
+            for name, _dcol, _drow in steps:
+                assert name in sprites.PARTICLES, \
+                    f"{effect}: no particle called {name!r}"
+
+
+@pytest.mark.parametrize("brand", BRANDS)
+def test_particle_layout_hands_back_every_step_of_every_mote(brand):
+    """The offsets are measured from an anchor, and the anchor moves.
+
+    Rex is four rows taller than Clawd, a squash is four rows shorter than a
+    stand, and a lean moves the centre column, so an effect placed against a
+    written-down number instead of against the frame is right on one frame of
+    the clip and wrong on the rest. This checks the arithmetic against
+    `frame_anchors` on every frame there is, and that nothing was dropped on
+    the way through: a mote quietly losing its last step is an effect that
+    stops halfway and never reaches the size it was drawn to end at.
+    """
+    for frame in sprites.build_frames(brand):
+        anchors = sprites.frame_anchors(brand, frame)
+        for effect, motes in sprites.PARTICLE_EFFECTS.items():
+            laid = sprites.particle_layout(brand, frame, effect)
+            assert len(laid) == len(motes), \
+                f"{brand}/{frame}/{effect}: {len(laid)} motes, not {len(motes)}"
+            for placed, (anchor, steps) in zip(laid, motes):
+                ax, ay = anchors[anchor]
+                assert placed == [(name, ax + dcol, ay + drow)
+                                  for name, dcol, drow in steps], \
+                    f"{brand}/{frame}/{effect}: not placed from {anchor}"
+
+
+@pytest.mark.parametrize("brand", BRANDS)
+def test_facing_moves_the_particles_and_never_mirrors_one(brand):
+    """A mirrored Z is a different letter, and it reads as a mistake.
+
+    `reflect` answers a column and leaves the drawing alone, and that is the
+    whole distinction between a particle and a prop: an umbrella turns with the
+    creature, an alphabet does not. Facing that flipped the grids as well would
+    still put every speck in the right place, so the only symptom would be a
+    sleeping character with backwards Zs on one side of the screen.
+    """
+    assert any(sprites.mirror(g) != g for g in sprites.PARTICLES.values()), \
+        "every particle is its own mirror; this test would prove nothing"
+    moved = 0
+    for effect in sprites.PARTICLE_EFFECTS:
+        right = sprites.particle_layout(brand, "stand_open", effect, 1)
+        left = sprites.particle_layout(brand, "stand_open", effect, -1)
+        for there, back in zip(right, left):
+            for (name, col, row), (flipped, fcol, frow) in zip(there, back):
+                assert flipped == name, \
+                    f"{effect}: facing left asked for {flipped!r}, not {name!r}"
+                assert frow == row, f"{effect}: facing changed a row"
+                width = len(sprites.PARTICLES[name][0])
+                assert fcol == sprites.GRID - col - width, \
+                    f"{effect}: {name} was not reflected about the sprite"
+                moved += fcol != col
+    assert moved, "facing left moved nothing; the reflection is a no-op"
+
+
+def test_every_prop_is_anchored_for_both_brands():
+    """One offset table per brand, and the missing half is not just a KeyError.
+
+    It would be one, on `PROP_ANCHORS[prop][key]` — but only for whoever runs
+    the other brand, and only once the signal that hands the prop over fires.
+    The two are not interchangeable: Rex is four rows taller than Clawd and his
+    eyes sit three rows higher, so the offset that hangs a mug clear of one
+    hangs it over the other's face.
+    """
+    assert set(sprites.PROP_ANCHORS) == set(sprites.PROPS), \
+        f"anchored but undrawn: {sorted(set(sprites.PROP_ANCHORS) - set(sprites.PROPS))}; " \
+        f"drawn but unanchored: {sorted(set(sprites.PROPS) - set(sprites.PROP_ANCHORS))}"
+    for name, per_brand in sprites.PROP_ANCHORS.items():
+        assert set(per_brand) == set(BRANDS), \
+            f"{name} is anchored for {sorted(per_brand)}, not {sorted(BRANDS)}"
+        for brand, offset in per_brand.items():
+            assert len(offset) == 2 and all(isinstance(n, int) for n in offset), \
+                f"{name}/{brand}: {offset!r} is not a (dcol, drow) of whole pixels"
+
+
+def test_every_prop_trigger_names_a_prop_and_a_key_that_can_be_raised():
+    """A trigger on a key nothing produces is a prop that never comes.
+
+    That is `twoRed` again: a key spelled for a condition that does not exist
+    under that name, wired up, shipped, and silent — the drawing is fine, the
+    table is fine, and the object simply never appears. Checked against
+    buddy_signals.PRIORITY, which is where a signal key is defined.
+
+    `focus` is the one key here that is not a signal: it is the state of
+    buddy_focus.FocusSession. It is carved out by name rather than by a `try`
+    around the lookup, and the carve-out is asserted in both directions — if
+    `focus` ever becomes a signal key this fails and the exception comes back
+    out, which is the only way an exception list stays true.
+    """
+    import buddy_focus
+    import buddy_signals
+
+    for key, prop in sprites.PROP_TRIGGERS.items():
+        assert prop in sprites.PROPS, \
+            f"{key} hands over {prop!r}, which is not drawn"
+    assert set(sprites.PROP_TRIGGERS.values()) == set(sprites.PROPS), \
+        "drawn and never handed over: " \
+        f"{sorted(set(sprites.PROPS) - set(sprites.PROP_TRIGGERS.values()))}"
+
+    assert buddy_signals.PRIORITY, "no signal keys at all; this check is idle"
+    unknown = set(sprites.PROP_TRIGGERS) - {"focus"} - set(buddy_signals.PRIORITY)
+    assert not unknown, f"triggers on keys nothing raises: {sorted(unknown)}"
+    assert "focus" not in buddy_signals.PRIORITY, \
+        "`focus` is a signal key now; it no longer needs carving out here"
+    assert hasattr(buddy_focus.FocusSession, "active"), \
+        "`focus` is not a signal and FocusSession has no state to read either"
+
+
+@pytest.mark.parametrize("brand", BRANDS)
+def test_an_anchored_prop_stays_against_the_character(brand):
+    """The offsets are the part of a prop that goes wrong in silence.
+
+    An object held against the body reads as held; the same object three
+    columns further out is one the creature has dropped. Nothing raises either
+    way — the drawing is intact, the anchor resolves, the sheet is built — and
+    the only symptom is a mug hanging in the air beside something that is not
+    holding it.
+
+    Checked against the drawn pixels and not against the bounding box. A box
+    that still touches is satisfied by a prop level with the feet and out past
+    the widest part of the body, which is where the first book was and is
+    exactly what it looked like. Two pixels of air, on all 108 frames, both
+    ways round.
+    """
+    frames = sprites.build_frames(brand)
+    for frame, grid in frames.items():
+        ink = _cells(grid)
+        for prop in sprites.PROPS:
+            for facing in (1, -1):
+                placed, col, row = sprites.prop_overlay(brand, frame, prop, facing)
+                assert _near(_cells(placed, col, row), ink, 2), \
+                    (f"{brand}/{frame}: the {prop} facing "
+                     f"{'right' if facing > 0 else 'left'} is not touching the "
+                     f"character; it reads as dropped rather than held")
+
+
+@pytest.mark.parametrize("brand", BRANDS)
+def test_a_prop_turns_with_the_character_holding_it(brand):
+    """An umbrella held on the character's right stays on its right.
+
+    Two halves, and both are silent when they fail. The drawing has to be
+    mirrored, or the creature turns around and goes on holding the handle end
+    that is now on the far side of it. And the column has to be reflected about
+    the sprite, or the mirrored drawing is placed where the unmirrored one was
+    and the umbrella is held through the body.
+    """
+    for frame in ("stand_open", "walk1", "tuck_half"):
+        for prop in sprites.PROPS:
+            grid, col, _row = sprites.prop_overlay(brand, frame, prop, 1)
+            flipped, fcol, _frow = sprites.prop_overlay(brand, frame, prop, -1)
+            assert flipped == sprites.mirror(grid), \
+                f"{prop} was not mirrored when the character turned"
+            assert fcol == sprites.GRID - col - len(grid[0]), \
+                f"{prop} was mirrored but left in the column it was already in"
+            if prop not in SYMMETRIC_PROPS:
+                assert flipped != grid, \
+                    f"{prop} is now its own mirror; declare it in SYMMETRIC_PROPS"
+    for prop in SYMMETRIC_PROPS:
+        assert sprites.mirror(sprites.PROPS[prop]) == sprites.PROPS[prop], \
+            f"{prop} has a facing now and is still declared symmetric"
+
+
+@pytest.mark.parametrize("brand", BRANDS)
+def test_the_mood_band_lands_one_row_above_the_head(brand):
+    """The band is placed off the frame, and it has to clear it exactly.
+
+    Overlapping, it is a crown drawn through an owl's ear tufts and a rain
+    cloud drawn over a face; the tufts were lost once already to an offset that
+    pushed them off a grid, and covering them does the same thing without
+    moving a pixel. Floating, it is a mood band belonging to nobody. Neither
+    raises.
+
+    Both are the one number, `top - MOOD_H`, and it is only right while every
+    band draws something in its own last row: a band with a blank row at the
+    bottom hovers, and the drawing looks perfectly fine on its own.
+    """
+    frames = sprites.build_frames(brand)
+    for frame, grid in frames.items():
+        ink = _cells(grid)
+        head = sprites.ink_box(grid)[1]
+        for level in sprites.MOODS:
+            band, col, row = sprites.mood_overlay(brand, frame, level)
+            assert col == 0 and col + len(band[0]) == sprites.GRID, \
+                f"{brand}/{frame}/{level}: the band is not the width of the sprite"
+            cells = _cells(band, col, row)
+            assert not cells & ink, \
+                f"{brand}/{frame}/{level}: the band is drawn over the character"
+            assert max(r for r, _ in cells) == head - 1, \
+                (f"{brand}/{frame}/{level}: the band ends "
+                 f"{head - max(r for r, _ in cells)} rows above the head")
+
+
+@pytest.mark.parametrize("brand", BRANDS)
+def test_the_mood_band_clears_the_prop_under_it_as_well(brand):
+    """A party hat is taller than the head it is on.
+
+    Placed against the frame alone, the crown comes up through the hat — which
+    is the whole reason `mood_overlay` takes a prop at all. The argument is
+    only load-bearing for the props that sit above the head, and for exactly
+    those it is wrong in silence: the two drawings overlap and both of them are
+    intact.
+    """
+    frames = sprites.build_frames(brand)
+    level = "genius"
+    for frame in frames:
+        for prop in sprites.PROPS:
+            worn, pcol, prow = sprites.prop_overlay(brand, frame, prop)
+            band, col, row = sprites.mood_overlay(brand, frame, level, prop)
+            top = min(sprites.ink_box(frames[frame])[1],
+                      prow + sprites.ink_box(worn)[1])
+            cells = _cells(band, col, row)
+            assert not cells & _cells(worn, pcol, prow), \
+                f"{brand}/{frame}: the band is drawn over the {prop}"
+            assert max(r for r, _ in cells) == top - 1, \
+                f"{brand}/{frame}: the band does not sit on the {prop}"
+
+
+@pytest.mark.parametrize("brand", BRANDS)
+def test_the_window_an_overlay_needs_holds_all_of_it(brand):
+    """`overlay_box` answers how big the window has to be, and it is the last
+    place the crop that decapitated Rex can still happen.
+
+    An overlay is allowed past the edge of the 28-square, and that permission is
+    the entire reason the mechanism exists: a Z that rises leaves the top of it
+    in two steps, and an umbrella wide enough to read as an umbrella is wider
+    than the canvas. A box that stopped at the grid would crop the umbrella
+    against the edge of a window instead of against the edge of a grid — the
+    same silence, one layer further out, and the same symptom as the hoop that
+    came out as a 28-square corner of itself.
+
+    So the box has to hold the sprite's own square *and* every pixel of every
+    overlay placed on it, and the last assertion is there because a version of
+    this that never placed anything outside the square would pass the rest.
+    """
+    frames = sprites.build_frames(brand)
+    escaped = 0
+    for frame in frames:
+        placed = [sprites.prop_overlay(brand, frame, prop, facing)
+                  for prop in sprites.PROPS for facing in (1, -1)]
+        placed += [sprites.mood_overlay(brand, frame, level)
+                   for level in sprites.MOODS]
+        placed += [(sprites.PARTICLES[name], col, row)
+                   for effect in sprites.PARTICLE_EFFECTS
+                   for mote in sprites.particle_layout(brand, frame, effect)
+                   for name, col, row in mote]
+        left, top, right, bottom = sprites.overlay_box(placed)
+        assert left <= 0 and top <= 0, "the box lost the sprite's own square"
+        assert right >= sprites.GRID - 1 and bottom >= sprites.GRID - 1, \
+            "the box lost the sprite's own square"
+        for grid, col, row in placed:
+            l, t, r, b = sprites.ink_box(grid)
+            assert left <= col + l and col + r <= right, \
+                f"{brand}/{frame}: an overlay is cropped sideways by the window"
+            assert top <= row + t and row + b <= bottom, \
+                f"{brand}/{frame}: an overlay is cropped vertically by the window"
+            escaped += (col + l < 0 or col + r >= sprites.GRID
+                        or row + t < 0 or row + b >= sprites.GRID)
+    assert escaped, \
+        "nothing placed here leaves the 28-square; this check is watching nothing"
+
+
+def test_placing_an_overlay_leaves_the_frame_underneath_alone():
+    """The overlay functions read `_cached_frames`, which hands out the live
+    grids rather than copies of them.
+
+    One of them editing a grid in place would change the character for every
+    frame painted afterwards, for the rest of the process — and the digest test
+    above would not see it, because `build_frames` composes a fresh set every
+    call. The creature would be right on the first paint and wrong on the
+    second, which is the hardest kind of wrong to find from a screenshot.
+    """
+    import copy
+
+    before = {brand: copy.deepcopy(sprites._cached_frames(brand))
+              for brand in BRANDS}
+    for brand in BRANDS:
+        for frame in ("stand_open", "tuck_half", "celebrate_happy"):
+            for prop in sprites.PROPS:
+                sprites.prop_overlay(brand, frame, prop, 1)
+                sprites.prop_overlay(brand, frame, prop, -1)
+                sprites.mood_overlay(brand, frame, "genius", prop)
+            for level in sprites.MOODS:
+                sprites.mood_overlay(brand, frame, level)
+            for effect in sprites.PARTICLE_EFFECTS:
+                sprites.particle_layout(brand, frame, effect, 1)
+                sprites.particle_layout(brand, frame, effect, -1)
+            sprites.frame_anchors(brand, frame)
+    for brand in BRANDS:
+        assert sprites._cached_frames(brand) == before[brand], \
+            f"{brand}: an overlay edited the frame it was placed on"
+
+
 # The character's frames, as they were before the hoop existed: 108 per brand,
 # and a digest over every row of every one of them. The hoop is a second canvas
 # in the same module and the thing to prove about a second canvas is that the
@@ -737,6 +1240,96 @@ def test_the_hoop_reaches_qt_at_its_own_size_and_stays_out_of_the_body_sheet():
     character = sprites.build_sheet("claude")
     assert not set(sheet) & set(character), \
         "hoop frames are in the character's sheet, on the character's palette"
+
+
+@needs_qt
+def test_the_effect_sheet_reaches_qt_at_each_drawing_s_own_size():
+    """A particle is two rows by four and a mood band is ten by twenty-eight.
+
+    `to_qimage` used to size its image from GRID, so anything drawn on another
+    canvas came out as a 28-square corner of itself: the right kind of image,
+    cropped, nothing raised. The hoop pins that from above the character's size
+    and these pin it from below — a two-row speed line rendered at 28 rows is
+    twenty-six rows of nothing underneath it, and on screen it is a streak that
+    will not sit where it is put.
+
+    The keys are the second half. Particles and bands share a sheet because
+    both are painted with EFFECT_PALETTE and neither takes a brand, and no key
+    of it may collide with the character's: two different pictures under one
+    name is one lookup away from the wrong one being drawn.
+    """
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    sheet = sprites.build_effect_sheet()
+    expected = set(sprites.PARTICLES) | {"mood_" + m for m in sprites.MOODS}
+    assert set(sheet) == expected, \
+        f"missing: {sorted(expected - set(sheet))}; extra: {sorted(set(sheet) - expected)}"
+    assert not [k for k in sheet if k.endswith(":flip")], \
+        "a crown has no facing and a Z must not be mirrored at all"
+
+    drawings = dict(sprites.PARTICLES)
+    drawings.update({"mood_" + m: g for m, g in sprites.MOODS.items()})
+    for name, grid in drawings.items():
+        img = sheet[name]
+        assert img.width() == len(grid[0]) * sprites.SCALE, \
+            f"{name} is {img.width()} wide, not {len(grid[0]) * sprites.SCALE}"
+        assert img.height() == len(grid) * sprites.SCALE, \
+            f"{name} is {img.height()} tall, not {len(grid) * sprites.SCALE}"
+
+    character = sprites.build_sheet("claude")
+    assert not set(sheet) & set(character), \
+        "an effect and a frame share a name; one of them will be drawn instead"
+
+
+@needs_qt
+@pytest.mark.parametrize("brand", BRANDS)
+def test_the_prop_sheet_carries_both_facings_at_the_prop_s_own_size(brand):
+    """The props are the one overlay family with a facing, so they are the one
+    that bakes a mirror — and they are on the brand palette, so they are per
+    brand while the effects are not.
+
+    Same crop to pin as above, from the other direction: a seven-row helmet
+    handed back as a 28-square is a helmet with twenty-one rows of nothing
+    under it, placed by `prop_overlay` at the row its first pixel should be on.
+    And both keys have to be there: `prop_overlay` answers the mirrored column
+    whether or not a mirrored image exists to put in it, and the unflipped
+    drawing at that column is an umbrella held through the creature.
+    """
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    sheet = sprites.build_prop_sheet(brand)
+    expected = set(sprites.PROPS) | {p + ":flip" for p in sprites.PROPS}
+    assert set(sheet) == expected, \
+        f"missing: {sorted(expected - set(sheet))}; extra: {sorted(set(sheet) - expected)}"
+    for name, grid in sprites.PROPS.items():
+        for key in (name, name + ":flip"):
+            img = sheet[key]
+            assert img.width() == len(grid[0]) * sprites.SCALE, \
+                f"{key} is {img.width()} wide, not {len(grid[0]) * sprites.SCALE}"
+            assert img.height() == len(grid) * sprites.SCALE, \
+                f"{key} is {img.height()} tall, not {len(grid) * sprites.SCALE}"
+        if name not in SYMMETRIC_PROPS:
+            assert sheet[name] != sheet[name + ":flip"], \
+                f"{name} has a facing and its mirror is the same image"
+
+
+@needs_qt
+def test_an_overlay_cannot_be_painted_with_the_wrong_palette():
+    """Why there are three sheets rather than more keys in one.
+
+    `g`, `j`, `v` and `x` are not body colours and `b`, `s` and `h` are not
+    effect colours, so handing a band to a brand palette raises and handing a
+    prop to EFFECT_PALETTE raises — which is the good half of the accident. The
+    half that does not raise is a drawing whose letters happen to exist in the
+    palette it was handed and comes out in colours meaning something else,
+    which is why the alphabets are checked one at a time as well.
+    """
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    with pytest.raises(KeyError):
+        sprites.to_qimage(sprites.MOODS["genius"], sprites.PALETTES["claude"])
+    with pytest.raises(KeyError):
+        sprites.to_qimage(sprites.PROPS["mug"], sprites.EFFECT_PALETTE)
 
 
 @needs_qt

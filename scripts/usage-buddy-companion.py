@@ -56,6 +56,7 @@ import buddy_focus as focus_engine                                              
 import buddy_actions as actions                                                  # noqa: E402
 import buddy_peers as peers                                                      # noqa: E402
 import buddy_hoop                                                                # noqa: E402
+import buddy_idle                                                                # noqa: E402
 from buddy_lines import LINES                                                    # noqa: E402
 import virtual_pointer                                                           # noqa: E402
 
@@ -212,6 +213,64 @@ PANIC_BAND = (signals.PRIORITY["twoRed"], signals.PRIORITY["creditsLow"])
 # And the one signal that means a session finished and left nothing running.
 CELEBRATE_KEY = "allQuiet"
 
+
+# ── the overlays: the mood band, the props and the particles ───────────────
+# Three things buddy_sprites draws that are not the character, and the reason
+# they are here rather than in Companion.paintEvent is the reason the basket is
+# not either: they do not fit in the character's window. The worst of them
+# reaches fifteen source pixels left of the sprite's square, seventeen above it
+# and fourteen past its right-hand edge, on a canvas that is twenty-eight
+# across; drawn into a 56-pixel window they would be cropped against its edge
+# in exactly the silence buddy_sprites' own `_paste` crops against a grid.
+#
+# The window is not grown to hold them, and that is a decision rather than an
+# omission. Companion's window is the drop target, the click target and the
+# thing the bubble's side is measured from, and every one of those is read off
+# its geometry; a window a hundred and sixteen pixels wide around a fifty-six
+# pixel character is a click target twice the size of the thing being clicked,
+# which is the defect HoopWindow's docstring already names about a window that
+# does not let the mouse through.
+
+# The pose the last line was delivered in holds for MOOD_SECONDS and the mood
+# band does not hold at all: it is a standing condition, redrawn from
+# dumbness.level on every poll and on screen for as long as the level says so.
+# The two compose deliberately — a panic pose under a skull band is a reaction
+# and a condition at once, and the complaint this answers is that the second
+# one was invisible. A four-second flinch after a sentence is not a state.
+
+# How much of an effect's cycle is spent letting the motes out, so five chips
+# of confetti do not leave the head as one block. The rest of the cycle is one
+# mote's whole life, which means the last mote born dies exactly as the cycle
+# ends and the effect has no seam in it.
+PARTICLE_STAGGER = 0.35
+
+# The floor on how long a prop stays up once it is up.
+#
+# A prop is the condition itself, drawn, so what decides its length is the
+# condition — measured once per POLL_MS, which is the granularity of every
+# other reading this program acts on. The floor is the other half: a condition
+# true for a single reading would otherwise put an umbrella up and take it away
+# twenty seconds later, and SPEAK_SECONDS is this file's own measured answer to
+# how long something has to be on screen to be read. A prop that outlives its
+# condition by a few seconds is a character slow to put something down; one
+# that flickers is a bug.
+PROP_MIN_SECONDS = SPEAK_SECONDS
+
+# Which pose each turn of the easter egg is answered with, and why each one is
+# a clip that already exists and already means roughly this.
+#
+# All three loop. mood_clip is handed to Animator.set_clip as a base clip, and
+# a non-looping clip set as a base resumes into itself when its frames run out
+# — it repeats rather than sticking, which is not a crash and is not what the
+# pose is for either. `_play_once` refuses a loop for the mirror-image reason.
+EGG_POSE = {"dizzy": "annoyed", "delighted": "celebrate", "sulking": "sit"}
+
+# And what it says. A separate table from the poses because the two are looked
+# up by the same key and go to different places — one to the animator, one to
+# _t, which raises on a key it has not got in the language being spoken.
+EGG_LINE = {"dizzy": "eggDizzy", "delighted": "eggDelighted",
+            "sulking": "eggSulking"}
+
 # The shortest gap between two turn-around one-shots. The facing is recomputed
 # every frame while the getaway drives, and a route that doubles back flips it
 # repeatedly; without a floor the turn would replay on every flip.
@@ -270,7 +329,7 @@ FOCUS_MINUTES_MIN, FOCUS_MINUTES_MAX = 1, 240
 Options = namedtuple(
     "Options",
     "brand lang alerts_only live self_test focus_minutes insistence "
-    "quiet_hours memes shadow escort")
+    "quiet_hours memes shadow escort halo bored")
 
 
 def _one_of(value, allowed, default):
@@ -323,6 +382,17 @@ def parse_args(argv):
     parser.add_argument("--memes", nargs="?", default=None, const=None)
     parser.add_argument("--no-shadow", action="store_true")
     parser.add_argument("--escort", action="store_true")
+    # The overlay layer, spelled as a negative for the reason --no-shadow is:
+    # it is on, and a widget that wanted it off would otherwise have to send a
+    # flag to turn on what is already on. It is a second always-on-top window
+    # on somebody else's compositor, which is the whole reason there is a way
+    # to say no to it at all.
+    parser.add_argument("--no-halo", action="store_true")
+    # And the one thing here that inverts the rule the project was built on —
+    # a sentence with nothing behind it. Off unless it is asked for by name;
+    # buddy_idle.BORED_DEFAULT is where the argument for that is written, and
+    # this reads it rather than restating it.
+    parser.add_argument("--bored", action="store_true")
     known, _unknown = parser.parse_known_args(list(argv))
     return Options(
         brand="codex" if known.codex else "claude",
@@ -337,6 +407,8 @@ def parse_args(argv):
         memes=_one_of(known.memes, MEME_LEVELS, DEFAULT_MEMES),
         shadow=not known.no_shadow,
         escort=known.escort,
+        halo=not known.no_halo,
+        bored=known.bored or buddy_idle.BORED_DEFAULT,
     )
 
 
@@ -639,6 +711,13 @@ class Brain(QObject):
         # the tables are prose, and with --live the wording comes from the
         # model — so the sprite would have no way of knowing what it just said.
         self.spoke = None
+        # Every signal the last reading justified, most urgent first, and not
+        # only the one that got spoken. The ladder speaks once and a prop is
+        # not a sentence: a quota that is critical is critical whether or not
+        # an incident outranked it in the bubble, and the extinguisher is the
+        # condition rather than the remark about it. Empty until the first
+        # line(), which is where the detection happens.
+        self.firing = ()
         # Whether a hello is still owed. Off by default and armed by the
         # Companion when it starts, because a Brain is also built to answer a
         # single question in a test or a probe, and greeting there is noise.
@@ -812,8 +891,14 @@ class Brain(QObject):
         self.spoke = None
         quiet = self.quiet_hours and self.quiet(wall)
         narrowed = self.alerts_only or quiet or self.escort.locked_on is not None
-        for signal in signals.detect(self.payload(), self.usage, wall,
-                                     greet=self.greeting_due):
+        detected = signals.detect(self.payload(), self.usage, wall,
+                                  greet=self.greeting_due)
+        # Recorded before the loop, not inside it. The loop breaks out of the
+        # ladder in alerts-only and in the quiet hours, and what is on the
+        # other side of that break is still measured and still true — a mode
+        # that says less about the world does not change the world.
+        self.firing = tuple(signal.key for signal in detected)
+        for signal in detected:
             # The list is sorted by priority, so the first signal past the
             # alert boundary means every remaining one is past it too.
             if (self.alerts_only or quiet) and signal.priority > self.ALERT_PRIORITY:
@@ -863,6 +948,29 @@ class Brain(QObject):
         if text:
             self.spoke = key
             self.greeting_due = False
+            self._remember_category(key)
+        return text
+
+    def idle_line(self, now=None):
+        """A line with nothing behind it. The one thing said without a trigger.
+
+        buddy_idle.Boredom is the only caller and it is off unless somebody
+        asked for it; BORED_DEFAULT is where the argument for that lives. The
+        words come from the two tables the ambient fallback already uses and
+        through the same _pick, so the focus block, the typing gate and the
+        no-repeat window all still apply — a remark about nothing is the last
+        thing that should be allowed to land in the middle of a sentence
+        somebody is typing.
+
+        Not folded into line(). That method's contract is "the current thing
+        worth saying", and boredom is the case where there is none; a caller
+        that could not tell the two apart would have no way to keep a bored
+        remark out of alerts-only mode.
+        """
+        key = random.choice(("ambient", "philosophy"))
+        text = self._pick(key, now=now)
+        if text:
+            self.spoke = key
             self._remember_category(key)
         return text
 
@@ -1062,6 +1170,190 @@ class HoopWindow(QWidget):
         p.end()
 
 
+# Every frame the companion can put on screen, which is not one table.
+#
+# The clips name most of them; the drag names twenty-five more through
+# wobble_frame, and those are not in any clip because nothing plays them — the
+# painter picks one per frame out of the hand's own speed. FRAME_SPECS is the
+# authored set the other two are composed from. Wrong, this is not a crash: it
+# is frame_anchors raising KeyError inside the frame timer on the first pose it
+# has not heard of, which on a mascot is the mascot vanishing. Pinned against
+# buddy_sprites.build_frames in tests/test_companion_effects.py.
+_ALL_FRAMES = (frozenset(sprites.FRAME_SPECS) | set(sprites.frame_names())
+               | {sprites.wobble_frame(lean, wob)
+                  for lean in sprites.LEANS for wob in sprites.WOBBLES})
+
+_HALO_REACH = {}
+
+
+def halo_reach(brand):
+    """How far the overlays reach past the sprite's own square, in source pixels.
+
+    (left, top, right, bottom), inclusive, with the character's 28-square
+    already inside it — sprites.overlay_box's answer taken over every frame,
+    every effect, every prop, every mood level and both facings, because the
+    window has to hold the worst of them. A window sized for the common case
+    crops the rest against its own edge and says nothing, which is the failure
+    one layer out from the one the overlays exist to avoid: _paste drops what
+    falls off a grid, a window drops what falls off itself.
+
+    Derived from the extremes of the four anchors rather than by placing every
+    overlay on every frame in turn. The exhaustive sweep is half a second on
+    this machine with the frame cache already warm, and it would run while the
+    character is being built; an anchor is the only thing a frame contributes
+    to an overlay's position, so the union over frames is the union over the
+    anchors' extremes. tests/test_companion_effects.py pins this against the
+    exhaustive answer, because "equivalent" is the kind of claim that is true
+    when it is written and false one drawing later.
+    """
+    key = "codex" if brand == "codex" else "claude"
+    if key in _HALO_REACH:
+        return _HALO_REACH[key]
+
+    low, high = {}, {}
+    for frame in _ALL_FRAMES:
+        for name, (col, row) in sprites.frame_anchors(key, frame).items():
+            if name not in low:
+                low[name] = [col, row]
+                high[name] = [col, row]
+            low[name] = [min(low[name][0], col), min(low[name][1], row)]
+            high[name] = [max(high[name][0], col), max(high[name][1], row)]
+
+    placed = []
+
+    def _both(grid, col, row):
+        """The overlay where it lands facing each way. Particles are never
+        mirrored and props always are, and `reflect` is monotonic in the
+        column either way, so placing the unmirrored grid at both columns
+        bounds both cases without needing to know which one this is."""
+        placed.append((grid, col, row))
+        placed.append((grid, sprites.reflect(grid, col), row))
+
+    for effect in sprites.PARTICLE_EFFECTS.values():
+        for anchor, steps in effect:
+            for name, dcol, drow in steps:
+                grid = sprites.PARTICLES[name]
+                for col in (low[anchor][0], high[anchor][0]):
+                    for row in (low[anchor][1], high[anchor][1]):
+                        _both(grid, col + dcol, row + drow)
+
+    # Where a prop's own topmost pixel can be, which is the other half of what
+    # decides where the mood band goes: the band clears the prop as well as the
+    # head, or a party hat comes up through a crown.
+    tops = [low["head"][1], high["head"][1]]
+    for prop, grid in sprites.PROPS.items():
+        dcol, drow = sprites.PROP_ANCHORS[prop][key]
+        for col in (low["head"][0], high["head"][0]):
+            for row in (low["head"][1], high["head"][1]):
+                _both(grid, col + dcol, row + drow)
+                tops.append(row + drow + sprites.ink_box(grid)[1])
+
+    for grid in sprites.MOODS.values():
+        for top in (min(tops), max(tops)):
+            placed.append((grid, 0, top - sprites.MOOD_H))
+
+    _HALO_REACH[key] = sprites.overlay_box(placed)
+    return _HALO_REACH[key]
+
+
+class HaloWindow(QWidget):
+    """Everything drawn around the character that is not the character.
+
+    A second top-level window for the reason the basket has one: it is 116 by
+    94 while the character's is 56 by 56, and the character's window is the
+    click target, the drop target and the thing the bubble's side is measured
+    from. Grown to hold the overlays it would be a click target twice the size
+    of the thing being clicked.
+
+    It does not take the mouse, and WA_TransparentForMouseEvents is the whole
+    of that promise — the same promise HoopWindow makes, for the same reason,
+    except that this one is up whenever the character is rather than only while
+    a game is running. There is no mouse handler here either, so there is no
+    second way in.
+
+    It is handed sheet keys and not images. What the companion decides is which
+    drawing goes where; a key this window has not got costs that drawing and
+    nothing else, which is the discipline clip_or_fallback applies to the
+    animator one layer down.
+    """
+
+    def __init__(self, brand="claude", scale=None):
+        super().__init__(None)
+        self.setWindowFlags(
+            Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
+            | Qt.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.brand = "codex" if brand == "codex" else "claude"
+        self.scale = int(sprites.SCALE if scale is None else scale)
+        # Two sheets and not one: the particles and the mood bands are painted
+        # in EFFECT_PALETTE and take no brand, and the props are painted in the
+        # brand's own. build_effect_sheet raises on a body palette and would
+        # not, which is the argument buddy_sprites makes for keeping them apart.
+        self.sheet = dict(sprites.build_effect_sheet(self.scale))
+        self.sheet.update(sprites.build_prop_sheet(self.brand, self.scale))
+        self.reach = halo_reach(self.brand)
+        left, top, right, bottom = self.reach
+        self.resize((right - left + 1) * self.scale,
+                    (bottom - top + 1) * self.scale)
+        self.items = []
+        self._stuck = False
+
+    @property
+    def origin(self):
+        """Where the sprite's own top-left sits inside this window, in pixels."""
+        return (-self.reach[0] * self.scale, -self.reach[1] * self.scale)
+
+    def follow(self, sprite, items):
+        """Track the character and draw `items` around it.
+
+        `sprite` is the top-left of the sprite's own square on screen, so the
+        overlays line up with the drawing rather than with the window it is
+        painted into — with a bubble open on the left those two are a bubble's
+        width apart, and using the window's corner would hang the mood band
+        over the bubble instead of over the head.
+
+        Not snapped to the sprite grid, deliberately: the character's own
+        window is snapped and this follows it exactly, so the two share a
+        parity. Snapping this one separately is how a halo ends up a pixel off
+        the head it belongs to.
+        """
+        ox, oy = self.origin
+        self.move(int(sprite[0]) - ox, int(sprite[1]) - oy)
+        items = [item for item in items if item[0] in self.sheet]
+        if items != self.items:
+            self.items = items
+            self.update()
+        if not items:
+            if self.isVisible():
+                self.hide()
+            return
+        if not self.isVisible():
+            self.show()
+            if not self._stuck:
+                self._stuck = True
+                # After the window is mapped, or there is nothing to set the
+                # property on. The same delay the other two windows use.
+                QTimer.singleShot(600, lambda: _stick_to_all_desktops(self))
+
+    def paintEvent(self, _event):
+        if not self.items:
+            return
+        p = QPainter(self)
+        # Pixel art, like everything else here: no antialiasing and no
+        # smoothing, or the hard edges that carry the style become gradients.
+        p.setRenderHint(QPainter.Antialiasing, False)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, False)
+        left, top = self.reach[0], self.reach[1]
+        for name, col, row in self.items:
+            image = self.sheet.get(name)
+            if image is None:
+                continue
+            p.drawImage((col - left) * self.scale, (row - top) * self.scale, image)
+        p.end()
+
+
 class Companion(QWidget):
     """The character. Everything here is presentation; Brain decides what it says.
 
@@ -1104,6 +1396,11 @@ class Companion(QWidget):
         # rotation and non-integer scale are the two things that turn pixel
         # art to mush, and the way to not do them is to have no transform.
         self.sheet = sprites.build_sheet(brand)
+        # Kept, not just used: every overlay position is measured per brand —
+        # Rex is four rows taller than Clawd and it is his ear tufts that are
+        # taller — so the halo has to ask the same question with the same
+        # answer the sheet was built with.
+        self.brand = brand
         self.anim = sprites.Animator("idle")
         self.frame = "stand_open"
         self.alert_until = 0.0
@@ -1215,6 +1512,32 @@ class Companion(QWidget):
         self.hoop_window = None
         self.hoop_hide_at = 0.0      # the score clip is allowed to finish
         self.hoop_tries_at = 0       # misses at the moment this one went up
+        # The overlay layer: the mood band, the prop and the particles. Its
+        # window is built the first time there is something to draw in it, for
+        # the reason the basket's is: a companion nobody looks at should not
+        # cost a second window and two more sheets of images. `halo_enabled` is
+        # the single switch, set by --no-halo, by the failure path and by
+        # --self-test, which must leave nothing behind on somebody's desktop.
+        self.halo = None
+        self.halo_enabled = self.options.halo
+        self.mood_level = ""      # dumbness.level: the standing condition
+        self.prop = None          # what it is holding, and since when
+        self.prop_key = ""
+        self.prop_since = 0.0
+        self.effect = ""          # the particle effect on screen
+        self.effect_at = 0.0
+
+        # What it does when nothing is happening, and what it remembers.
+        # buddy_idle owns every clock and verdict here; this end owns the
+        # frame, the words and the pose, which is the same split buddy_hoop
+        # and buddy_focus already have with this file.
+        self.bored = buddy_idle.Boredom(enabled=self.options.bored)
+        self.antics = buddy_idle.Antics()
+        self.streak = buddy_idle.Streak()
+        self.egg = buddy_idle.Egg()
+        self.antic_clip = ""
+        self.antic_until = 0.0
+
         # The first leg of the getaway: running to where the pointer is, so
         # the carry starts on it rather than a body's length away from it.
         self.chasing = False
@@ -1397,6 +1720,12 @@ class Companion(QWidget):
         # wants it.
         self.working = any(row.get("state") == "working"
                            for row in self.brain.visible_sessions())
+        # The standing condition, read from the same field the widget's header
+        # mascot reads. Not bounded by a timer the way mood_clip is: the level
+        # is true until the next reading says otherwise, and the complaint this
+        # answers is a desktop that was degraded and at the edge of its session
+        # for an hour while the character looked exactly as it always does.
+        self.mood_level = self._level_of(self.brain.usage)
         # A directory that did not exist when this started does now, once the
         # collector has run; the watch is cheap to re-check and lost otherwise.
         self._rewatch_command()
@@ -1404,6 +1733,9 @@ class Companion(QWidget):
         self._focus_tick(now)
         self._maybe_refill()
         line = self.brain.line(now=now)
+        # After line(), which is where the detection happens and therefore the
+        # only place brain.firing is fresh.
+        self._choose_prop(now)
         self._insist(now)
         if line and self.voice is not None:
             # Only ever swaps the words. The decision of *whether* to speak
@@ -1437,6 +1769,72 @@ class Companion(QWidget):
             self._wake()
         elif not line:
             self.said = ""
+
+        # Last, and after `line` is known: the one sentence in this program
+        # that is not bound to a measured trigger only goes out when nothing
+        # measured did. Every gate but the clocks is decided here rather than
+        # in the module — a request for quiet is the caller's reading, and
+        # alerts-only is a mode whose whole promise is that it speaks solely
+        # when a session needs the human.
+        silenced = (self.options.alerts_only or self.focus.silences(now)
+                    or (self.options.quiet_hours and self.brain.quiet()))
+        if self.bored.due(now, silenced=silenced, trigger=bool(line)):
+            remark = self.brain.idle_line(now=now)
+            if remark:
+                self._say(remark)
+
+    @staticmethod
+    def _level_of(usage):
+        """dumbness.level out of the widget's payload, or "" for no reading.
+
+        Typed on the way through for the reason Brain.attention is: this ends
+        up as a dictionary key in the paint path, and `"dumbness": 42` in the
+        file would be a TypeError thirty times a second inside the frame timer.
+        A level the art has no band for is no reading at all rather than a
+        KeyError, because the collector's five names and this file's five are
+        two tables and only one of them is in this repository's control.
+        """
+        block = usage.get("dumbness") if isinstance(usage, dict) else None
+        level = block.get("level") if isinstance(block, dict) else None
+        return level if level in sprites.MOODS else ""
+
+    def _choose_prop(self, now):
+        """What the character is holding, and for how long.
+
+        A prop is a state and not a flash. It is the condition itself drawn, so
+        it goes up when the condition is measured and comes down when it stops
+        being measured — which is a poll's granularity, twenty seconds, the
+        same granularity every other reading this program acts on. The floor is
+        the other half of that: a condition true for one reading only would
+        otherwise raise an umbrella and take it away before anybody's eye
+        reached it, and SPEAK_SECONDS is this file's own measured answer to how
+        long something has to be up to be read.
+
+        `focus` wins over all five signals and is the only key here that is not
+        a signal at all. A block silences most of what the other five stand for,
+        so an umbrella held while sitting one out is the character reacting on
+        screen to something it has been told not to mention.
+
+        `--memes off` is answered in overlay_items rather than here: the setting
+        promises a plain sprite, and a prop chosen and then not drawn is still
+        the right decision recorded, which is what a test can read back.
+        """
+        key = ""
+        if self.focus.active:
+            key = "focus"
+        else:
+            for firing in self.brain.firing:
+                if firing in sprites.PROP_TRIGGERS:
+                    key = firing
+                    break
+        if key:
+            if key != self.prop_key:
+                self.prop_key = key
+                self.prop_since = now
+            self.prop = sprites.PROP_TRIGGERS[key]
+        elif self.prop is not None and now - self.prop_since >= PROP_MIN_SECONDS:
+            self.prop = None
+            self.prop_key = ""
 
     @staticmethod
     def _mood_for(key):
@@ -1791,7 +2189,9 @@ class Companion(QWidget):
 
         self._tug(now)
         self._hoop_tick(now, dt)
+        self._antics_tick(now, moving)
         self._animate(dt, now, moving)
+        self._halo_tick(now)
         self.update()
 
     def _swing(self, dt):
@@ -2305,9 +2705,18 @@ class Companion(QWidget):
         getaway and there is no other. Missing leaves every throw counted,
         which is why a miss says nothing here.
         """
+        # The run this basket makes, which buddy_hoop deliberately does not
+        # keep: it counts the throw and it forgives the temper, and whether
+        # this was the third in a row is a different question. The third is the
+        # first that is only the game — the first two are at most the two
+        # throws being paid off — so it is the first that earns something other
+        # than "that settles it". A miss breaks the run; the basket expiring
+        # unthrown does not, which is why nothing about the streak is said
+        # where the basket is taken away.
+        basket = self.streak.scored(now)
         self.mood_clip = clip_or_fallback("celebrate")
         self.mood_until = now + MOOD_SECONDS
-        self._say(self._t("hoopScored"))
+        self._say(self._t(basket.key))
         window = self.hoop_window
         if window is not None:
             window.play("score")
@@ -2321,6 +2730,240 @@ class Companion(QWidget):
         if not self.hoop_enabled or not self.game.live(now):
             return
         self.game.missed()
+        # And the run is over. Reached only when the basket is still up, which
+        # is what tells a miss from a score: landed() takes the basket down on
+        # a hit, so a scored flight never arrives here at all.
+        self.streak.missed()
+
+    # ── the fidget, the overlays and the shake ──
+
+    def _antics_tick(self, now, moving):
+        """The fidget between two events. Nothing here speaks.
+
+        Driven from the frame path and not the poll: an antic lasts four to
+        eight seconds and the poll is twenty, so a poll-driven one would be
+        over before anything read it.
+
+        `moving` blocks a fidget that has not started and never one that has.
+        buddy_idle's `ready` reads "already walking somewhere it chose", and a
+        route antic is walking somewhere *this* chose; read the other way, an
+        antic would interrupt itself on the frame after it began and no route
+        antic would ever be seen once.
+        """
+        waiting = buddy_idle.wants_human(self.brain.visible_sessions())
+        strolling = moving and self.antics.current(now) is None
+        ready = not (self.dragging or self.flying or self.chasing or strolling
+                     or self.docked or self.meeting or self.bubble
+                     or now < self.tug_until or self.focus.silences(now))
+        antic = self.antics.update(now, waiting=waiting, ready=ready)
+        if antic is not None:
+            self.antic_clip = clip_or_fallback(antic.clip)
+            self.antic_until = now + antic.seconds
+            if antic.moves:
+                self.target = self._antic_target(antic)
+                self._wake()
+            return
+        current = self.antics.current(now)
+        if current is None:
+            self.antic_clip = ""
+            return
+        if current.moves and not moving and self.antic_clip == "walk":
+            # A route antic is over when the route is: ANTIC_WALK_SECONDS is
+            # its ceiling, not its length. `pace` has no pose of its own — its
+            # clip is the walk cycle, and a walk cycle standing still is a
+            # character jogging on the spot. `edge` does have one and the
+            # arrival is the whole point of it, so that one keeps the rest of
+            # its seconds looking out over the edge it walked to.
+            self.antics.interrupt(now)
+            self.antic_clip = ""
+
+    def _antic_target(self, antic):
+        """Where a route antic walks to.
+
+        `edge` goes to the nearer side of the screen it is standing on, because
+        looking out past something needs something to look past — the reading
+        _against_edge already makes for a docked character. Everything else is
+        the ordinary wander, which is the point of it: the antic is that the
+        character chose to go somewhere, not where it went. A name this does
+        not know falls through to the wander rather than raising, so an antic
+        added to buddy_idle's catalogue costs its route and not the process.
+        """
+        if antic.name != "edge":
+            return self._pick_target()
+        screen = self._screen_at(self.pos_x, self.pos_y)
+        left = screen.left() + 8
+        right = max(left, screen.right() - BUDDY_PX - 8)
+        near = left if self.pos_x - left <= right - self.pos_x else right
+        return (float(max(self.min_x, min(self.max_x, near))), float(self.pos_y))
+
+    def _egg_reaction(self, now, step):
+        """The answer to a shake.
+
+        buddy_idle decided that a shake happened and which turn of the cycle it
+        is; the pose and the sentence are this file's, which is the split that
+        module states about itself. Delivered through mood_clip, which is the
+        mechanism a line's pose already uses — the reaction is a sentence and a
+        pose held together for MOOD_SECONDS, and there is no second one.
+        """
+        self.mood_clip = clip_or_fallback(EGG_POSE.get(step.name, "annoyed"))
+        self.mood_until = now + MOOD_SECONDS
+        self._say(self._t(EGG_LINE.get(step.name, "eggDizzy")))
+
+    def _halo_ready(self):
+        """The overlay window, built the first time there is anything in it.
+
+        Lazily, for the reason the basket's window is: a companion started with
+        --no-halo, or one that never has a reading to show, should not cost a
+        second top-level window and two more sheets of images. A window that
+        cannot be built raises here, which is what _halo_tick's guard is for.
+        """
+        if self.halo is None:
+            self.halo = HaloWindow(self.brand)
+        return self.halo
+
+    def _halo_off(self):
+        """Stop drawing the overlays for good and take the window down.
+
+        The same shape as _hoop_off and for the same reason: a failure inside a
+        frame timer slot is the process and not the frame, so the answer to one
+        is to stop drawing rather than to raise thirty times a second until the
+        mascot disappears. The character keeps every pose it had; what is lost
+        is the band, the prop and the particles.
+        """
+        self.halo_enabled = False
+        try:
+            if self.halo is not None:
+                self.halo.hide()
+        except Exception:
+            return
+
+    def _halo_tick(self, now):
+        """The mood band, the prop and the particles: one frame of them.
+
+        Everything the layer does on a frame is inside this one guard, and the
+        part of it that can fail on a desktop rather than in arithmetic is the
+        same part the basket's is: a top-level window, a second sheet of
+        images, and a property set on somebody else's compositor.
+        """
+        if not self.halo_enabled:
+            return
+        try:
+            self._halo_frame(now)
+        except Exception:
+            self._halo_off()
+
+    def _halo_frame(self, now):
+        """One frame of the overlay layer. See _halo_tick for why it is wrapped."""
+        if not self.isVisible():
+            # A character nobody has shown has nothing to hang a halo off, and
+            # its window is wherever it was constructed rather than where the
+            # character is standing. The suite builds hundreds of Companions on
+            # the same machine a real mascot is running on; without this, every
+            # one of them puts a window up on somebody's screen.
+            if self.halo is not None and self.halo.isVisible():
+                self.halo.hide()
+            return
+        frame = self.frame
+        if self.dragging:
+            frame = self.swing_frame() or frame
+        items = self.overlay_items(frame, now)
+        if not items and self.halo is None:
+            return
+        self._halo_ready().follow(
+            (self.x() + self.bubble_pad, self.y() + self.height() - BUDDY_PX),
+            items)
+
+    def overlay_items(self, frame, now):
+        """Every overlay the character is wearing, as (sheet key, column, row).
+
+        Keys rather than images, and a method of its own rather than part of a
+        paint, because this is the whole of the decision: which drawing goes
+        where, in the sprite's own pixels. What an assertion can reach is that
+        the right key is asked for in the right state, which is the half of
+        "it looks right" that is not a person looking at it.
+        """
+        if frame not in _ALL_FRAMES:
+            # A pose with no grid behind it. frame_anchors raises KeyError on
+            # one, inside the frame timer, which is the process and not the
+            # frame.
+            return []
+        items = []
+        # "plain sprite, no props" is the widget's own label for --memes off,
+        # and these are props. The setting's other two rungs are a frequency
+        # over the book in the `read` pose, which is a different thing: a
+        # trigger prop is a condition, and a condition does not arrive on a die
+        # roll, so both of those rungs show it.
+        prop = self.prop if self.options.memes != "off" else None
+        if prop not in sprites.PROPS:
+            prop = None
+        if prop is not None:
+            _grid, col, row = sprites.prop_overlay(self.brand, frame, prop,
+                                                   self.facing)
+            # Both directions are baked in the sheet, so the paint path stays a
+            # drawImage with no transform on it. Asking prop_overlay for the
+            # mirrored column and then drawing the unflipped image is an
+            # umbrella held through the creature.
+            items.append((prop + (":flip" if self.facing < 0 else ""), col, row))
+        if self.mood_level in sprites.MOODS:
+            # Handed the prop as well: the band clears whatever is on the head
+            # rather than coming up through a party hat.
+            _grid, col, row = sprites.mood_overlay(self.brand, frame,
+                                                   self.mood_level, prop)
+            items.append(("mood_" + self.mood_level, col, row))
+        items.extend(self._particle_items(frame, now))
+        return items
+
+    def _particle_items(self, frame, now):
+        """The motes of the effect on screen, at this instant.
+
+        The layout is buddy_sprites' and the clock is this file's, which is the
+        split that module states about itself: it owns where a mote may be and
+        how big it is at each point of its life, and how long a point of a life
+        lasts is a clock.
+
+        One pass of the effect per pass of the clip it belongs to, so the
+        length is not invented here either. `land` is a 490 ms one-shot and its
+        dust settles exactly as the landing finishes; `sleep` turns over every
+        2.6 s and one Z climbs per turn; `furious` turns over every 320 ms and
+        the streaks flick past at a run. The motes are let out across the first
+        PARTICLE_STAGGER of a pass and each lives for the rest of it, so the
+        last one born dies as the pass ends and the loop has no seam in it.
+        """
+        effect = self.effect
+        if effect not in sprites.PARTICLE_EFFECTS:
+            return []
+        cycle = self._effect_seconds(effect)
+        if cycle <= 0:
+            return []
+        motes = sprites.particle_layout(self.brand, frame, effect, self.facing)
+        if not motes:
+            return []
+        phase = (now - self.effect_at) % cycle
+        window = PARTICLE_STAGGER * cycle
+        life = cycle - window
+        out = []
+        for index, mote in enumerate(motes):
+            if not mote:
+                continue
+            born = window * index / (len(motes) - 1) if len(motes) > 1 else 0.0
+            age = phase - born
+            if age < 0.0 or age >= life:
+                continue
+            out.append(mote[min(len(mote) - 1, int(age / (life / len(mote))))])
+        return out
+
+    @staticmethod
+    def _effect_seconds(effect):
+        """How long one pass of an effect lasts: its clip's own length.
+
+        PARTICLE_EFFECTS is keyed by clip name precisely so that this question
+        has an answer already in the sheet. A key that is not a clip has no
+        length and draws nothing, rather than being given a plausible number.
+        """
+        clip = sprites.CLIPS.get(effect)
+        if not clip:
+            return 0.0
+        return sum(ms for _frame, ms in clip["frames"]) / 1000.0
 
     def _play_once(self, name):
         """A one-shot clip, or nothing at all.
@@ -2400,6 +3043,15 @@ class Companion(QWidget):
             # Parked against an edge, it looks out over it. Docked in a corner
             # it otherwise stands facing the wallpaper until SLEEP_AFTER.
             clip = "peek"
+        elif self.antic_clip and now < self.antic_until:
+            # A fidget: movement with no sentence attached, which is the cheap
+            # thing that fills the gap between two events. Above `type` on
+            # purpose — an antic is the visible answer to nothing happening,
+            # and a background loop is exactly what it is allowed to break.
+            # Below everything above it because every one of those is
+            # something actually happening, and buddy_idle.Antics is told to
+            # end the fidget the moment one of them does.
+            clip = self.antic_clip
         elif self.working:
             # Something is running, so it types along with it, and goes back to
             # plain idle the moment nothing is.
@@ -2430,6 +3082,15 @@ class Companion(QWidget):
         # shut, and mid-stride it is lost.
         self.anim.maybe_blink(dt, allowed=clip in ("idle", "talk"))
         self.frame = self.anim.advance(dt)
+        # The particles belong to the clip that is actually on screen, one-shots
+        # included: `land` is a one-shot played over whatever was running, and
+        # the dust it throws up is the only thing that says it landed at all.
+        # anim.clip is that clip; anim.base is what it will go back to, and
+        # reading base here would lose every effect that is a one-shot.
+        effect = self.anim.clip if self.anim.clip in sprites.PARTICLE_EFFECTS else ""
+        if effect != self.effect:
+            self.effect = effect
+            self.effect_at = now
 
     # ── painting ──
 
@@ -2575,6 +3236,10 @@ class Companion(QWidget):
         self.flying = False
         self.chasing = False
         self.chase_until = 0.0
+        # A hand on it is something happening, which is what boredom is
+        # measured from the absence of. Here rather than on the drag, because a
+        # click is a hand on it too and it ends with a terminal being raised.
+        self.bored.happened(time.monotonic())
         self.press_pos = event.globalPosition()
         # Against the character's own top-left, not the window's. With a bubble
         # open on the left the two are a bubble's width apart, and the offset
@@ -2588,17 +3253,23 @@ class Companion(QWidget):
     def mouseMoveEvent(self, event):
         if not (event.buttons() & Qt.LeftButton):
             return
+        now = time.monotonic()
         moved = (event.globalPosition() - self.press_pos).manhattanLength()
         if not self.dragging and moved < 6:
             return          # a click with a shaky hand is still a click
         if not self.dragging:
             # A fresh grab: reset the spring so the body does not arrive
             # carrying momentum from the last time it was thrown around.
-            self.drag_started = time.monotonic()
+            self.drag_started = now
             self.drag_complained = False
             self.vel_x = self.vel_y = 0.0
             self.drag_distance = 0.0
             self.throw_samples = []
+            # The egg's budget is measured from the same instant DRAG_PATIENCE
+            # is, which is what keeps EGG_SECONDS = 3.0 half a second inside
+            # it. Opened here and not on the press: a press that never moves
+            # six pixels is a click, and a click is already spoken for.
+            self.egg.grabbed(now)
         self.dragging = True
         self.setCursor(Qt.ClosedHandCursor)
         # Where the hand is, not where the body goes. _tick runs the spring;
@@ -2610,11 +3281,17 @@ class Companion(QWidget):
             self.drag_distance += (abs(new_hand[0] - self.hand[0])
                                    + abs(new_hand[1] - self.hand[1]))
         self.hand = new_hand
+        # The same sample the throw is read out of, read for its shape instead.
+        # Nothing else in this file looks at a drag's path: the duration, the
+        # Manhattan length and the velocity of the last ninety milliseconds are
+        # all measured, and the shape is the one thing left that means nothing
+        # yet — which is the whole reason the egg is a shake.
+        self.egg.moved(now, new_hand)
         # The gesture, for the release to read a throw out of. Trimmed here
         # rather than in the module: buddy_actions.throw_velocity walks back
         # only as far as its own window, and an unbounded list would grow for
         # as long as somebody keeps dragging.
-        self.throw_samples.append((time.monotonic(), new_hand[0], new_hand[1]))
+        self.throw_samples.append((now, new_hand[0], new_hand[1]))
         del self.throw_samples[:-actions.THROW_HISTORY]
 
     def mouseReleaseEvent(self, event):
@@ -2634,6 +3311,28 @@ class Companion(QWidget):
             velocity = actions.throw_velocity(self.throw_samples)
             self.throw_samples = []
             thrown = velocity != (0.0, 0.0)
+            # The shake, judged before anything else acts on this release.
+            # buddy_idle refuses a drag that already means something — one that
+            # was thrown, one that travelled DRAG_TUG_DISTANCE, one held past
+            # EGG_SECONDS, which is inside DRAG_PATIENCE and well inside
+            # DRAG_TUG_SECONDS and HOOP_AFTER — so a release can never be an
+            # egg and one of those at once. The one collision left is not about
+            # this drag at all but about a count kept in this file, and it is
+            # answered immediately below.
+            egg = self.egg.released(now, thrown=thrown,
+                                    travelled=self.drag_distance)
+            if egg is not None:
+                # A shake is a gesture aimed at the character, not one more
+                # time it was picked up and put down. Left in recent_drags it
+                # would make the very next shake the second drag inside
+                # DRAG_MEMORY, which is the getaway — and the getaway would
+                # bury the reaction this one just earned under seven seconds of
+                # the character running off with the mouse. The refusals in
+                # buddy_idle cannot see this one: it is about a tally kept here
+                # and not about the drag it was handed.
+                if self.recent_drags and self.recent_drags[-1] == now:
+                    self.recent_drags.pop()
+                self._egg_reaction(now, egg)
             if thrown:
                 # Remembered, and by the module that decides what a pattern of
                 # throws means. Once is the discovery that the character can
@@ -2677,7 +3376,8 @@ class Companion(QWidget):
             # anybody could accept it. It does expire, which is what stops
             # holding the button down from being a way never to be retaliated
             # against at all.
-            if (not thrown and not self.game.suspends_getaway(now)
+            if (not thrown and egg is None
+                    and not self.game.suspends_getaway(now)
                     and (insistent
                          or ((provoked or furious)
                              and now - self.tugged_at > TUG_COOLDOWN))):
@@ -2779,6 +3479,12 @@ class Companion(QWidget):
         companion visible to the other one for five seconds after it is gone.
         """
         self._retire()
+        # And the windows that are not this one. Both are top-level, so
+        # closing the character leaves them on screen with nothing under them:
+        # a mood band hanging over an empty patch of wallpaper.
+        for window in (self.halo, self.hoop_window):
+            if window is not None:
+                window.hide()
         super().closeEvent(event)
 
     def _retire(self):
@@ -2968,6 +3674,12 @@ class Companion(QWidget):
 
     def _say(self, text):
         """Put words in the bubble now, outside the poll cycle."""
+        # Every unprompted sentence in the program passes through here — the
+        # drag complaint, the getaway, the basket, a focus block, a refused
+        # drop, a greeting — and every one of them is something that happened.
+        # Boredom is measured from the last of those, so this is the one place
+        # that has to say so rather than each of the eleven call sites.
+        self.bored.happened(time.monotonic())
         self.said = text
         self.bubble = text
         self.prop_line = self._roll_prop()
@@ -2998,6 +3710,11 @@ class Companion(QWidget):
                    "tugging": "Right. My turn. Come along.",
                    "hoopUp": "There is a basket over there. Use it.",
                    "hoopScored": "In. That settles it.",
+                   "hoopAgain": "Again. You are enjoying this.",
+                   "hoopStreak": "Three. All right, you can play.",
+                   "eggDizzy": "Whoa. Put me down, the room is moving.",
+                   "eggDelighted": "Ha. Again, do that again.",
+                   "eggSulking": "Right. I am sitting this one out.",
                    "hoopMissed": "The basket is gone. So is your aim.",
                    "hoopGone": "Nobody threw. The basket is gone.",
                    "dropped": "...fine. Keep your mouse.",
@@ -3031,6 +3748,11 @@ class Companion(QWidget):
                    "tugging": "Certo. Agora é a minha vez. Vem comigo.",
                    "hoopUp": "Tem uma cesta ali. Aproveita.",
                    "hoopScored": "Entrou. Ficamos quites.",
+                   "hoopAgain": "De novo. Tu tá gostando disso.",
+                   "hoopStreak": "Três. Tá bom, tu sabe jogar.",
+                   "eggDizzy": "Opa. Me larga, a sala tá girando.",
+                   "eggDelighted": "Ha. De novo, faz de novo.",
+                   "eggSulking": "Pronto. Essa eu vou ficar de fora.",
                    "hoopMissed": "A cesta foi embora. A tua mira também.",
                    "hoopGone": "Ninguém arremessou. A cesta foi embora.",
                    "dropped": "...tá bom. Fica com o teu mouse.",
@@ -3095,6 +3817,21 @@ def main():
         # throwaway process is the one thing it cannot be allowed to leave
         # behind on a desktop somebody is using.
         companion.hoop_enabled = False
+        # And no halo. The same argument the basket's switch makes, one window
+        # over: the overlay layer is a second always-on-top window, and this
+        # mode runs on a desktop nobody is watching precisely so that it can
+        # leave nothing behind on one.
+        companion.halo_enabled = False
+        # And no fidget. An antic picks its own destination, and the walk this
+        # mode measures is a destination this mode set — a route antic landing
+        # inside the 1500 ms below would move the character somewhere else and
+        # the report would be of that walk instead.
+        companion.antics.enabled = False
+        # And it does not get bored at a desktop nobody is at, which is the one
+        # thing here that would speak with nothing to report. Off by default
+        # already; set rather than reasoned about, for the reason the basket's
+        # switch is.
+        companion.bored.enabled = False
         start = (companion.pos_x, companion.pos_y)
         companion.docked = False
         companion.target = (
