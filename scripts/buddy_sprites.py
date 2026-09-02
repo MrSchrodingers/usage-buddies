@@ -674,6 +674,302 @@ SHADOW = [
 SHADOW_PALETTE = {"d": "#59000000", "m": "#2E000000"}
 
 
+# ── the hoop ───────────────────────────────────────────────────────────────
+# Hold the character long enough and a basket appears somewhere on the screen
+# to throw it at. The art of the target is here. Where it appears and whether a
+# throw went in are decided elsewhere, from HOOP_RIM below.
+#
+# Its own canvas and its own palette. 96 by 72 source pixels at the same
+# integer SCALE as everything else, which is 192 by 144 on screen. Everything
+# else in this file is 28 by 28 and the tests sweep for exactly that, so these
+# grids are excluded there by name — sweeping them in asserts a 28-wide grid
+# against a 96-wide one.
+#
+# The first version was 64 by 48 and it was wrong for a reason no test caught.
+# Its opening came to 44 screen pixels; the character thrown at it is 56 wide.
+# A basket narrower than the thing you throw into it reads as impossible, and
+# it was not — the hit test scores a throw that passes within half a sprite of
+# the middle, so it was easy and looked unmakeable. A drawing that promises
+# less than the rule delivers is worse than one that promises too much: it
+# teaches the player not to aim. The opening is now 76 screen pixels, which is
+# the character plus a fifth of it either side.
+#
+# The legend is this palette's, not the body's. A letter means a colour in the
+# palette it is drawn with:
+#   .  transparent    o  outline
+#   b  board          s  board shade     t  target rectangle
+#   r  rim            h  rim highlight   k  rim, far side
+#   n  net cord       u  net cord behind
+#
+# `d` and `m` are avoided on purpose: they are the shadow's two characters, and
+# a letter meaning one thing in SHADOW and another here is the confusion that
+# comment is about.
+
+HOOP_W, HOOP_H = 96, 72
+
+# The outline is dark and warm rather than black, for the reason given under
+# PALETTES. The rim carries the only saturated hue in the drawing: without it
+# the silhouette is a pale rectangle with a smaller rectangle inside it, which
+# is a window, not a basket.
+HOOP_PALETTE = {
+    "o": "#43291B", "b": "#F0E3D2", "s": "#C9B49A", "t": "#C2521F",
+    "k": "#B4531F", "r": "#EE7A31", "h": "#FFB067",
+    "n": "#D6BC99", "u": "#8F7355",
+}
+
+# The board and the ring in one grid, because neither of them moves.
+#
+# The ring is drawn as a ring: an outlined ellipse with nothing inside it, so
+# the wallpaper shows through the basket and the opening is a hole rather than
+# a lighter patch of paint. That hole is what the player aims at and it is the
+# one thing here that has to be unmistakable at 192 by 144 over someone else's
+# desktop. Its far half is a step darker than its near half, which is what
+# stops the ellipse from reading as a flat washer seen face on.
+#
+# The net's rows are left empty; it is a band, below.
+HOOP_BOARD = [
+    "................................................................................................",
+    "...............oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbttttttttttttttttttttttbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbtbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbttttttttttttttttttttttbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbso...............",
+    "...............osssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssso...............",
+    "...............oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo...............",
+    "...................................oooookkkkkkkkkkkkkkkkooooo...................................",
+    "................................oookkkkkkkkkkkkkkkkkkkkkkkkkkooo................................",
+    "..............................ookkkkkkkkooooooooooooooookkkkkkkkoo..............................",
+    "............................ookkkkkooooo................oooookkkkkoo............................",
+    "...........................okkkkoo............................ookkkko...........................",
+    "..........................okkkoo................................ookkko..........................",
+    ".........................ohhho....................................ohhho.........................",
+    ".........................orro......................................orro.........................",
+    ".........................orro......................................orro.........................",
+    ".........................orrro....................................orrro.........................",
+    "..........................orrhoo................................oohrro..........................",
+    "...........................orrhhoo............................oohhrro...........................",
+    "............................oorrhhhooooo................ooooohhhrroo............................",
+    "..............................oorrrhhhhhoooooooooooooooohhhhhrrroo..............................",
+    "................................ooorrrrrhhhhhhhhhhhhhhhhrrrrrooo................................",
+    "...................................ooooorrrrrrrrrrrrrrrrooooo...................................",
+    "........................................oooooooooooooooo........................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+]
+
+# ── the net ────────────────────────────────────────────────────────────────
+# Cropped bands, for the same reason the legs are: the net is the only part of
+# the basket that moves, and a twenty-seven-row diff is legible where a
+# seventy-two-row one is not. Band row 0 falls inside the ring's own rows, so every cord
+# starts at a pixel the ring is already covering and there is no seam to see.
+#
+# The band goes on *behind* the board grid: a cord is only drawn where the
+# board left the pixel transparent. Drawn over, the cords notch the ring's
+# outline everywhere the two overlap and a ring with holes in its edge stops
+# reading as a ring.
+#
+# Three states, one drawing each:
+#   hang    at rest, tapering to about half the rim's width
+#   swish   a ball has just gone through: pulled down and bellied out in the
+#           middle, which is the whole of what a made basket looks like
+#   recoil  the snap back, swung to one side and shorter than it hangs
+#
+# The cords are in two tones and neither of them is white. A net in the
+# lightest colour there is disappears against a pale wallpaper, which is the
+# trap the legs avoid by being shade rather than outline. Two steps down from
+# white, which is where these are, they hold against a near-white wallpaper
+# and still read as cord rather than as shadow against a dark one. The first
+# pass was one step down and it washed out on white at the size it is drawn.
+# The two tones are the cords in front and the cords behind, which is what
+# makes the mesh read as woven instead of as a printed pattern.
+HOOP_NET_ROW = 44
+
+HOOP_NETS = {
+    "hang": [
+        ".............................n....................................n.............................",
+        "..............................n..n............................n..n..............................",
+        "..............................n..un...n..................n...nu..n..............................",
+        "...............................n.u.n..un...n........n...nu..n.u.n...............................",
+        "................................un..nu..n.u.n..uu..n.u.n..un..nu................................",
+        "................................u.n.nu..n.u.n..uu..n.u.n..un.n.u................................",
+        "................................u.n..u...nu..nu..un..un...u..n.u................................",
+        "................................n..nu.n..un...u..u...nu..n.un..n................................",
+        ".................................n..n..nu.n..u.nn.u..n.un..n..n.................................",
+        ".................................n..un..n..nnu.nn.unn..n..nu..n.................................",
+        "..................................n.un..un..un....nu..nu..nu.n..................................",
+        "...................................nu.n.unnu.n.uu.n.unnu.n.un...................................",
+        "...................................un..u..nu..nuun..un..u..nu...................................",
+        "...................................u.n.u...u..u..u..u...u.n.u...................................",
+        "...................................u..u.n.u.n.unnu.n.u.n.u..u...................................",
+        "...................................n..n..nu.nu.nn.un.un..n..n...................................",
+        "....................................n.un..n..n....n..n..nu.n....................................",
+        ".....................................nun.unnun....nunnu.nun.....................................",
+        ".....................................nu.nu.nu.nuun.un.un.un.....................................",
+        "......................................u.un.uu.uuuu.uu.nu.u......................................",
+        ".....................................u.nun.un.unnu.nu.nun.u.....................................",
+        ".....................................u.nu.nu.nu..un.un.un.u.....................................",
+        ".....................................u..u.u..u....u..u.u..u.....................................",
+        "................................................................................................",
+        "................................................................................................",
+        "................................................................................................",
+        "................................................................................................",
+    ],
+    "swish": [
+        ".............................n....................................n.............................",
+        ".............................n...n............................n...n.............................",
+        "..............................n..un...n..................n...nu..n..............................",
+        "..............................n.u.n...un...n........n...nu...n.u.n..............................",
+        "...............................nu..n.u.n..u.n..uu..n.u..n.u.n..un...............................",
+        "...............................un...nu..n.u.n..uu..n.u.n..un...nu...............................",
+        "...............................u.n..u...nu...nu..un...un...u..n.u...............................",
+        "...............................u..n.un...u....u..u....u...nu.n..u...............................",
+        "..............................n...nu..n.u.n..un..nu..n.u.n..un...n..............................",
+        "...............................n...n..n.u.n..u.nn.u..n.u.n..n...n...............................",
+        "................................n..n...n...nn..nn..nn...n...n..n................................",
+        "................................n.u.n..un..un......nu..nu..n.u.n................................",
+        ".................................nu..n.un..u.n.uu.n.u..nu.n..un.................................",
+        "..................................u..nu..nu..n.uu.n..un..un..u..................................",
+        "..................................un..u...u...u..u...u...u..nu..................................",
+        "..................................u.n.un..un..u..u..nu..nu.n.u..................................",
+        "..................................u.nu.n.u.n.u.nn.u.n.u.n.un.u..................................",
+        ".................................n...n..nu..nu.nn.un..un..n...n.................................",
+        "..................................n..un..n..n......n..n..nu..n..................................",
+        "...................................nnun.unn.un....nu.nnu.nunn...................................",
+        "....................................nu.nu.n.un.uu.nu.n.un.un....................................",
+        ".....................................u..u..uu.nuun.uu..u..u.....................................",
+        ".....................................un.u..un.unnu.nu..u.nu.....................................",
+        ".....................................un.un.un.unnu.nu.nu.nu.....................................",
+        ".....................................u.nu.nu.nu..un.un.un.u.....................................",
+        ".....................................u..u.u..u....u..u.u..u.....................................",
+        "................................................................................................",
+    ],
+    "recoil": [
+        ".............................n....................................u.............................",
+        "..............................n..n.............................n..u.............................",
+        "...............................nnun...n...................n...un.u..............................",
+        ".................................u.nn.un...n....n....n...un..u.nu...............................",
+        ".................................uu..nu.n..un...un..u.n.u..n.u.u................................",
+        "..................................un..u..nu..n.u..n.u.n.u..uu.u.u...............................",
+        "..................................n.n.un..u...nu..nu...u..un..uu................................",
+        "...................................n.nn.n.un..un..un..u.nu..nu.u................................",
+        "....................................n.n..n..n.u.n.u.nu..n..un.u.................................",
+        "....................................n.un.un..n...n...n..un.u.nu.................................",
+        ".....................................nu.nu.n.un.un..un.u.nu..u..................................",
+        "......................................u..u..nu.nu.n.u.nu..u.un..................................",
+        "......................................un.un.u..nu..u..un.un.un..................................",
+        "......................................n.nu.nun.un..u..unu.nu..u.................................",
+        "......................................n..n..n.nu.nu.nu..n..n.u..................................",
+        ".......................................n.n.un.un.un.un.un.un.u..................................",
+        "........................................u.nu.nu.nu.nu.nu.nu.uu..................................",
+        "........................................u..u..u..u.nu.u..uu.u...................................",
+        "........................................un.un.u.un.un.un.unu.n..................................",
+        "........................................u.u.nu.nu.nu.nunu.nu.n..................................",
+        "........................................u.u..u..u.u..u..u..u..n.................................",
+        "................................................................................................",
+        "................................................................................................",
+        "................................................................................................",
+        "................................................................................................",
+        "................................................................................................",
+        "................................................................................................",
+    ],
+}
+
+# The opening, in source pixels, as (left, top, width, height). The hole is an
+# ellipse and this is the box around it, so the corners of the box are on the
+# ring rather than through it.
+#
+# It lives with the art because the art is what knows where the hole is. The
+# same four numbers written again beside whatever decides that a throw scored
+# are two truths, and they diverge the first time the ring moves by a pixel.
+# The other side is free to be more generous than this — a basket that only
+# counts on a pixel-perfect line through the middle is an exam, not a joke —
+# but it should be generous about a number that came from here.
+HOOP_RIM = (29, 34, 38, 10)
+
+# Same shape as CLIPS and a table of its own. CLIPS is the character's: it is
+# what the Animator resolves names against and what the tests sweep for frames
+# build_frames can produce, so a hoop frame listed there is a name that
+# resolves to nothing on the character's sheet. Whoever animates the basket
+# steps through this table itself.
+#
+# Non-uniform for the reason every clip in this file is: the snap back is
+# quicker than the stretch that caused it, and the hold at the end is what says
+# the ball has gone through and stopped mattering.
+HOOP_CLIPS = {
+    "score": {"loop": False, "frames": [("hoop_swish", 80), ("hoop_recoil", 120),
+                                        ("hoop_swish", 90), ("hoop_hang", 240)]},
+}
+
+
+def build_hoop(net="hang"):
+    """The board, the ring and one net band, as one HOOP_W by HOOP_H grid."""
+    grid = [list(row) for row in HOOP_BOARD]
+    for r, row in enumerate(HOOP_NETS[net]):
+        rr = HOOP_NET_ROW + r
+        if not 0 <= rr < HOOP_H:
+            continue
+        for c, ch in enumerate(row):
+            # Behind the ring, never over it: see the note above the bands.
+            if ch != "." and grid[rr][c] == ".":
+                grid[rr][c] = ch
+    return ["".join(row) for row in grid]
+
+
+def build_hoop_frames():
+    """Every hoop frame as an ASCII grid, keyed by the names HOOP_CLIPS uses.
+
+    The `hoop_` prefix is not decoration. These frames end up in a dictionary
+    beside the character's, and `swish` next to `stand_open` is two canvases
+    and two palettes under names that look like they belong together.
+    """
+    return {"hoop_" + name: build_hoop(name) for name in HOOP_NETS}
+
+
 # ── composition ────────────────────────────────────────────────────────────
 
 BLANK_ROW = "." * GRID
@@ -1431,3 +1727,29 @@ def build_sheet(brand, scale=SCALE):
     sheet["shadow"] = to_qimage(SHADOW, SHADOW_PALETTE, scale)
     return sheet
 
+
+def build_hoop_sheet(scale=SCALE):
+    """The hoop's frames as QImages, keyed as build_hoop_frames names them.
+
+    Its own sheet rather than more keys in build_sheet. build_sheet takes a
+    brand and the hoop has none; every image it hands back is the character's
+    canvas and this one is not; and it paints with the brand palette, in which
+    `t`, `k`, `n` and `u` do not exist while `b`, `s` and `h` exist and mean
+    body colours. The first two go wrong in silence and the third raises.
+
+    No `:flip` keys. A basket has no direction to face, so a mirrored one is
+    one more image that can be asked for and drawn by mistake — the same
+    argument as the shadow's.
+
+    `scale` is here rather than fixed because the basket has to be worth
+    aiming at: nothing in the grid assumes 2, and drawing it at 3 gives a
+    target half again as wide without a second drawing of it. Any integer is
+    safe; a fraction is not, for the reason at the top of this file.
+
+    Whatever is passed here is also what HOOP_RIM has to be converted with by
+    whoever judges a throw. Drawn at one scale and judged at another, the
+    basket is one size to look at and another size to hit, and the only
+    symptom is that it feels wrong.
+    """
+    return {name: to_qimage(grid, HOOP_PALETTE, scale)
+            for name, grid in build_hoop_frames().items()}

@@ -43,13 +43,31 @@ def _ink(grid):
 # PROP_* excluded because a prop is a small band like the eye and leg bands,
 # not a body: it is four rows square and it is pasted at an offset. The bands
 # inside the dictionaries are not swept here either, for the same reason.
-@pytest.mark.parametrize("name", [n for n in dir(sprites)
-                                  if n.isupper() and not n.startswith("CAR_")
-                                  and not n.startswith("SHADOW")
-                                  and not n.startswith("PROP_")
-                                  and isinstance(getattr(sprites, n), list)
-                                  and getattr(sprites, n)
-                                  and isinstance(getattr(sprites, n)[0], str)])
+#
+# HOOP_* excluded on the car's precedent, which is exactly what it is: 96 by 72
+# on a canvas of its own, in a palette of its own where `b`, `s` and `h` name
+# board colours rather than body ones. Swept in here it asserts a 28-wide grid
+# against a 96-wide one and it fails on the first row. It has its own tests
+# below, and the exclusion has its own test too — one that fails if it grew
+# wide enough to stop the sweep watching the bodies.
+def _swept_grid_names():
+    """The module-level grids the 28-square sweep covers.
+
+    A function rather than a comprehension inside the decorator so that the
+    test which checks *what* is excluded reads the same list the sweep runs on.
+    Two copies of this filter is how an exclusion widens on one side only.
+    """
+    return [n for n in dir(sprites)
+            if n.isupper() and not n.startswith("CAR_")
+            and not n.startswith("HOOP_")
+            and not n.startswith("SHADOW")
+            and not n.startswith("PROP_")
+            and isinstance(getattr(sprites, n), list)
+            and getattr(sprites, n)
+            and isinstance(getattr(sprites, n)[0], str)]
+
+
+@pytest.mark.parametrize("name", _swept_grid_names())
 def test_every_body_is_a_square_grid_of_known_colours(name):
     """A row one character short shifts every pixel after it by one."""
     grid = getattr(sprites, name)
@@ -380,6 +398,212 @@ def test_the_shadow_is_wider_than_it_is_tall():
     assert cols > rows * 2, f"{cols} wide by {rows} tall is not flat"
 
 
+# ── the hoop ───────────────────────────────────────────────────────────────
+# A second canvas in the same file, which is the situation the car was in when
+# it was here. Everything below is about the two ways that goes wrong: the
+# 28-square checks reaching a 96-wide grid, and the 96-wide grid escaping every
+# check there is because it was excluded from all of them.
+
+HOOP_LEGAL = set(".obstkrhnu")
+HOOP_RING = set("rhko")
+HOOP_BOARD_PAINT = set("bst")
+
+
+def test_the_hoop_grids_are_rectangles_of_their_own_colours():
+    """A row one character short shifts every pixel after it by one, and on a
+    96-wide grid that is a whole ring sliding off its board.
+
+    The alphabet is checked against HOOP_PALETTE and not against the body's:
+    `b` is the board here and the creature there, and a character with no entry
+    in the palette it is painted with raises at paint time, on a machine with a
+    display, which is not where the tests run.
+    """
+    assert set(sprites.HOOP_PALETTE) <= HOOP_LEGAL, "the palette grew a letter"
+    grids = {"HOOP_BOARD": sprites.HOOP_BOARD}
+    grids.update({f"HOOP_NETS[{k!r}]": v for k, v in sprites.HOOP_NETS.items()})
+    grids.update(sprites.build_hoop_frames())
+    for name, grid in grids.items():
+        assert grid, f"{name} is empty"
+        for i, row in enumerate(grid):
+            assert len(row) == sprites.HOOP_W, \
+                f"{name} row {i}: {len(row)} columns, not {sprites.HOOP_W}"
+            assert set(row) <= HOOP_LEGAL, f"{name} row {i}: {set(row) - HOOP_LEGAL}"
+            assert set(row) - {"."} <= set(sprites.HOOP_PALETTE), \
+                f"{name} row {i}: undrawable in HOOP_PALETTE"
+    assert len(sprites.HOOP_BOARD) == sprites.HOOP_H
+    for name, grid in sprites.build_hoop_frames().items():
+        assert len(grid) == sprites.HOOP_H, f"{name}: {len(grid)} rows"
+
+
+def test_every_hoop_colour_is_drawn_and_every_drawn_colour_has_a_colour():
+    """A palette entry nothing uses is a colour someone chose and then lost;
+    a character no palette has is a KeyError the moment it is painted."""
+    used = {ch for grid in sprites.build_hoop_frames().values()
+            for row in grid for ch in row} - {"."}
+    assert used == set(sprites.HOOP_PALETTE), \
+        f"drawn but unpainted: {used - set(sprites.HOOP_PALETTE)}; " \
+        f"painted but undrawn: {set(sprites.HOOP_PALETTE) - used}"
+
+
+def test_the_hoop_is_out_of_the_28_square_sweep_and_the_bodies_are_still_in_it():
+    """Both halves, because the cheap way to pass the first is to break the
+    second.
+
+    The sweep asserts GRID rows of GRID columns. HOOP_BOARD is 72 of 96 and has
+    to be excluded or it fails on its first row. But an exclusion is a hole in
+    the net, and one written a little too wide — matching on `HOO`, or on any
+    name with an underscore in it — stops the sweep watching the creatures it
+    was written for, and nothing says so.
+    """
+    swept = _swept_grid_names()
+    assert "HOOP_BOARD" not in swept, "the 96-wide grid is in the 28-square sweep"
+    for name in ("CLAUDE_BODY", "CLAUDE_SQUASH", "CLAUDE_STRETCH",
+                 "CODEX_BODY", "CODEX_SQUASH", "CODEX_STRETCH"):
+        assert name in swept, f"the sweep has stopped looking at {name}"
+
+
+def test_the_score_clip_names_frames_that_exist_and_does_not_run_at_one_rate():
+    """A clip is names and durations, and both go wrong quietly.
+
+    A renamed frame is a KeyError on the one occasion the animation plays,
+    which is the moment someone finally landed the throw. And a made basket at
+    a constant frame rate is a slideshow: the snap back has to be quicker than
+    the stretch that caused it, or the net reads as sliding rather than
+    springing.
+    """
+    built = set(sprites.build_hoop_frames())
+    for name, clip in sprites.HOOP_CLIPS.items():
+        named = {f for f, _ in clip["frames"]}
+        assert named <= built, f"{name} references {named - built}"
+        timings = [ms for _, ms in clip["frames"]]
+        assert len(timings) > 1, f"{name} is a single frame, not a clip"
+        assert len(set(timings)) > 1, f"{name} is a metronome: {timings}"
+
+
+def test_the_declared_opening_is_the_hole_and_not_the_middle_of_the_board():
+    """HOOP_RIM is where a throw has to arrive, and it is four numbers.
+
+    Four numbers are wrong silently: a box on the backboard is still a box on
+    the drawing, and the only symptom is that hitting the target does nothing
+    while hitting the board scores. So it is checked against the pixels — the
+    box has to sit below the board, hold no board paint, and be open along its
+    middle row with ring either side of it.
+    """
+    left, top, width, height = sprites.HOOP_RIM
+    assert 0 <= left and left + width <= sprites.HOOP_W, "the box leaves the grid"
+    assert 0 <= top and top + height <= sprites.HOOP_H, "the box leaves the grid"
+
+    grid = sprites.build_hoop("hang")
+    inside = {grid[r][c] for r in range(top, top + height)
+              for c in range(left, left + width)}
+    assert not inside & HOOP_BOARD_PAINT, \
+        f"the opening is drawn on the backboard: {inside & HOOP_BOARD_PAINT}"
+    assert "." in inside, "nothing in the declared opening is open"
+
+    middle = top + height // 2
+    span = grid[middle][left:left + width]
+    assert set(span) == {"."}, f"row {middle} of the opening is not open: {span}"
+    assert grid[middle][left - 1] in HOOP_RING, "nothing to the left of the hole"
+    assert grid[middle][left + width] in HOOP_RING, "nothing to its right"
+
+    centre = left + width // 2
+    above = [grid[r][centre] for r in range(top)]
+    below = [grid[r][centre] for r in range(top + height, sprites.HOOP_H)]
+    assert set(above) & HOOP_RING, "no ring above the opening"
+    assert set(below) & HOOP_RING, "no ring below it; this is not a hole"
+
+
+def test_the_opening_is_wider_than_the_thing_thrown_through_it():
+    """The one property a basket in a throwing game has to have, and the first
+    drawing of this one did not.
+
+    Its opening came to 44 screen pixels against a character 56 wide: narrower
+    than the thing being thrown into it. Nothing failed. The 28-square sweep
+    does not reach this canvas, the opening was still the hole and not the
+    board, the clip still named frames that existed — and the basket read as
+    one nobody could make while buddy_hoop was already scoring any throw that
+    passed within half a sprite of the middle. Easy to hit and impossible to
+    believe is the worst of the four combinations: it teaches the player not to
+    aim, and then rewards them anyway.
+
+    The margin is a fifth of the character on each side rather than a bare fit,
+    because a hole exactly as wide as the sprite is a hole the sprite plugs.
+    """
+    opening = sprites.HOOP_RIM[2] * sprites.SCALE
+    assert opening >= sprites.SIZE * 1.25, \
+        (f"the opening is {opening}px across and the character thrown at it is "
+         f"{sprites.SIZE}px wide")
+
+
+def test_the_net_hangs_behind_the_ring():
+    """The board is drawn once and the net goes on behind it.
+
+    Pasted over, the cords cut notches out of the ring's outline everywhere the
+    two overlap, and a ring with holes in its edge stops reading as a ring. The
+    overlap is not hypothetical — the second assertion is there because a net
+    that has stopped reaching the ring at all would pass the first.
+    """
+    board = sprites.HOOP_BOARD
+    for name, grid in sprites.build_hoop_frames().items():
+        for r, row in enumerate(board):
+            for c, ch in enumerate(row):
+                if ch != ".":
+                    assert grid[r][c] == ch, \
+                        f"{name}: the net painted over the board at ({c},{r})"
+
+    overlaps = sum(1 for r, row in enumerate(sprites.HOOP_NETS["hang"])
+                   for c, ch in enumerate(row)
+                   if ch != "." and board[sprites.HOOP_NET_ROW + r][c] != ".")
+    assert overlaps, "the net band no longer reaches the ring; the check is idle"
+
+
+def test_the_score_frames_move_the_net_and_leave_the_board_alone():
+    """Three frames of one drawing, not three drawings.
+
+    Every row above the net band has to be identical in all of them — a board
+    redrawn per frame is a second thing to keep in step with the first, and it
+    shows up on screen as the basket flinching when the net does. And the
+    frames have to actually differ below that row, or the clip is a still
+    image played three times.
+    """
+    frames = sprites.build_hoop_frames()
+    for name, grid in frames.items():
+        assert grid[:sprites.HOOP_NET_ROW] == sprites.HOOP_BOARD[:sprites.HOOP_NET_ROW], \
+            f"{name} redraws the board above the net"
+    nets = {name: tuple(grid[sprites.HOOP_NET_ROW:]) for name, grid in frames.items()}
+    assert len(set(nets.values())) == len(nets), \
+        f"two hoop frames are the same drawing: {sorted(nets)}"
+
+
+# The character's frames, as they were before the hoop existed: 108 per brand,
+# and a digest over every row of every one of them. The hoop is a second canvas
+# in the same module and the thing to prove about a second canvas is that the
+# first one did not move — grid by grid, not by counting files.
+#
+# To change the character on purpose: run the two lines in the test body over
+# the new grids and paste the digests. Being made to do that is the point.
+CHARACTER_FRAMES = {
+    "claude": (108, "35d5fefadcba858d89aeba375cf5a47907bba06d99a627d52c508daabef27e28"),
+    "codex":  (108, "bd57db8ff40c236c2f553f68594342525da087be3ec42b186316a00cdda90233"),
+}
+
+
+@pytest.mark.parametrize("brand", BRANDS)
+def test_the_character_frames_did_not_move_when_the_hoop_arrived(brand):
+    """One pixel of one frame changes the digest, which is the whole idea."""
+    import hashlib
+
+    frames = sprites.build_frames(brand)
+    count, digest = CHARACTER_FRAMES[brand]
+    h = hashlib.sha256()
+    for name in sorted(frames):
+        h.update(name.encode() + b"\n")
+        for row in frames[name]:
+            h.update(row.encode() + b"\n")
+    assert len(frames) == count, f"{brand}: {len(frames)} frames, not {count}"
+    assert h.hexdigest() == digest, f"{brand}: the character's art changed"
+
+
 # ── playback ───────────────────────────────────────────────────────────────
 
 def test_a_one_shot_hands_control_back():
@@ -480,6 +704,39 @@ def test_the_sheet_hands_over_one_shadow_and_no_mirror_of_it(brand):
               for y in range(img.height()) for x in range(img.width())}
     assert any(0 < a < 255 for a in alphas), f"nothing translucent in it: {alphas}"
     assert 255 not in alphas, "part of the shadow is opaque"
+
+
+@needs_qt
+def test_the_hoop_reaches_qt_at_its_own_size_and_stays_out_of_the_body_sheet():
+    """The hoop is 96 by 72 and the character is 28 by 28.
+
+    to_qimage used to size its image from GRID, so anything on another canvas
+    came out as a 28-square corner of itself: the right kind of image, cropped,
+    nothing raised. That is the bug this pins, on the only grid in the file
+    that can still hit it.
+
+    The keys are the second half. The hoop is a separate sheet because
+    build_sheet is per brand, paints with the brand palette — in which `t`,
+    `k`, `n` and `u` do not exist and `b`, `s` and `h` mean body colours — and
+    hands back images that everything downstream assumes are the character's
+    size. And no `:flip`: a basket has no direction to face.
+    """
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    sheet = sprites.build_hoop_sheet()
+    assert set(sheet) == set(sprites.build_hoop_frames()), \
+        "the sheet and the frames disagree about what a hoop frame is called"
+    assert not [k for k in sheet if k.endswith(":flip")], \
+        "a symmetric object with no facing was given a mirror"
+    for name, img in sheet.items():
+        assert img.width() == sprites.HOOP_W * sprites.SCALE, \
+            f"{name} is {img.width()} wide, not {sprites.HOOP_W * sprites.SCALE}"
+        assert img.height() == sprites.HOOP_H * sprites.SCALE, \
+            f"{name} is {img.height()} tall, not {sprites.HOOP_H * sprites.SCALE}"
+
+    character = sprites.build_sheet("claude")
+    assert not set(sheet) & set(character), \
+        "hoop frames are in the character's sheet, on the character's palette"
 
 
 @needs_qt
