@@ -970,6 +970,331 @@ def build_hoop_frames():
     return {"hoop_" + name: build_hoop(name) for name in HOOP_NETS}
 
 
+# ── overlays: the drawings that are not the creature ───────────────────────
+# Three families below are not the character and do not belong on its canvas:
+# the particles it throws off, the props it is handed, and the mood band over
+# its head. All three are *overlays* — a grid, a palette, and an offset in
+# source pixels from the sprite grid's top-left corner.
+#
+# The offset is allowed to be negative or past GRID, and that permission is the
+# whole reason the mechanism exists. A Z that rises is off the top of the
+# 28-square in two steps. An umbrella wide enough to read as an umbrella is
+# wider than the strip of canvas either side of the body. A crown above Rex
+# starts six rows above the top of his grid, because his ear tufts are the top
+# of him and they reach row 2 of 28.
+#
+# Drawn with `_paste` instead, all three would be cropped in silence: the paste
+# skips anything outside the grid, so the result is the right kind of drawing
+# with a piece missing and nothing raises. That is the bug that turned the
+# first hoop into a 28-square corner of itself, one canvas earlier.
+#
+# What it costs and who pays: the window the character is painted in has to be
+# big enough for the overlays and the sprite has to be placed inside it rather
+# than at its origin. `overlay_box` answers both in one call. The contact
+# shadow already works this way — its own image, positioned by the painter —
+# and this is the same argument made for the things above the head that that
+# one made for the thing under the feet.
+#
+# PROP_BOOK stays baked into its frame instead of joining this. `read` is one
+# pose, the book is what the pose is about, and it fits inside the square. A
+# prop that can land on any of the 108 frames cannot be baked without building
+# 108 more of them per prop.
+
+# One palette for the particles and the mood bands, because they are the same
+# kind of thing: overlays in colours that belong to neither brand. Two palettes
+# would mean two greys that nearly match, which is the drift this file argues
+# against everywhere else.
+#
+# The letters are chosen out of every alphabet already in use: the body's
+# `osbhwpa`, the hoop's `obstkrhnu`, and the shadow's `dm`. `o` is the one
+# deliberate repeat — it means outline in every grid in this file and it would
+# be worse if it did not. The others are free, so a letter here cannot be read
+# as a body colour by someone skimming.
+#
+#   .  transparent   o  outline / drop shadow, dark and warm
+#   v  off-white: bone, porcelain, the Z itself
+#   c  mid grey: cloud body, dust edge, speed line
+#   e  pale grey: cloud light, dust core, steam
+#   i  blue: rain, sweat        g  gold: crown
+#   j  yellow: jewel, flame core, confetti
+#   f  orange: flame, exclamation, confetti
+#   x  brown: coffee
+EFFECT_PALETTE = {
+    "o": "#3A2A20", "v": "#F6F0E6", "c": "#7F8792", "e": "#C2C8D1",
+    "i": "#4FA8F0", "g": "#DFA52C", "j": "#FFC94A", "f": "#E85A2A",
+    "x": "#6B4530",
+}
+
+
+# ── particles ──────────────────────────────────────────────────────────────
+# Three to seven pixels each. At that size an outline is not affordable on a
+# stroke: a one-pixel Z inside a one-pixel outline is a smudge with a hole. So
+# the glyphs carry a one-pixel dark copy of themselves down and to the right
+# instead. On a pale wallpaper the dark half holds the shape and the light half
+# disappears; on a dark one it is the other way round; and there is no
+# wallpaper on which both vanish, which is what a single mid tone cannot
+# promise. The shapes with area — the drop, the chips, the puffs — do carry a
+# proper outline, because they have room for one.
+#
+# The Z's grow as they climb. That is the only motion in them: three drawings,
+# not three sizes of one, so the diff shows which pixels moved.
+PARTICLES = {
+    "z_small": [
+        "vvvv.",
+        ".ovoo",
+        ".v.o.",
+        "vvvv.",
+        ".oooo",
+    ],
+    "z_mid": [
+        "vvvvv.",
+        ".oovoo",
+        "..v.o.",
+        ".v.o..",
+        "vvvvv.",
+        ".ooooo",
+    ],
+    "z_large": [
+        "vvvvvv.",
+        ".ooovoo",
+        "...v.o.",
+        "..v.o..",
+        ".v.o...",
+        "vvvvvv.",
+        ".oooooo",
+    ],
+    # A drop with a point on top. Drawn as a circle it was a blue bead; the
+    # point is the whole difference between a drop and a dot.
+    "sweat": [
+        "..o..",
+        ".oio.",
+        "oiiio",
+        "oivio",
+        "oiiio",
+        ".ooo.",
+    ],
+    "sweat_small": [
+        ".o.",
+        "oio",
+        "oio",
+        ".o.",
+    ],
+    # The bar is two pixels wide. One pixel wide it is a stick, and at SCALE 2
+    # a stick is two screen pixels of orange that reads as a scratch.
+    "shout": [
+        "ff.",
+        "ffo",
+        "ffo",
+        ".oo",
+        "ff.",
+        ".oo",
+    ],
+    "shout_small": [
+        "ff.",
+        "ffo",
+        ".oo",
+        "ff.",
+        ".oo",
+    ],
+    # Three chips in three hues. One hue of confetti is a leak.
+    "confetti_a": ["ff.", "ffo", ".oo"],
+    "confetti_b": ["ii.", "iio", ".oo"],
+    "confetti_c": ["jj.", "jjo", ".oo"],
+    # Dust and speed lines are two greys and no outline. An outlined puff is a
+    # rock; what says "air" is a soft edge, and the darker grey along the
+    # bottom is the closest a grid gets to one.
+    "dust_puff": [
+        "..ee..",
+        "ceeeec",
+        ".cccc.",
+    ],
+    "dust_wide": [
+        ".ee.ee",
+        "ceeeec",
+        "cc..cc",
+    ],
+    "dust_thin": [
+        ".e..e.",
+        "c.cc.c",
+    ],
+    "streak_long": [
+        ".ccccc",
+        "eeeee.",
+    ],
+    "streak_short": [
+        ".ccc",
+        "eee.",
+    ],
+}
+
+# Where the motes of an effect go, and in what order.
+#
+# Keyed by clip name, so the companion asks the same question it already knows
+# the answer to — `PARTICLE_EFFECTS.get(animator.clip)` — instead of keeping a
+# second table mapping states to effects. A key that is not a clip is an effect
+# nothing can ever ask for, and there is a test for that.
+#
+# An effect is a list of motes. A mote is a list of steps, and a step is
+# (particle, dcol, drow) measured from one of the four anchors below. The
+# companion decides how long a step lasts, when a mote is born and whether the
+# effect loops: that is a clock, and the clock is not the art's. What is the
+# art's is where a mote may be and how big it is at each point of its life,
+# because both of those are about the drawing and both go wrong on screen
+# rather than in a number.
+#
+# The anchors are read off the frame being drawn, not tabulated:
+#
+#   head   the centre column, the topmost drawn row
+#   left   the leftmost column, the topmost drawn row
+#   right  the rightmost column, the topmost drawn row
+#   feet   the centre column, one row below the lowest drawn row
+#
+# Read off the frame because Rex is four rows taller than Clawd and his tufts
+# are the top of him, a squash is four rows shorter than a stand, and a lean
+# moves the centre. Every one of those is a number that would have to be
+# written down twice and would then be wrong once.
+PARTICLE_EFFECTS = {
+    # Asleep. One Z at a time, climbing away from the head and growing. The
+    # drawing said nothing about sleep before this: the eyes were shut and a
+    # creature with its eyes shut is a creature blinking.
+    "sleep": [
+        ("head", [("z_small", 3, -6), ("z_mid", 5, -11), ("z_large", 8, -17)]),
+    ],
+    # Alarm. Two steps, and the second is both bigger and higher: a mark that
+    # only grows reads as inflating, a mark that only rises reads as escaping.
+    "alert": [
+        ("head", [("shout_small", -1, -7), ("shout", -1, -10)]),
+    ],
+    # Two drops, one off each side of the head, flying up and out and shrinking
+    # as they go. Off both sides rather than one, because a single drop on a
+    # symmetric face reads as a leak rather than as panic.
+    "panic": [
+        ("right", [("sweat", 1, 1), ("sweat", 3, -2), ("sweat_small", 6, -5)]),
+        ("left", [("sweat", -6, 2), ("sweat", -8, -1), ("sweat_small", -9, -4)]),
+    ],
+    # Five chips thrown up and coming back down, staggered across the head. The
+    # jump was a jump with nothing in the air; the arc is what the chips add,
+    # because the character's own arc is one row of body offset.
+    "celebrate": [
+        ("head", [("confetti_a", -8, -3), ("confetti_a", -10, -7), ("confetti_c", -11, -2)]),
+        ("head", [("confetti_b", -4, -5), ("confetti_b", -5, -10), ("confetti_a", -6, -5)]),
+        ("head", [("confetti_c", -1, -6), ("confetti_c", -1, -12), ("confetti_b", 0, -7)]),
+        ("head", [("confetti_a", 3, -5), ("confetti_a", 4, -10), ("confetti_c", 5, -5)]),
+        ("head", [("confetti_b", 6, -3), ("confetti_b", 8, -7), ("confetti_a", 9, -2)]),
+    ],
+    # Landing. The puffs stay on the floor row and spread outward: dust that
+    # rises is smoke, and something that lands does not smoke.
+    "land": [
+        ("feet", [("dust_puff", 9, -3), ("dust_wide", 11, -3), ("dust_thin", 14, -2)]),
+        ("feet", [("dust_puff", -14, -3), ("dust_wide", -16, -3), ("dust_thin", -19, -2)]),
+    ],
+    # Running off with the pointer at 340 px/s, which is four times the walk and
+    # looked exactly like the walk. The streaks are behind the character and
+    # nowhere else — a streak in front of a runner is a runner going backwards.
+    "furious": [
+        ("left", [("streak_long", -8, 6), ("streak_short", -13, 6)]),
+        ("left", [("streak_long", -9, 10), ("streak_short", -15, 10)]),
+        ("left", [("streak_short", -7, 14), ("streak_short", -12, 14)]),
+    ],
+}
+
+
+# ── the mood band ──────────────────────────────────────────────────────────
+# The widget draws the same five moods as raster sprites over its header
+# mascot: plasmoid/contents/icons/{halo,smart,rain,fire,skull}-0..5.png, chosen
+# by dumbness.level. Those are 64-pixel PNGs on a 16-pixel grid with an alpha
+# ramp in them; they do not compose with this file's grid and they are not
+# reused here. What is reused is the taxonomy — the same five states, the same
+# five objects — redrawn on this grid so the desktop character and the header
+# icon are one animal speaking one visual language instead of two.
+#
+# Keyed by dumbness.level directly. A second table from level to a drawing name
+# would be one more thing to keep in step, and the level *is* the key the
+# payload already carries.
+#
+# The band is as wide as the sprite so that centring is free: column 0 of the
+# band is column 0 of the character. It is drawn above the topmost pixel of the
+# frame rather than at a fixed row, which is the whole of what makes it work on
+# both brands. Rex is four rows taller than Clawd, and it is his ear tufts that
+# are taller — a band placed on the dome instead buries them, and an owl with
+# its tufts under a cloud is an owl with no tufts.
+MOOD_W, MOOD_H = 28, 10
+
+MOODS = {
+    # A crown, and it sits on the head rather than floating: the bottom row of
+    # the band is the row the character's top pixel is under.
+    "genius": [
+        "............................",
+        "............................",
+        "............................",
+        "............................",
+        "............................",
+        "........o....oo....o........",
+        "........og..oggo..go........",
+        "........oggggggggggo........",
+        "........ogjggjggjggo........",
+        "........oooooooooooo........",
+    ],
+    # A mug with steam off it. The coffee is the dark band at the top; without
+    # it the mug is a white box with a handle, which is a box with a handle.
+    "smart": [
+        "............................",
+        "............................",
+        "............ee.ee...........",
+        "...........ee...ee..........",
+        "............ee.ee...........",
+        ".........oooooooo...........",
+        ".........oxxxxxxo...........",
+        ".........ovvvvvvooo.........",
+        ".........ovvvvvvo.o.........",
+        ".........oovvvvoooo.........",
+    ],
+    # A rain cloud. The cloud carries an outline for the reason everything here
+    # does — a pale grey cloud on a pale wallpaper is nothing — and the drops
+    # reach the last row of the band, so they land on the character.
+    "slow": [
+        "............................",
+        "............................",
+        "..........oooooo............",
+        "........ooeeeeeeoo..........",
+        ".......oeeeeeeeeeeo.........",
+        "......oeeeeeeeeeeeeo........",
+        "......occcccccccccco........",
+        ".......ooooooooooooo........",
+        "........ii...ii...ii........",
+        ".......ii...ii...ii.........",
+    ],
+    # Flames, uneven and full width. Three tongues of the same height read as a
+    # picket fence; what makes fire fire is that no two licks agree.
+    "dumb": [
+        "............................",
+        "............................",
+        "..........j......j..........",
+        ".........jj.....jjf.........",
+        "......j..jjf...jjjff..j.....",
+        ".....jj.jjjff.jjjjff.jjf....",
+        ".....jjjjjjff.jjjfff.jjf....",
+        "....jjjffffffjjfffffjjff....",
+        "....jfffffffffffffffffff....",
+        "....ffffffffffffffffffff....",
+    ],
+    # A skull. The sockets are two pixels wide with two pixels of bone between
+    # them and the outline: at one pixel they close up into a smudge and the
+    # whole thing reads as a biscuit, which is what the first one was.
+    "braindead": [
+        "............................",
+        "...........oooooo...........",
+        ".........oooooooooo.........",
+        "........ovvvvvvvvvvo........",
+        "........ovvoovvoovvo........",
+        "........ovvoovvoovvo........",
+        "........ovvvvvvvvvvo........",
+        ".........ovvvoovvvo.........",
+        "..........ovvvvvo...........",
+        "..........oovovoo...........",
+    ],
+}
+
 # ── composition ────────────────────────────────────────────────────────────
 
 BLANK_ROW = "." * GRID
@@ -1490,6 +1815,167 @@ PROP_BOOK = [
 POSE_PROP = {"read": {"claude": (15, 23, PROP_BOOK),
                       "codex": (14, 23, PROP_BOOK)}}
 
+# ── props with a trigger ───────────────────────────────────────────────────
+# Six objects the character is handed when the data says something. The
+# conditions are buddy_signals' and buddy_focus's; what is here is the drawing
+# and the key, and nothing in this file decides when one appears.
+#
+# They are overlays, not pastes. PROP_BOOK is four rows square and lives inside
+# the sprite's canvas because `read` is one pose that was drawn around it;
+# these have to work on any of the 108 frames and have to be large enough to
+# recognise. The first pass drew them at the book's size, five to seven pixels
+# with an outline, and every one of them came out as the same gold smudge in a
+# different place: at four pixels of interior there is no silhouette left to
+# tell an extinguisher from a mug. They are eight to seventeen pixels now, they
+# hang off the side of the body or sit on top of it, and they are allowed past
+# the edge of the 28-square, which is where the room came from.
+#
+# Still the body's palette and still an outline of their own, for PROP_BOOK's
+# two reasons: an object in the body's own colours vanished into Rex entirely,
+# and an object without an outline is a coloured smudge. `w` is the second
+# value where one is needed — the extinguisher's label, the hourglass's glass —
+# and `p` is the coffee, because coffee is not gold.
+#
+# Two rules the placements obey, both of them things a test now checks:
+#
+#   Nothing lands on an eye. An object over an eye is a blindfold, and at this
+#   size an eye with a corner missing reads as a squint rather than as an
+#   object in front of it.
+#
+#   Nothing lands on the top row of Rex's ear tufts. A hat over the base of a
+#   tuft is a hat with ears through it; a hat over the tip is an owl with no
+#   ears, which is how the tufts were lost once already.
+
+PROP_UMBRELLA = [
+    ".......ooo.......",
+    ".....ooaaaoo.....",
+    "...ooaaaaaaaoo...",
+    ".ooaaaaaaaaaaaoo.",
+    "ooaaaaaaaaaaaaaoo",
+    "ooooooooooooooooo",
+    "........oo.......",
+    "........oo.......",
+    "........oo.......",
+    "........oo.......",
+]
+
+PROP_EXTINGUISHER = [
+    "..oooo...",
+    "..o..o...",
+    "..o..oooo",
+    "..oooo..o",
+    "...oo...o",
+    ".oooooo.o",
+    "ooaaaaoo.",
+    "oaaaaaao.",
+    "owwwwwwo.",
+    "owwwwwwo.",
+    "oaaaaaao.",
+    "oaaaaaao.",
+    "oaaaaaao.",
+    "oaaaaaao.",
+    ".oooooo..",
+]
+
+PROP_MUG = [
+    "ooooooo....",
+    "oppppppo...",
+    "oppppppo...",
+    "oaaaaaaoooo",
+    "oaaaaaao..o",
+    "oaaaaaao..o",
+    "oaaaaaao..o",
+    "oaaaaaaoooo",
+    "oaaaaaao...",
+    "ooooooo....",
+]
+
+# The brim is drawn in the accent with the outline under it rather than in the
+# outline colour. A dark brim on a dark-outlined head is a hat with no brim:
+# the two lines merge and what is left reads as a beret.
+PROP_HELMET = [
+    ".....oooo.....",
+    "...ooaaaaoo...",
+    "..oaaaaaaaao..",
+    "..oaaaaaaaao..",
+    "..oaaaaaaaao..",
+    "oaaaaaaaaaaaao",
+    "oooooooooooooo",
+]
+
+# The top chamber is empty and the bottom is full, with a grain in the neck.
+# Both chambers full is an ornament; both empty is a broken one. A focus block
+# is the time left in it.
+PROP_HOURGLASS = [
+    "ooooooooooo",
+    "oaaaaaaaaao",
+    ".ooooooooo.",
+    "..owwwwwo..",
+    "...owwwo...",
+    "....oao....",
+    "...owawo...",
+    "..owaaawo..",
+    ".owaaaaawo.",
+    ".ooooooooo.",
+    "oaaaaaaaaao",
+    "ooooooooooo",
+]
+
+PROP_PARTY_HAT = [
+    "....o....",
+    "...oao...",
+    "...oao...",
+    "..oaaao..",
+    "..oawao..",
+    ".oaaaaao.",
+    ".oaaaaao.",
+    "oaawaaaao",
+    "oaaaaaaao",
+    "oaaaaaaao",
+    "ooooooooo",
+]
+
+PROPS = {
+    "umbrella": PROP_UMBRELLA,
+    "extinguisher": PROP_EXTINGUISHER,
+    "mug": PROP_MUG,
+    "helmet": PROP_HELMET,
+    "hourglass": PROP_HOURGLASS,
+    "party_hat": PROP_PARTY_HAT,
+}
+
+# (dcol, drow) from the frame's `head` anchor — its centre column and its
+# topmost drawn row — in the same coordinates the particles use.
+#
+# Measured from the frame rather than from the grid so that a prop follows the
+# creature instead of waiting where it was: a squash drops the head four rows
+# and a bob lifts it one, and an umbrella pinned to row zero would be a hat the
+# character steps out from under on every other walk frame.
+#
+# Per brand because Rex is four rows taller and his eyes sit three rows higher
+# than Clawd's; the same offset that hangs a mug clear of one covers the other.
+PROP_ANCHORS = {
+    "umbrella":     {"claude": (-3, -9), "codex": (-3, -6)},
+    "extinguisher": {"claude": (9, 0),   "codex": (9, 5)},
+    "mug":          {"claude": (7, 6),   "codex": (7, 10)},
+    "helmet":       {"claude": (-6, -3), "codex": (-6, -1)},
+    "hourglass":    {"claude": (7, 3),   "codex": (7, 10)},
+    "party_hat":    {"claude": (-3, -9), "codex": (-3, -6)},
+}
+
+# The key. Five of these are signal keys from buddy_signals; `focus` is not a
+# signal at all but the state of buddy_focus.FocusSession, which is why it is
+# spelled differently from the rest and says so here rather than being found
+# out by whoever greps for it.
+PROP_TRIGGERS = {
+    "incident": "umbrella",           # a service incident is open
+    "quotaCritical": "extinguisher",  # the session quota is nearly gone
+    "nightOwl": "mug",                # working through the small hours
+    "errorsClimbing": "helmet",       # the API error count is rising
+    "focus": "hourglass",             # a focus block is running
+    "streakDay": "party_hat",         # a streak worth mentioning
+}
+
 # The leg each pose lifts, as the columns it stands on when it is down. Legs
 # this short cannot gesture by reaching: a two-pixel stub stretched out along
 # the floor row reads as a skid, not as a limb in the air. What reads is the
@@ -1593,6 +2079,145 @@ def frame_names():
     """Every frame a clip can ask for. Used by the tests to prove no clip
     references a frame that was renamed out from under it."""
     return {f for clip in CLIPS.values() for f, _ in clip["frames"]}
+
+# ── placing an overlay ─────────────────────────────────────────────────────
+# Everything below answers one question: given the frame about to be painted,
+# where does an overlay go? The answers are in source pixels from the sprite
+# grid's top-left corner, and they are routinely negative — see the note above
+# EFFECT_PALETTE for why that is the point rather than a bug.
+
+_FRAME_CACHE = {}
+
+
+def _cached_frames(brand):
+    """build_frames, memoised.
+
+    These are asked for once per painted frame and build_frames composes 108
+    grids from scratch every call. The result depends on nothing but the brand,
+    so caching it cannot change an answer; recomposing it sixty times a second
+    can and did change the frame rate.
+    """
+    key = "codex" if brand == "codex" else "claude"
+    if key not in _FRAME_CACHE:
+        _FRAME_CACHE[key] = build_frames(key)
+    return _FRAME_CACHE[key]
+
+
+def ink_box(grid):
+    """(left, top, right, bottom) of the drawn pixels of a grid.
+
+    Raises on an empty grid rather than answering (0, 0, 0, 0). An overlay with
+    nothing in it is one that never appears, and a box at the origin is the
+    answer most likely to look plausible while it happens.
+    """
+    rows = [i for i, row in enumerate(grid) if set(row) != {"."}]
+    cols = [c for row in grid for c, ch in enumerate(row) if ch != "."]
+    if not rows:
+        raise ValueError("nothing is drawn in this grid")
+    return min(cols), rows[0], max(cols), rows[-1]
+
+
+def frame_anchors(brand, frame):
+    """The four points an overlay may hang from, in the sprite's own pixels.
+
+    Read off the frame instead of tabulated, because every number in here
+    differs by brand and by pose: Rex is four rows taller than Clawd and it is
+    his ear tufts that are taller, a squash is four rows shorter than a stand,
+    and a lean moves the centre column. Written down, each of those would be a
+    second copy of a fact the drawing already knows.
+    """
+    left, top, right, bottom = ink_box(_cached_frames(brand)[frame])
+    middle = (left + right) // 2
+    return {"head": (middle, top), "left": (left, top),
+            "right": (right, top), "feet": (middle, bottom + 1)}
+
+
+def reflect(grid, col):
+    """The column an overlay goes in when the character is facing the other way.
+
+    The grid is *not* mirrored here and mirroring it is the caller's decision,
+    because it is not the same decision for every overlay. A prop has a facing
+    and has to turn with the creature. A particle does not: the sleep particle
+    is the letter Z, and a mirrored Z is a different letter — one that reads as
+    a mistake rather than as a character asleep.
+    """
+    return GRID - col - len(grid[0])
+
+
+def prop_overlay(brand, frame, prop, facing=1):
+    """One prop on one frame: (grid, col, row).
+
+    Mirrored when facing left, because an umbrella held on the character's
+    right stays on its right when it turns around.
+    """
+    key = "codex" if brand == "codex" else "claude"
+    grid = PROPS[prop]
+    dcol, drow = PROP_ANCHORS[prop][key]
+    col, row = frame_anchors(brand, frame)["head"]
+    col, row = col + dcol, row + drow
+    if facing < 0:
+        grid = mirror(grid)
+        col = reflect(grid, col)
+    return grid, col, row
+
+
+def mood_overlay(brand, frame, level, prop=None):
+    """The mood band on one frame: (grid, col, row).
+
+    Its last row lands immediately above the topmost drawn pixel of the frame
+    and of whatever prop is on it. Above the frame alone, a party hat would
+    come up through the crown; at a fixed row it would sit on Clawd's head and
+    float four rows over Rex's, because Rex is four rows taller than Clawd.
+
+    Not mirrored and never asked to be. A basket has no facing and neither does
+    a rain cloud; a `:flip` key for one is one more thing that can be drawn by
+    mistake, which is the argument the contact shadow already makes.
+    """
+    top = ink_box(_cached_frames(brand)[frame])[1]
+    if prop is not None:
+        grid, col, row = prop_overlay(brand, frame, prop)
+        top = min(top, row + ink_box(grid)[1])
+    return MOODS[level], 0, top - MOOD_H
+
+
+def particle_layout(brand, frame, effect, facing=1):
+    """One effect on one frame, as a list of motes.
+
+    A mote is a list of (particle, col, row): the same speck at successive
+    points of its life. How long a step lasts, when a mote is born and whether
+    the whole thing repeats are the companion's — that is a clock, and this
+    file owns drawings, not clocks.
+
+    Facing reflects the columns and leaves the drawings alone; see `reflect`.
+    """
+    anchors = frame_anchors(brand, frame)
+    motes = []
+    for anchor, steps in PARTICLE_EFFECTS[effect]:
+        ax, ay = anchors[anchor]
+        mote = []
+        for name, dcol, drow in steps:
+            grid = PARTICLES[name]
+            col = ax + dcol
+            mote.append((name, reflect(grid, col) if facing < 0 else col, ay + drow))
+        motes.append(mote)
+    return motes
+
+
+def overlay_box(placed):
+    """The union of some placed overlays, as (left, top, right, bottom) in the
+    sprite's own pixels, with the sprite's own square already included.
+
+    Handed a list of (grid, col, row). It is here rather than in the painter
+    because it is the answer to "how big does the window have to be", and
+    getting that wrong crops an overlay against the edge of a window instead of
+    against the edge of a grid — the same silence, one layer further out.
+    """
+    left, top, right, bottom = 0, 0, GRID - 1, GRID - 1
+    for grid, col, row in placed:
+        l, t, r, b = ink_box(grid)
+        left, top = min(left, col + l), min(top, row + t)
+        right, bottom = max(right, col + r), max(bottom, row + b)
+    return left, top, right, bottom
 
 
 # ── playback ───────────────────────────────────────────────────────────────
@@ -1753,3 +2378,40 @@ def build_hoop_sheet(scale=SCALE):
     """
     return {name: to_qimage(grid, HOOP_PALETTE, scale)
             for name, grid in build_hoop_frames().items()}
+
+
+def build_effect_sheet(scale=SCALE):
+    """Every particle and every mood band as a QImage, on one palette.
+
+    One sheet for both because both are painted with EFFECT_PALETTE and neither
+    takes a brand: build_sheet takes one and paints with the brand's colours, in
+    which `c`, `e`, `i`, `g`, `j`, `f`, `v` and `x` do not exist. A mood band
+    handed to it raises, which is the good half; a particle drawn with a body
+    palette that happened to have the letter would not.
+
+    No `:flip` keys. A crown has no facing and neither does a rain cloud, and
+    the particles must not be mirrored at all: the sleep particle is the letter
+    Z, and mirroring a letter produces a different letter. Facing is a column,
+    not a transform — see `reflect`.
+    """
+    sheet = {name: to_qimage(grid, EFFECT_PALETTE, scale)
+             for name, grid in PARTICLES.items()}
+    sheet.update({"mood_" + name: to_qimage(grid, EFFECT_PALETTE, scale)
+                  for name, grid in MOODS.items()})
+    return sheet
+
+
+def build_prop_sheet(brand, scale=SCALE):
+    """Every prop as a QImage in one brand's palette, plus its mirror.
+
+    Both directions baked, as the character's frames are, so the paint path
+    stays a drawImage with no transform on it. Where the image goes is
+    `prop_overlay`; asking it for the mirrored column and drawing the unflipped
+    image is an umbrella held through the creature.
+    """
+    pal = PALETTES["codex" if brand == "codex" else "claude"]
+    sheet = {}
+    for name, grid in PROPS.items():
+        sheet[name] = to_qimage(grid, pal, scale)
+        sheet[name + ":flip"] = to_qimage(mirror(grid), pal, scale)
+    return sheet
