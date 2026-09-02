@@ -51,6 +51,22 @@ FURY_AFTER = 2
 # native Wayland window. It cannot be told apart from a pointer that is simply
 # not moving, so no amount of reading it twice settles the question.
 #
+# Later measured against ground truth, because the compositor will tell you
+# where the pointer really is: KWin exposes workspace.cursorPos to a script.
+# Over 90 seconds and 1531 aligned samples the shadow was 225 px from the
+# truth at the median, within 5 px only 11.9% of the time, and frozen while
+# the pointer moved for 55.5 of those 90 seconds — one episode stuck at the
+# same coordinate for 26.9 s while the pointer travelled 1233 px. The blind
+# case is the common one: 72.6% of samples had the pointer over a native
+# Wayland surface. The reading a mouse event carried, measured the same way,
+# is 2 px at the median.
+#
+# What this does NOT say, and a probe once got backwards: the pointer moves.
+# virtual_pointer's writes reach it and the getaway carries the cursor across
+# the screen — confirmed by the operator watching it happen. Reading the
+# position is what fails, and an instrument that cannot see the pointer move
+# will report a working feature as inert.
+#
 # So the position is not read here at all — it is a parameter, and it comes
 # with the age of the reading. The one reading on this desktop that is fresh
 # by construction is the one a mouse event carried: the release that ended the
