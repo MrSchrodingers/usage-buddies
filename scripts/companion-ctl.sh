@@ -20,6 +20,7 @@ BIN="${USAGE_BUDDY_COMPANION:-$HOME/.local/bin/$SCRIPT_NAME}"
 # real: the assertion passed and the user's companion died, which is a test
 # that measures the right thing by doing the wrong one.
 PROC="${USAGE_BUDDY_PROC:-/proc}"
+LOG="${XDG_CACHE_HOME:-$HOME/.cache}/usage-buddies/companion.log"
 
 # Echoes the pid of every running companion.
 companion_pids() {
@@ -75,13 +76,36 @@ case "${1:-}" in
         stop_companion
         sleep 0.3
         [ -x "$BIN" ] || { echo "companion not installed: $BIN" >&2; exit 1; }
-        setsid "$BIN" "$@" >/dev/null 2>&1 < /dev/null &
+        # Output goes to a file, not to /dev/null. It went to /dev/null, and
+        # the cost was a mascot that would occasionally vanish with no trace
+        # anywhere: not in the journal, since nothing here is a systemd unit,
+        # and not on a terminal, since the widget starts it. A crash and a
+        # deliberate stop looked identical from outside.
+        #
+        # One rotation, because the interesting log is almost always the
+        # previous run's — something restarts the companion, and by the time
+        # anyone asks why it went, the fresh log is from the process that
+        # replaced it. Truncated to the tail so a crash loop cannot fill the
+        # disk, and 0600 like the rest of this cache.
+        mkdir -p "$(dirname "$LOG")" 2>/dev/null
+        if [ -f "$LOG" ]; then
+            tail -c 262144 "$LOG" > "$LOG.1" 2>/dev/null
+            chmod 600 "$LOG.1" 2>/dev/null
+        fi
+        : > "$LOG" 2>/dev/null && chmod 600 "$LOG" 2>/dev/null
+        setsid "$BIN" "$@" >>"$LOG" 2>&1 < /dev/null &
         ;;
     status)
         companion_pids | wc -l
         ;;
+    log)
+        # Both runs, oldest first: the one that died and the one that replaced it.
+        for f in "$LOG.1" "$LOG"; do
+            [ -s "$f" ] && { echo "── $f"; cat "$f"; }
+        done
+        ;;
     *)
-        echo "usage: companion-ctl.sh start|stop|status [args...]" >&2
+        echo "usage: companion-ctl.sh start|stop|status|log [args...]" >&2
         exit 2
         ;;
 esac
