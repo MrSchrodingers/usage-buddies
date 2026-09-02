@@ -1,0 +1,5 @@
+module org.kde.plasma.components
+Label 1.0 Label.qml
+ToolButton 1.0 ToolButton.qml
+Button 1.0 Button.qml
+ToolTip 1.0 ToolTip.qml
