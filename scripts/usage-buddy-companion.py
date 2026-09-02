@@ -84,6 +84,13 @@ CLIMB_SPEED = 46.0       # px/s vertically — slower, so diagonals read as effo
 IDLE_MIN, IDLE_MAX = 4.0, 14.0
 SPEAK_SECONDS = 16.0
 SLEEP_AFTER = 45.0       # docked and untouched for this long: it dozes off
+# Seconds since the last keystroke below which a remark is an interruption
+# rather than a remark. Short on purpose: the poll runs every twenty seconds,
+# so this only ever catches a reading taken while the hands are actually on
+# the keys. A wide window would silence a companion belonging to anyone who
+# types in bursts, which is everyone, and a mute mascot looks exactly like a
+# broken one.
+TYPING_SECONDS = 5.0
 # Being dragged. A short drag is how you put it somewhere; a long one is
 # someone playing with it, and it is allowed to notice.
 DRAG_PATIENCE = 3.5      # seconds of continuous dragging before it complains
@@ -590,6 +597,12 @@ class Brain(QObject):
         self.escort = escort if escort is not None else focus_engine.Escort()
         self.sessions = {}
         self.usage = {}
+        # Seconds since the person last touched a key or the mouse, or None
+        # for "no reading". Refreshed with the rest of the world, never in the
+        # middle of a decision, so a Brain built by hand decides with no
+        # reading at all instead of with whatever the machine running it
+        # happens to report.
+        self.idle = None
         # The key behind the last line, for the half of the reaction that is
         # not words. The text alone cannot be read backwards into a category —
         # the tables are prose, and with --live the wording comes from the
@@ -601,6 +614,12 @@ class Brain(QObject):
     def refresh(self):
         self.sessions = _read_json(SESSIONS_FILE)
         self.usage = _read_json(WIDGET_DATA)
+        # Taken here for the same reason `now` and `wall` are arguments to
+        # line(): a decision that reads the world from inside itself can only
+        # be tested on the machine it is running on. Once per poll is also as
+        # often as it is worth asking — the probe is one round trip to the X
+        # server, and on a desktop without the extension it is a cached False.
+        self.idle = focus_engine.user_idle_seconds()
 
     @property
     def attention(self):
@@ -690,6 +709,28 @@ class Brain(QObject):
         del self._subjects[:-self.SUBJECT_RECENT]
         return chosen
 
+    def _interrupts_typing(self, key):
+        """Whether saying this now would land in the middle of a sentence.
+
+        `self.idle` is seconds since the last input and None means the reading
+        could not be taken. None is not zero and the difference is the whole
+        gate: a failed probe answering zero reads as "typing right now" and
+        would silence the companion permanently on every desktop without an
+        idle source, which is this one. So None holds nothing back, and it
+        releases nothing either — the decision falls through to what it would
+        have been with no probe at all.
+
+        A question on screen is exempt. That session is blocked on a human and
+        stays blocked until one arrives, so somebody being at the keyboard is
+        the moment it is most worth saying rather than least. The exempt set is
+        read off the focus block instead of listed again here: two lists of
+        what counts as urgent enough to interrupt drift apart, and the one that
+        drifts is the one nobody is looking at.
+        """
+        if self.idle is None or self.idle >= TYPING_SECONDS:
+            return False
+        return key not in self.focus.ALLOWED
+
     def _pick(self, key, now=None, **vars_):
         """A line from a category, or None when there is nothing to say.
 
@@ -698,13 +739,16 @@ class Brain(QObject):
         so one check covers all of them. Putting it in line() would leave the
         caller having to know which keys a block silences, and making line()
         return the key alongside the text would change the contract of every
-        caller for the benefit of one.
+        caller for the benefit of one. The typing gate is here for the same
+        reason and on the same terms.
 
         No category takes a placeholder called `now` — tests/test_companion.py
         pins that, because one would be swallowed by this signature and print
         its own braces on screen.
         """
         if not self.focus.allows(key, now):
+            return None
+        if self._interrupts_typing(key):
             return None
         table = LINES[self.lang].get(key) or []
         if not table:
@@ -1679,14 +1723,30 @@ class Companion(QWidget):
         self.pointer = virtual_pointer.VirtualPointer().open() or False
 
     def _begin_tug(self, now, seconds, target):
-        """Start a run that carries the pointer along with it.
+        """Start a run that carries the pointer along with it, if allowed.
 
         One entry point, used by both the drag retaliation and the last rung of
         the insistence ladder. A second way of moving someone's cursor is a
         second way of getting it wrong, and this one is already the version
         that survived measurement: a curved route, a speed profile, and deltas
         rather than absolute positions.
+
+        The permission check is here rather than at the call sites, and that is
+        the whole point of there being one entry point. It was at one of the
+        two: the ladder's top rung asked whether the pointer was opt-in, and
+        the drag retaliation did not, so a companion configured with
+        `--insistence off` still took the mouse when it was hauled around. The
+        setting reads as "leave me alone" and the config page's own warning
+        implies the cursor is off the table; anything else is a program
+        contradicting its own switch.
+
+        `off` is the only level that refuses. Every other one keeps the
+        getaway: it answers being manhandled, not a session waiting, so
+        gating it on the ladder's top rung would silently remove it from the
+        default and from every level but one.
         """
+        if INSISTENCE_CEILING.get(self.options.insistence, 0) <= 0:
+            return
         self.tug_until = now + seconds
         self.tugged_at = now
         self.tug_from = None

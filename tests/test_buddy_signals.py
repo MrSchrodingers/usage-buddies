@@ -36,6 +36,13 @@ from buddy_lines import LINES
 # allowed to have no signal naming them.
 FALLBACK_CATEGORIES = {"ambient", "philosophy"}
 
+# Every key the detector can emit, derived from the priority table rather than
+# read from a public alias in the module. buddy_signals used to export
+# `KEYS = frozenset(PRIORITY)` for this suite alone: a documented public symbol
+# no running program reached, which is the defect the AST scan in
+# tests/test_companion_modes.py exists to catch.
+KEYS = frozenset(signals.PRIORITY)
+
 # A fixed point in time, so a suite run at 03:00 does not see different signals
 # from one run at noon. The hour is resolved through localtime rather than
 # hardcoded as an offset, because the peak-hours history is a local-time count
@@ -209,7 +216,7 @@ def test_a_signal_without_lines_would_print_nothing(lang):
     """Every key the detector can emit has to exist in the table, or the
     companion picks a category, finds no sentences and stays silent while
     something was worth saying."""
-    missing = sorted(signals.KEYS - set(LINES[lang]))
+    missing = sorted(KEYS - set(LINES[lang]))
     assert not missing, f"{lang} has no lines for: {missing}"
 
 
@@ -217,7 +224,7 @@ def test_a_signal_without_lines_would_print_nothing(lang):
 def test_a_category_nothing_can_trigger_is_dead_text(lang):
     """The twoRed defect, in the direction that produced it: four lines per
     language sitting in the table with no code path able to select them."""
-    orphans = sorted(set(LINES[lang]) - signals.KEYS - FALLBACK_CATEGORIES)
+    orphans = sorted(set(LINES[lang]) - KEYS - FALLBACK_CATEGORIES)
     assert not orphans, f"{lang} categories no signal can reach: {orphans}"
 
 
@@ -227,11 +234,11 @@ def test_every_key_is_reachable_from_real_data():
     reachable = set()
     for positive, _ in SCENARIOS.values():
         reachable |= set(fired(positive))
-    unreachable = sorted(signals.KEYS - reachable)
+    unreachable = sorted(KEYS - reachable)
     assert not unreachable, f"no scenario produces: {unreachable}"
 
 
-@pytest.mark.parametrize("key", sorted(signals.KEYS))
+@pytest.mark.parametrize("key", sorted(KEYS))
 def test_every_placeholder_is_filled_by_the_signal(key):
     """A line with a placeholder the signal does not supply prints the braces.
 
@@ -420,30 +427,6 @@ def test_one_broken_detector_does_not_take_the_others_with_it():
     finally:
         signals._DETECTORS = original
     assert [signal.key for signal in found] == ["quotaCritical"]
-
-
-# ── the reading the focus panel takes ──────────────────────────────────────
-
-def test_an_unknown_quota_is_not_an_empty_one():
-    """None and 0.0 are different answers, and the difference is drawn: a
-    caller rendering an hourglass from 0.0 shows a full glass for an account it
-    has no rate-limit data for at all."""
-    assert signals.quota_fraction({}) is None
-    assert signals.quota_fraction(None) is None
-    assert signals.quota_fraction({"rateLimits": {}}) is None
-    assert signals.quota_fraction({"rateLimits": {"session": {"percentUsed": None}}}) is None
-
-
-def test_a_window_that_just_reset_really_is_zero():
-    assert signals.quota_fraction({"rateLimits": {"session": {"percentUsed": 0}}}) == 0.0
-
-
-def test_the_fraction_is_the_five_hour_window_and_stays_in_range():
-    usage = {"rateLimits": {"session": {"percentUsed": 56.0},
-                            "weeklyAll": {"percentUsed": 11.0}}}
-    assert signals.quota_fraction(usage) == pytest.approx(0.56)
-    over = {"rateLimits": {"session": {"percentUsed": 140.0}}}
-    assert signals.quota_fraction(over) == 1.0
 
 
 # ── one histogram, one verdict ─────────────────────────────────────────────

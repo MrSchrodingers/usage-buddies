@@ -17,6 +17,7 @@ Time is an argument throughout, so none of this sleeps.
 import json
 import math
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -242,6 +243,30 @@ def test_the_presence_file_is_swapped_in_rather_than_written_over(tmp_path, monk
     assert source.parent == destination.parent, "renamed across filesystems"
     assert destination.name == "99.json"
     assert [p.name for p in yard.iterdir()] == ["99.json"], "left a temporary behind"
+
+
+def test_the_presence_directory_and_its_files_are_private_to_the_user(tmp_path):
+    """0700 and 0600, which is what every other writer in this cache uses.
+
+    tollens-probe.py names both explicitly for the same ~/.cache/usage-buddies;
+    this one arrived with a bare mkdir and a bare open, so it took the default
+    0755 and 0644. Whichever program reaches a fresh install first decides the
+    mode, and there is nobody to correct it afterwards.
+
+    The directory must not exist beforehand, and that is the whole subtlety of
+    testing this: `mkdir(exist_ok=True)` applies its mode only when it does the
+    creating, so a test that makes the directory first passes against a publish
+    that names no mode at all.
+    """
+    yard = tmp_path / "peers"
+    assert not yard.exists(), "the mode would come from the test, not the code"
+    peers.PeerDirectory(yard, pid=99, proc=str(tmp_path / "proc")).publish(
+        "claude", 1.0, 2.0, 0.0)
+
+    assert stat.S_IMODE(yard.stat().st_mode) == 0o700, oct(yard.stat().st_mode)
+    presence = yard / "99.json"
+    assert stat.S_IMODE(presence.stat().st_mode) == 0o600, \
+        oct(presence.stat().st_mode)
 
 
 def test_our_own_presence_file_is_not_read_back_as_a_peer(tmp_path):

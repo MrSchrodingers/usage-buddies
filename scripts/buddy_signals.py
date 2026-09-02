@@ -101,10 +101,12 @@ PRIORITY = {
     "nightOwl": 94,
 }
 
-# The vocabulary. Anything outside this set is a typo, and a key in here that
-# no scenario can produce is dead text of exactly the kind this module exists
-# to prevent — tests/test_buddy_signals.py holds both ends of that.
-KEYS = frozenset(PRIORITY)
+# The table above is the vocabulary: anything outside it is a typo, and a key
+# in it that no scenario can produce is dead text of exactly the kind this
+# module exists to prevent. tests/test_buddy_signals.py holds both ends of
+# that, deriving the key set from PRIORITY itself. There used to be a public
+# `KEYS = frozenset(PRIORITY)` here for it to read; nothing in the running
+# program ever touched it, which is the same defect one level up.
 
 
 # ── thresholds ─────────────────────────────────────────────────────────────
@@ -615,22 +617,3 @@ def detect(sessions, usage, now=None):
             # frame, it is a companion that never speaks again.
             continue
     return sorted(found, key=lambda signal: (signal.priority, signal.key))
-
-
-def quota_fraction(usage):
-    """The five-hour window as a fraction of itself, or None when unknown.
-
-    None and 0.0 are different answers and the difference is visible: a caller
-    drawing an hourglass from this renders "nothing used yet" as a full glass,
-    which is exactly what an account with no rate-limit data would show if this
-    returned zero for missing. A genuine 0.0 — a window that has just reset —
-    does return 0.0.
-
-    The five-hour window rather than the weekly one because it is the one that
-    empties and refills within a sitting; the weekly figure is a different
-    instrument and would need a different drawing.
-    """
-    percent = _num(_block(usage, "rateLimits", "session").get("percentUsed"))
-    if percent is None:
-        return None
-    return min(max(percent / 100.0, 0.0), 1.0)

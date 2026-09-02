@@ -351,17 +351,23 @@ def dropped_repositories(uris, limit=DROP_LIMIT, require_repo=True):
     caller that turns it off gets any existing directory and owns that choice.
     """
     accepted, rejected = [], []
+    looked = 0
     for uri in _uri_lines(uris):
         path, reason = _path_from_uri(uri)
         if reason is not None:
             rejected.append((uri, reason))
             continue
-        if len(accepted) >= limit:
-            # Past the limit nothing is looked at on disk. The cost of a huge
-            # selection has to stay in string handling, or a drop of a whole
-            # home directory becomes a stat storm.
+        if looked >= limit:
+            # Counted against what was looked at, not against what passed. The
+            # comment here used to promise that past the limit nothing touches
+            # the disk, and the code counted accepted entries — so a drop of
+            # twenty thousand ordinary folders accepted none, never reached the
+            # limit, and made eighty thousand filesystem calls in 433 ms on the
+            # Qt thread. That is the stat storm this exists to prevent, and it
+            # was measured doing it.
             rejected.append((uri, REASON_TOO_MANY))
             continue
+        looked += 1
         try:
             real = os.path.realpath(path)
             if not os.path.exists(real):

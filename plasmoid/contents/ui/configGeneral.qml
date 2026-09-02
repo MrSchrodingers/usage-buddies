@@ -112,7 +112,9 @@ KCM.SimpleKCM {
             Kirigami.FormData.label: ""
             text: insistenceBox.currentValue === "pointer"
                   ? "Warning: this step moves your mouse cursor. The companion takes the pointer out of whatever you are doing and drags it to the window that is waiting."
-                  : "How far it escalates while a session waits on you. It stops at the step chosen here."
+                  : insistenceBox.currentValue === "off"
+                  ? "It never escalates, and never touches the pointer — off is the one setting that also stops it running off with your mouse when you drag it around."
+                  : "How far it escalates while a session waits on you. The ladder stops at the step chosen here; drag it around for long enough and it still takes the pointer and runs, which is a reply to being handled rather than a step of the ladder."
             opacity: 0.7
             font.italic: true
             wrapMode: Text.WordWrap

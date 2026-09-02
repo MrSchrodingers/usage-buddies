@@ -472,6 +472,11 @@ def user_idle_seconds():
     zero for a failed measurement is how a companion goes permanently silent on
     a machine where the extension is missing — which is this machine.
 
+    Called from Brain.refresh in usage-buddy-companion.py, once per poll, and
+    the reading holds back an ordinary remark while somebody is typing. It went
+    a while written, documented, tested and reached by nothing, which from the
+    outside is indistinguishable from a feature that was never built.
+
     MEASURED on the desktop this was written for (Plasma on Wayland,
     XWayland display :0): libXss.so.1 is present, XOpenDisplay succeeds, and
     XScreenSaverQueryExtension returns 0. XWayland here does not carry

@@ -328,9 +328,15 @@ class PeerDirectory:
                               "x": me.x, "y": me.y, "at": me.at})
         tmp = self.path / f".{self.pid}.tmp"
         try:
-            self.path.mkdir(parents=True, exist_ok=True)
+            # 0700 and 0600, which is what every other writer in this cache
+            # uses. mkdir's mode applies only when it creates the directory,
+            # and exist_ok leaves an existing one alone — so whichever program
+            # gets there first on a fresh install decides the mode for good,
+            # and this one was arriving with the default 0755.
+            self.path.mkdir(parents=True, exist_ok=True, mode=0o700)
             with open(tmp, "w", encoding="utf-8") as handle:
                 handle.write(payload)
+            os.chmod(tmp, 0o600)
             os.replace(tmp, self.path / f"{self.pid}.json")
         except OSError:
             # A read-only or missing cache is not worth a crash: without a file

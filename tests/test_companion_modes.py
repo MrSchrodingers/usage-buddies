@@ -6,12 +6,14 @@ yesterday's focus session on a restart, that draws its bubble off the edge of
 the screen, or that seizes the pointer without being asked, all look exactly
 like a working one until the moment they do not.
 """
+import ast
 import importlib.util
 import json
 import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -326,6 +328,71 @@ def test_the_inhibition_never_takes_the_companion_down(monkeypatch):
     assert unreachable.release() is False
 
 
+# ── not in the middle of a sentence ────────────────────────────────────────
+
+@needs_qt
+@pytest.mark.parametrize("idle,speaks", [
+    (None, True),        # no reading at all: decide as if there were no probe
+    (600.0, True),       # ten minutes away from the keyboard
+    (0.2, False),        # typing right now
+])
+def test_a_remark_waits_for_the_hands_to_come_off_the_keyboard(idle, speaks):
+    """None is not zero, and that is the whole gate.
+
+    buddy_focus.user_idle_seconds answers None when it cannot measure, which is
+    every desktop without MIT-SCREEN-SAVER — including this one, where XWayland
+    does not carry it and KWin answers GetSessionIdleTime with NotSupported. A
+    caller that read None as zero would take it for "typing right now" and the
+    companion would never speak again on any of them.
+    """
+    mod = _load()
+    brain = mod.Brain("en")
+    brain.sessions = {"total": 0, "attention": None, "sessions": []}
+    brain.idle = idle
+    assert bool(brain.line(now=0.0)) is speaks
+
+
+@needs_qt
+def test_being_at_the_keyboard_does_not_swallow_a_session_asking_a_question():
+    """That session is blocked on a human and stays blocked until one arrives,
+    so somebody being at the keyboard is the moment it is most worth saying.
+    The exempt set is the focus block's, not a second list of its own."""
+    mod = _load()
+    brain = mod.Brain("en")
+    brain.sessions = {"total": 1, "attention": None, "sessions": [
+        {"pid": 7, "name": "hub", "state": "asking", "idleSeconds": 5}]}
+    brain.idle = 0.2
+    assert "hub" in (brain.line(now=0.0) or "")
+    assert "asking" in brain.focus.ALLOWED, "the exempt set moved out from under this"
+
+
+@needs_qt
+def test_the_idle_reading_is_taken_with_the_rest_of_the_world_not_inside_a_choice(
+        monkeypatch):
+    """Where the probe is called decides whether any of this can be tested.
+
+    Read from inside line() it would be one X round trip per decision and the
+    answer would depend on whether whoever ran the suite happened to be typing.
+    Read by refresh(), alongside the two files, a Brain built by hand carries no
+    reading at all and every existing test of line() decides as it always did.
+    """
+    mod = _load()
+    calls = []
+    monkeypatch.setattr(mod.focus_engine, "user_idle_seconds",
+                        lambda: (calls.append(1), 42.0)[1])
+    brain = mod.Brain("en")
+    assert brain.idle is None, "a Brain that never looked at the world has a reading"
+
+    brain.refresh()
+    assert brain.idle == 42.0
+    assert len(calls) == 1
+
+    brain.sessions = {"total": 0, "attention": None, "sessions": []}
+    for _ in range(5):
+        brain.line(now=0.0)
+    assert len(calls) == 1, "the probe is being called from inside the decision"
+
+
 # ── the insistence ladder ──────────────────────────────────────────────────
 
 @needs_qt
@@ -394,6 +461,78 @@ def test_insistence_holds_off_during_a_focus_block():
     c._insist(0.0)
     c._insist(mod.focus_engine.POINTER_AFTER + 60.0)
     assert c.tug_route is None, "took the pointer during a focus block"
+
+
+@needs_display
+@pytest.mark.parametrize("step,moves", [("off", False), ("speak", True),
+                                        ("walk", True), ("wave", True),
+                                        ("pointer", True)])
+def test_off_is_the_one_setting_that_never_touches_the_cursor(step, moves):
+    """The gate is inside _begin_tug, which is the single way in.
+
+    Two paths move the user's cursor: the ladder's top rung and the reply to
+    being dragged around. The permission check was at the first of them only,
+    so a companion started with `--insistence off` still took the mouse when it
+    was hauled about — a program contradicting its own switch, and the config
+    page's warning implies the cursor is off the table at every step but one.
+
+    `off` is the only level that refuses. The getaway answers being handled
+    rather than a session waiting, so gating it on the top rung instead would
+    quietly remove it from the default and from every level but `pointer`.
+    """
+    mod, c = _companion()
+    c.options = c.options._replace(insistence=step)
+    c.pointer = object()
+    c._begin_tug(1000.0, 5.0, (c.pos_x + 400.0, c.pos_y))
+    assert (c.tug_route is not None) is moves, \
+        f"--insistence {step}: tug_route={c.tug_route}"
+    assert (c.tug_until > 1000.0) is moves
+
+
+@needs_display
+def test_being_dragged_around_with_insistence_off_does_not_take_the_mouse():
+    """The path that had no gate, driven the way a person drives it.
+
+    Ten seconds of being held is the tier that fires every time and ignores
+    the cooldown, so this is the strongest provocation the character accepts —
+    and with the escalation switched off it still has to answer with nothing
+    but a sentence.
+    """
+    mod, c = _companion()
+    c.options = c.options._replace(insistence="off")
+    c.pointer = object()
+    said = []
+    c._say = lambda text: said.append(text)
+    c._snap = lambda: None
+    c.recent_drags = []
+    c.tugged_at = 0.0
+    c.tug_until = 0.0
+    c.tug_route = None
+    c.dragging = True
+    c.drag_started = time.monotonic() - (mod.DRAG_TUG_ALWAYS + 1)
+
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    c.mouseReleaseEvent(QMouseEvent(QMouseEvent.MouseButtonRelease, QPointF(0, 0),
+                                    Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
+    assert c.tug_route is None, "ran off with the pointer with escalation off"
+    assert c.tug_until == 0.0
+
+
+@needs_display
+def test_a_step_below_pointer_still_cannot_reach_the_rung_that_carries_it():
+    """The gate opens for every step but `off`, and that must not be read as
+    the ladder having lost its own opt-in: rung 4 is still reached by naming
+    `pointer` and by nothing else, however long the session sits there."""
+    mod, c = _companion()
+    c.options = c.options._replace(insistence="wave")
+    c.insistence = mod.focus_engine.Insistence(allow_pointer=False)
+    c.pointer = object()
+    c.brain.sessions = {"total": 1, "attention": None, "sessions": [
+        {"pid": 7, "name": "hub", "state": "asking", "idleSeconds": 0}]}
+    c._insist(0.0)
+    c._insist(mod.focus_engine.POINTER_AFTER + 60.0)
+    assert c.tug_route is None, "the ladder took the pointer without being asked"
 
 
 # ── the command channel ────────────────────────────────────────────────────
@@ -920,6 +1059,83 @@ def test_self_test_still_prints_its_json_and_exits_zero():
     report = json.loads(result.stdout.strip().splitlines()[-1])
     assert set(report) == {"movedX", "movedY", "geometry", "frameMs"}, report
     assert report["movedX"] > 10 and report["movedY"] > 10, report
+
+
+# ── a public symbol nothing in production reaches ──────────────────────────
+#
+# The twoRed defect, one level up from the dialogue: a symbol that is public,
+# documented and tested, and that no running code arrives at. It had already
+# happened three times — `buddy_signals.quota_fraction`, a second reading of a
+# quota the module already emits two signals about; `buddy_focus`'s idle probe,
+# written, tested and wired to nothing; and a `KEYS` alias exported for this
+# suite alone.
+#
+# The guard before this one was a hand-written list of eighteen call fragments,
+# which covered two of the five modules and named none of the three. A list of
+# what to check is only ever as complete as the last person to remember it, so
+# this derives the question instead: every public name each module defines, and
+# whether any file under scripts/ reads it.
+
+PUBLIC_MODULES = ("buddy_signals", "buddy_focus", "buddy_actions",
+                  "buddy_peers", "buddy_lines")
+
+
+def _public_symbols(path):
+    """Module-level names a caller could import, definitions only."""
+    found = set()
+    for node in ast.parse(path.read_text()).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if not node.name.startswith("_"):
+                found.add(node.name)
+        elif isinstance(node, ast.Assign):
+            found |= {t.id for t in node.targets
+                      if isinstance(t, ast.Name) and not t.id.startswith("_")}
+    return found
+
+
+def _names_read(path):
+    """Every name this file reads: bare, behind a dot, or imported.
+
+    Load context only. A binding is a Store, so `Drop = namedtuple("Drop", ...)`
+    does not count as a use of Drop and a constant nothing reads cannot vouch
+    for itself.
+    """
+    read = set()
+    for node in ast.walk(ast.parse(path.read_text())):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            read.add(node.id)
+        elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
+            read.add(node.attr)
+        elif isinstance(node, ast.alias):
+            read.add((node.asname or node.name).split(".")[0])
+    return read
+
+
+@pytest.mark.parametrize("module", PUBLIC_MODULES)
+def test_no_public_symbol_is_reachable_only_from_the_tests(module):
+    """Every public name in these modules has to be read by something that runs.
+
+    Only scripts/ counts. A symbol whose sole caller is a test is the defect
+    itself: it is written, it passes, and the desktop never executes a line of
+    it — which is exactly what `quota_fraction` and `user_idle_seconds` looked
+    like from the outside.
+
+    A module reading its own name back counts. Requiring the read to come from
+    a *different* module sounds stricter and is not: it flags every threshold
+    a module hands to its own default arguments, eighty-odd of them here, and a
+    detector that cries about eighty things teaches people to add exemptions
+    rather than to look. What this catches is the class that has actually
+    occurred: a public name no code path anywhere arrives at.
+    """
+    scripts = REPO / "scripts"
+    reached = set()
+    for path in sorted(scripts.glob("*.py")):
+        reached |= _names_read(path)
+    defined = _public_symbols(scripts / f"{module}.py")
+    assert defined, f"{module}: the scan found no public names at all"
+    orphans = sorted(defined - reached)
+    assert not orphans, \
+        f"{module}: public, and no code under scripts/ reads them: {orphans}"
 
 
 # ── the defaults the widget and the companion have to share ────────────────

@@ -28,10 +28,35 @@ companion_pids() {
         p="${pid#"$PROC"/}"
         [ "$p" = "$SELF" ] && continue
         argv=$( { tr '\0' '\n' < "$pid/cmdline"; } 2>/dev/null | head -2) || continue
-        case "$argv" in
-            *"$SCRIPT_NAME"*) echo "$p" ;;
+        first=$(basename -- "$(printf '%s\n' "$argv" | sed -n 1p)" 2>/dev/null)
+        second=$(basename -- "$(printf '%s\n' "$argv" | sed -n 2p)" 2>/dev/null)
+        # Who is running the script, not who mentions it. Matching the name
+        # anywhere in the command line takes `vim scripts/usage-buddy-companion.py`
+        # and `cp scripts/usage-buddy-companion.py ~/.local/bin/` — the second
+        # of which is install.sh, so `stop` during an install truncates the file
+        # it is installing. Position alone does not separate them either: vim
+        # puts the name in the second slot exactly as the interpreter does.
+        # buddy_peers.is_companion answers this correctly and this is the same
+        # rule, in shell.
+        # Digits and dots stripped, then compared whole, rather than a list of
+        # globs per version shape. The list had a hole: `pypy3.10` matched
+        # buddy_peers.is_companion and not this, so such a companion survived
+        # `stop` and `start` left two of them running. Two implementations of
+        # one rule that disagree are a contract nobody wrote.
+        case "$(printf '%s' "$first" | tr -d '0-9.')" in
+            python|pypy) [ "$second" = "$SCRIPT_NAME" ] && echo "$p" ;;
         esac
+        [ "$first" = "$SCRIPT_NAME" ] && echo "$p"
     done
+    # The scan succeeded whatever it found. Without this the function inherits
+    # the status of its last iteration, and the last iteration is a `[ ... ] &&`
+    # that fails for every interpreter running some other script — so `status`,
+    # which pipes this into `wc -l` under `pipefail`, exited 1 or 0 depending on
+    # which pid the glob happened to visit last. Measured: the same two
+    # processes, a companion and a `python3 -m pytest`, renumbered so the
+    # pytest one sorts last, printed the same correct count and exited 1
+    # instead of 0.
+    return 0
 }
 
 stop_companion() {

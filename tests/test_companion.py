@@ -18,6 +18,9 @@ REPO = Path(__file__).resolve().parents[1]
 COMPANION = REPO / "scripts" / "usage-buddy-companion.py"
 CTL = REPO / "scripts" / "companion-ctl.sh"
 
+sys.path.insert(0, str(REPO / "scripts"))
+import buddy_peers as peers                                          # noqa: E402
+
 # Noon, local, on a fixed date. Some of what the companion says depends on the
 # hour of day, and a suite whose result depends on when it is run is a suite
 # nobody trusts the failures of.
@@ -151,10 +154,130 @@ def test_ctl_matches_the_script_behind_the_interpreter():
     assert 'SELF=$$' in body and '[ "$p" = "$SELF" ]' in body, "does not skip itself"
 
 
+# Command lines, and whether whoever ran each one is a companion this may kill.
+#
+# The two positives are the two shapes a companion actually starts in. The
+# negatives are all the same mistake — matching the script name anywhere in the
+# command line — and the second of them is the expensive one: that is
+# install.sh:299 copying the script into ~/.local/bin, so a `stop` while it ran
+# sent SIGTERM to the `cp` and truncated the file being installed. This work
+# multiplied the chances of hitting it by six, because main.qml now calls
+# syncCompanion() from six handlers and `start` stops first.
+#
+# Position alone cannot separate them: `vim scripts/usage-buddy-companion.py`
+# puts the name in argv[1] exactly where the interpreter does. The rule is who
+# is running it — the script as its own argv[0], or an interpreter with the
+# script as argv[1].
+CTL_CASES = [
+    ("the script as its own argv[0]",
+     b"/home/u/.local/bin/usage-buddy-companion.py\x00--lang\x00en\x00", True),
+    ("python3 running the script",
+     b"/usr/bin/python3\x00/home/u/.local/bin/usage-buddy-companion.py\x00", True),
+    ("a point-release python running the script",
+     b"/usr/bin/python3.14\x00/home/u/.local/bin/usage-buddy-companion.py\x00", True),
+    ("the other interpreter family",
+     b"/usr/bin/pypy3\x00/home/u/.local/bin/usage-buddy-companion.py\x00", True),
+    # The one the two implementations used to disagree about. The shell matched
+    # a list of globs per version shape and had no entry for a two-digit point
+    # release, so a companion under it survived `stop` and the next `start`
+    # left two of them running. Both strip digits and dots and compare the
+    # stem now, which is why the case below has to stay too: stripping without
+    # comparing the whole stem would let anything that begins with the name
+    # through.
+    ("a two-digit point release of the other family",
+     b"/usr/bin/pypy3.10\x00/home/u/.local/bin/usage-buddy-companion.py\x00", True),
+    ("something whose name merely starts like an interpreter",
+     b"/usr/bin/python3xyz\x00/home/u/.local/bin/usage-buddy-companion.py\x00", False),
+    ("an editor with the file open",
+     b"/usr/bin/vim\x00scripts/usage-buddy-companion.py\x00", False),
+    ("the installer copying the script into place",
+     b"/usr/bin/cp\x00scripts/usage-buddy-companion.py\x00/home/u/.local/bin/\x00", False),
+    ("a shell that merely names it",
+     b"/bin/sh\x00-c\x00echo usage-buddy-companion.py\x00", False),
+    ("an interpreter running something else entirely",
+     b"/usr/bin/python3\x00/home/u/other.py\x00usage-buddy-companion.py\x00", False),
+]
+
+# Above /proc/sys/kernel/pid_max (4194304 here), so no fake pid can collide
+# with the ctl's own $$, which it skips by number. A collision would make a
+# negative case pass for the wrong reason and nothing would say so.
+_FAKE_PID = 9_000_001
+
+
+@pytest.mark.parametrize("name,argv,expected", CTL_CASES,
+                         ids=[case[0] for case in CTL_CASES])
+def test_the_ctl_and_the_liveness_check_agree_on_who_is_running_the_script(
+        name, argv, expected, tmp_path):
+    """One table, both implementations of the same rule.
+
+    companion-ctl.sh decides what `stop` kills and buddy_peers.is_companion
+    decides which presence files are still a live companion. They were written
+    apart and disagreed: the shell matched the name as a substring, so it
+    answered yes to the editor and to the installer. Checking both against the
+    same cases is what keeps the shell copy from drifting again.
+    """
+    env = _fake_proc(tmp_path, {_FAKE_PID: argv})
+    counted = _ctl("status", env)
+    assert counted.returncode == 0, counted.stderr
+    assert counted.stdout.strip() == ("1" if expected else "0"), \
+        f"companion-ctl.sh: {name} -> {counted.stdout.strip()}"
+    assert peers.is_companion(_FAKE_PID, proc=str(tmp_path)) is expected, \
+        f"buddy_peers.is_companion: {name}"
+
+
+def test_stop_during_an_install_leaves_the_installer_alone(tmp_path):
+    """The measured version of the case above, with processes that can die.
+
+    Three of them, described to the ctl as the editor, the installer and the
+    real companion. Before the fix `companion_pids` returned all three; the
+    second is `cp` writing ~/.local/bin/usage-buddy-companion.py, so a `stop`
+    at that moment truncated the file it was installing.
+    """
+    editor, installer, real = (subprocess.Popen(["sleep", "120"]) for _ in range(3))
+    try:
+        env = _fake_proc(tmp_path, {
+            editor.pid: b"/usr/bin/vim\x00scripts/usage-buddy-companion.py\x00",
+            installer.pid: (b"/usr/bin/cp\x00scripts/usage-buddy-companion.py"
+                            b"\x00/home/u/.local/bin/\x00"),
+            real.pid: (b"/usr/bin/python3\x00"
+                       b"/home/u/.local/bin/usage-buddy-companion.py\x00"),
+        })
+        assert _ctl("status", env).stdout.strip() == "1"
+        assert _ctl("stop", env).returncode == 0
+        real.wait(timeout=10)
+        assert real.returncode is not None, "the companion survived stop"
+        assert editor.poll() is None, "stop killed the editor"
+        assert installer.poll() is None, "stop killed the installer mid-copy"
+    finally:
+        for p in (editor, installer, real):
+            p.kill()
+            p.wait(timeout=10)
+
+
 def test_ctl_status_is_a_number():
     r = subprocess.run(["bash", str(CTL), "status"], capture_output=True, text=True, timeout=30)
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip().isdigit(), r.stdout
+
+
+def test_ctl_status_does_not_report_failure_because_of_who_else_is_running(tmp_path):
+    """The count and the exit code have to agree, whatever /proc holds.
+
+    The scan ends in a `[ ... ] &&` that fails for any interpreter running some
+    other script, and a function inherits the status of its last iteration —
+    so under `pipefail` the answer depended on which pid the glob visited last.
+    The two entries here are a real companion and a `python3 -m pytest`, and
+    the second sorts after the first: the count was right and the exit code was
+    1, which is the test suite's own process making the ctl report failure.
+    """
+    env = _fake_proc(tmp_path, {
+        _FAKE_PID: (b"/usr/bin/python3\x00"
+                    b"/home/u/.local/bin/usage-buddy-companion.py\x00"),
+        _FAKE_PID + 1: b"/usr/bin/python3\x00-m\x00pytest\x00",
+    })
+    r = _ctl("status", env)
+    assert r.stdout.strip() == "1"
+    assert r.returncode == 0, "counted correctly and reported failure anyway"
 
 
 def test_ctl_rejects_an_unknown_verb():

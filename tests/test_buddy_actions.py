@@ -266,6 +266,51 @@ def test_a_selection_of_four_hundred_folders_becomes_eight(tmp_path):
     assert len(over) == 4 + 388, "every rejection has to be reported, not just some"
 
 
+def test_the_limit_counts_what_was_looked_at_and_not_what_passed(tmp_path,
+                                                                 monkeypatch):
+    """A selection of ordinary folders accepts nothing, so counting accepted
+    entries never reaches the limit and the whole selection is stat'ed.
+
+    That is the case this exists for and it was the one it missed: three
+    hundred plain directories, none of them repositories, all of them looked at
+    — measured at eighty thousand filesystem calls for twenty thousand folders,
+    433 ms of it, on the thread that draws the character. The bound has to be
+    on the looking, not on the passing.
+
+    Counted rather than timed. A stat storm shows up as a duration on the
+    machine that runs the suite and as nothing at all on a faster one, so the
+    assertion is the number of paths that reached the disk.
+    """
+    folders = [tmp_path / f"plain{i:04d}" for i in range(300)]
+    for folder in folders:
+        folder.mkdir()
+    uris = [folder.as_uri() for folder in folders]
+
+    seen = []
+    for name in ("realpath", "exists", "isdir"):
+        original = getattr(actions.os.path, name)
+        monkeypatch.setattr(
+            actions.os.path, name,
+            lambda path, _call=original: (seen.append(path), _call(path))[1])
+    dropped = actions.dropped_repositories(uris)
+    calls = len(seen)
+    # `.git` is asked about under the folder that was looked at, so the folder
+    # is what says how many entries reached the disk.
+    looked = {path.removesuffix("/.git") for path in seen}
+
+    assert dropped.accepted == []
+    reasons = [reason for _uri, reason in dropped.rejected]
+    assert {r: reasons.count(r) for r in set(reasons)} == {
+        actions.REASON_NOT_A_REPOSITORY: actions.DROP_LIMIT,
+        actions.REASON_TOO_MANY: 300 - actions.DROP_LIMIT}
+    assert len(looked) == actions.DROP_LIMIT, sorted(looked)
+    # Four calls per entry today — realpath, exists, isdir, and exists on the
+    # .git inside it. The ceiling is loose because pinning the exact number
+    # would fail on a fifth check that is still bounded; what may not happen is
+    # a count that grows with the size of the drop.
+    assert calls <= actions.DROP_LIMIT * 8, calls
+
+
 def test_a_uri_list_blob_is_split_and_its_comments_ignored(tmp_path):
     """QMimeData hands drops over as a CRLF-separated text/uri-list as often
     as a list. Treated as one string it becomes a single path with newlines in
