@@ -2179,7 +2179,10 @@ PlasmoidItem {
     }
 
     fullRepresentation: PlasmaExtras.Representation {
-        Layout.preferredWidth: Kirigami.Units.gridUnit * 24
+        // Widened by one unit when the header gained the focus control. The
+        // shrinking title above is what makes the overflow impossible; this is
+        // what keeps the title from having to elide on the common case.
+        Layout.preferredWidth: Kirigami.Units.gridUnit * 25
         Layout.preferredHeight: Kirigami.Units.gridUnit * 40
         Layout.minimumWidth: Kirigami.Units.gridUnit * 20
         Layout.maximumHeight: Kirigami.Units.gridUnit * 44
@@ -2411,11 +2414,28 @@ PlasmoidItem {
                     }
                 }
 
+                // Allowed to give ground, and it is the only thing in this row
+                // that can. A RowLayout never shrinks below the sum of its
+                // children's minimum widths, so a block with no minimum of its
+                // own sets the row's — and the row then overflows the column,
+                // which the Flickable clips because it holds contentWidth at
+                // its own width and does not scroll sideways. The symptom is
+                // every row in the popup cut off at the same x, which reads as
+                // the whole widget being broken rather than as one header that
+                // no longer fits. It appeared the moment a sixth button joined
+                // the row; the title yielding is what keeps the seventh from
+                // doing it again.
                 ColumnLayout {
                     spacing: 1
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
                     RowLayout {
+                        Layout.fillWidth: true
                         spacing: 6
                         PlasmaComponents3.Label {
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            elide: Text.ElideRight
                             text: root.brand.name
                             font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 1.5
                             font.weight: Font.Bold
