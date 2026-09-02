@@ -103,11 +103,32 @@ check("resetsAt alem da janela -> 0 (nao extrapola)", windowPace(iso(99 * H), 5)
 // ── usageZone: o que decide cor, pulso de alerta e agitacao do buddy ──
 const zm = src.match(/function usageZone\(pct, pace\) \{\n([\s\S]*?)\n    \}\n/);
 if (!zm) { console.error("FALHA: nao achei usageZone no QML"); process.exit(2); }
-const K = {};
-for (const k of ["warnAt", "alertAt", "paceTolerance"]) {
-  const m = src.match(new RegExp("readonly property real " + k + ": (\\d+)"));
-  if (!m) { console.error("FALHA: nao achei " + k); process.exit(2); }
-  K[k] = Number(m[1]);
+// warnAt/alertAt stopped being literals in the QML. The pair is resolved from
+// what the collector publishes in widget-data.json, so reading a number out of
+// the source here would be reading a number that is no longer there — and,
+// before that, a number the running widget might not be using. This lifts the
+// resolution functions out of main.qml instead and asks them what an
+// installation with nothing published and nothing configured gets, which is
+// the pair the cases below are written against.
+const grabFn = (name, args) => {
+  const re = new RegExp("function " + name + "\\(" + args + "\\) \\{\n([\\s\\S]*?)\n    \\}\n");
+  const m = src.match(re);
+  if (!m) { console.error("FALHA: nao achei " + name); process.exit(2); }
+  return "function " + name + "(" + args + ") {\n" + m[1] + "\n}\n";
+};
+const resolveThresholds = new Function(
+  grabFn("cleanThreshold", "value")
+  + grabFn("thresholdPair", "raw")
+  + grabFn("resolveThresholds", "published, configured")
+  + "return resolveThresholds;")();
+const defaultPair = resolveThresholds(null, null);
+const K = { warnAt: defaultPair.warn, alertAt: defaultPair.alert };
+const ptm = src.match(/readonly property real paceTolerance: (\d+)/);
+if (!ptm) { console.error("FALHA: nao achei paceTolerance"); process.exit(2); }
+K.paceTolerance = Number(ptm[1]);
+if (!(K.warnAt > 0 && K.alertAt > K.warnAt)) {
+  console.error("FALHA: par de limiares inutil: " + JSON.stringify(K));
+  process.exit(2);
 }
 const usageZone = new Function("pct", "pace",
   `const warnAt=${K.warnAt}, alertAt=${K.alertAt}, paceTolerance=${K.paceTolerance};\n` + zm[1]);

@@ -16,6 +16,8 @@ KCM.SimpleKCM {
     property bool cfg_buddyShadow
     property bool cfg_buddyEscort
     property double cfg_planMonthlyCost
+    property int cfg_usageWarnAt
+    property int cfg_usageAlertAt
 
     Kirigami.FormLayout {
         anchors.left: parent.left
@@ -190,6 +192,47 @@ KCM.SimpleKCM {
         Kirigami.Separator {
             Kirigami.FormData.label: "Usage"
             Kirigami.FormData.isSection: true
+        }
+
+        // The two boxes bound each other's range instead of validating after
+        // the fact. A warning set above the alert is not a warning — it fires
+        // second, about a quota already past the point it was meant to be
+        // announced before — and there is nowhere on a KCM page to tell
+        // somebody that after they have typed it. Here it cannot be typed:
+        // the warning's ceiling is one below the alert, and the alert's floor
+        // is one above the warning.
+        QQC2.SpinBox {
+            id: warnBox
+            Kirigami.FormData.label: "Warn at:"
+            from: 5
+            to: Math.max(5, page.cfg_usageAlertAt - 1)
+            stepSize: 5
+            editable: true
+            value: page.cfg_usageWarnAt
+            onValueModified: page.cfg_usageWarnAt = value
+            textFromValue: function (v) { return v + "%" }
+            valueFromText: function (text) { return parseInt(text.replace("%", ""), 10) }
+        }
+
+        QQC2.SpinBox {
+            id: alertBox
+            Kirigami.FormData.label: "Alert at:"
+            from: Math.min(99, page.cfg_usageWarnAt + 1)
+            to: 99
+            stepSize: 5
+            editable: true
+            value: page.cfg_usageAlertAt
+            onValueModified: page.cfg_usageAlertAt = value
+            textFromValue: function (v) { return v + "%" }
+            valueFromText: function (text) { return parseInt(text.replace("%", ""), 10) }
+        }
+
+        QQC2.Label {
+            Kirigami.FormData.label: ""
+            text: "Where a quota turns amber, and where it turns red. The same two numbers decide when the notification fires, so the bar and the toast always agree — they are stored where the collector reads them, not only here. Defaults are 75% and 90%; 99% is the ceiling because a quota at 100% is announced as exhausted instead."
+            opacity: 0.6
+            font.italic: true
+            wrapMode: Text.WordWrap
         }
 
         QQC2.SpinBox {

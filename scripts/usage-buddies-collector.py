@@ -29,8 +29,19 @@ CONFIG_FILE = CLAUDE_DIR / "widget-config.json"
 # - winSound: System.Media.SystemSounds equivalente no Windows.
 # Zonas de uso. Os mesmos limiares que o plasmoid desenha na trilha das barras
 # e do anel, para que o aviso sonoro e o visual concordem.
+#
+# Estes dois nomes sao o DEFAULT, nao o valor efetivo: o par em vigor sai de
+# usage_thresholds(), que le ~/.claude/widget-config.json. Uma instalacao que
+# nunca configurou nada continua exatamente aqui, que e o ponto de manter os
+# numeros escritos neste arquivo.
 USAGE_WARN_AT = 75
 USAGE_ALERT_AT = 90
+
+# Limites do que o arquivo de configuracao pode pedir. Abaixo de 5 a barra
+# nasce amarela em toda sessao; em 100 o alerta nunca dispara, porque uma cota
+# em 100 e anunciada como esgotada (sessionEnded) e nao como alerta.
+THRESHOLD_MIN = 5
+THRESHOLD_MAX = 99
 
 # Membros de System.Media.SystemSounds. Allowlist: ver _play_event_sound().
 SYSTEM_SOUNDS = frozenset({"Asterisk", "Beep", "Exclamation", "Hand", "Question"})
@@ -61,7 +72,11 @@ USAGE_EVENT_DEFAULTS = {
                      "title": "Limite semanal Claude renovado",
                      "body": "A janela de 7 dias foi resetada."},
     # Limiares: avisam enquanto ainda há o que fazer a respeito.
-    "sessionWarn":  {"headline": "três quartos",
+    #
+    # O headline nao cita mais "tres quartos": o par e configuravel, e um
+    # aviso em 50% que se anuncia como tres quartos esta simplesmente errado.
+    # O numero real vai no corpo (percent) e no titulo (threshold).
+    "sessionWarn":  {"headline": "aviso",
                      "sound": "message",
                      "winSound": "Asterisk",
                      "urgency": "low",
@@ -73,7 +88,7 @@ USAGE_EVENT_DEFAULTS = {
                      "urgency": "normal",
                      "title": f"Sessão em {USAGE_ALERT_AT}%",
                      "body": "Guarde o que resta para o que importa."},
-    "weeklyWarn":   {"headline": "três quartos",
+    "weeklyWarn":   {"headline": "aviso",
                      "sound": "message",
                      "winSound": "Asterisk",
                      "urgency": "low",
@@ -765,21 +780,198 @@ def get_claude_cookies():
 
 
 def load_config():
-    """Load widget config from ~/.claude/widget-config.json."""
+    """Load widget config from ~/.claude/widget-config.json.
+
+    The isinstance guard is not decoration: the file is hand-editable text, and
+    a top-level list or string parses as valid JSON and then explodes on the
+    first .get() several frames away from the file that caused it.
+    """
     if CONFIG_FILE.exists():
         try:
-            return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
         except Exception:
             pass
     return {}
 
 
-def save_config(cfg):
-    """Persist widget config."""
+def _config_lock_path():
+    """The lock is a file of its own, beside the config.
+
+    Locking the config file itself would not work: _write_config_atomically()
+    replaces it by rename, so a second writer that opened the path a moment
+    earlier holds a lock on an inode that is no longer at that path, and the
+    two of them proceed at the same time believing they are serialised.
+    """
+    return Path(str(CONFIG_FILE) + ".lock")
+
+
+def _write_config_atomically(cfg):
+    """Whole file through a temp in the same directory, then rename.
+
+    A half-written config is not a degraded config: load_config() cannot parse
+    it and returns {}, which is org_id gone and the collection with it.
+    """
+    tmp = Path(str(CONFIG_FILE) + f".tmp.{os.getpid()}")
     try:
-        CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, CONFIG_FILE)
     except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    try:
+        os.chmod(CONFIG_FILE, 0o600)
+    except OSError:
         pass
+
+
+def update_config(mutate):
+    """Read, mutate and write the config with the lock held across all three.
+
+    Two processes write this file. This collector stores org_id the first time
+    it detects one; the plasmoid stores the alert thresholds, by running this
+    same script with --set-thresholds. Read-modify-write from both, unlocked,
+    loses whichever key was written during the other's window — and the key
+    that goes missing is org_id, without which every remote read fails.
+
+    `mutate` is handed the config as it is on disk *now*, inside the lock, and
+    edits it in place. Nothing here writes a fixed key set on purpose: each
+    side has to leave the other's keys untouched.
+
+    Returns the config as written, or None when it could not be written.
+    """
+    try:
+        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(_config_lock_path(), "a+") as lock:
+            _lock_exclusive(lock)
+            try:
+                cfg = load_config()
+                mutate(cfg)
+                _write_config_atomically(cfg)
+                return cfg
+            finally:
+                _unlock(lock)
+    except Exception:
+        return None
+
+
+def _lock_exclusive(handle):
+    """Block until this process owns the config for writing.
+
+    fcntl is POSIX, and the other writer of this file is the Plasma applet,
+    which does not run on Windows — the Windows widget under win-widget/ reads
+    the sound settings and writes nothing. Degrading to no lock there leaves
+    exactly the behaviour this collector has always had; refusing to import
+    would cost the whole collection.
+    """
+    try:
+        import fcntl
+    except ImportError:
+        return
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+
+
+def _unlock(handle):
+    try:
+        import fcntl
+    except ImportError:
+        return
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def save_config(cfg):
+    """Persist widget config.
+
+    Merges rather than replaces. A caller holding a copy read seconds ago must
+    not be able to delete a key another process added in the meantime, which
+    is exactly what writing its own copy back would do.
+    """
+    return update_config(lambda current: current.update(cfg)) is not None
+
+
+def _clean_threshold(value, default):
+    """One threshold out of the config file, or the default.
+
+    Everything rejected here is something the file can actually contain: a
+    string, a null, a bool (which is an int in Python and sails through a
+    naive numeric test), a NaN, or a number outside the usable range. None of
+    them may reach the comparison that decides whether to warn — a threshold
+    of "90" compares False against every float and silently disables the
+    alert.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    # NaN and both infinities fall out of the range test on their own: every
+    # comparison against NaN is False, and the infinities sit outside it.
+    if not (THRESHOLD_MIN <= value <= THRESHOLD_MAX):
+        return default
+    return int(value) if float(value).is_integer() else float(value)
+
+
+def usage_thresholds(config=None):
+    """The warn/alert pair in force, defaulting to the values above.
+
+    One resolution point, deliberately. The plasmoid paints its zones from the
+    pair this returns — it is published in widget-data.json — and the
+    notifications below fire on the same pair. Two lookups is how the bar goes
+    red while no toast arrives, which is the one thing this widget exists to
+    prevent.
+    """
+    cfg = load_config() if config is None else config
+    if not isinstance(cfg, dict):
+        cfg = {}
+    raw = cfg.get("thresholds")
+    if not isinstance(raw, dict):
+        raw = {}
+    warn = _clean_threshold(raw.get("warn"), USAGE_WARN_AT)
+    alert = _clean_threshold(raw.get("alert"), USAGE_ALERT_AT)
+    if warn >= alert:
+        # An inverted pair fires the alert and then "warns" about a quota
+        # already past it. Neither half can be trusted once the order is
+        # wrong, so both fall back together rather than one at a time.
+        return USAGE_WARN_AT, USAGE_ALERT_AT
+    return warn, alert
+
+
+def set_usage_thresholds(warn, alert):
+    """Store the pair, keeping every other key in the file.
+
+    The sub-dict is merged too: a key under "thresholds" that this version
+    does not know about belongs to whoever wrote it.
+    """
+    warn = _clean_threshold(warn, USAGE_WARN_AT)
+    alert = _clean_threshold(alert, USAGE_ALERT_AT)
+    if warn >= alert:
+        warn, alert = USAGE_WARN_AT, USAGE_ALERT_AT
+
+    def mutate(cfg):
+        existing = cfg.get("thresholds")
+        if not isinstance(existing, dict):
+            existing = {}
+        existing["warn"] = warn
+        existing["alert"] = alert
+        cfg["thresholds"] = existing
+
+    update_config(mutate)
+    return warn, alert
+
+
+def thresholds_payload(config=None):
+    """The block published in widget-data.json for the widget to paint from.
+
+    Its own function so a test can ask for exactly what gets written without
+    running the whole collection, which needs the network and the browser
+    cookies.
+    """
+    warn, alert = usage_thresholds(config)
+    return {"warn": warn, "alert": alert}
 
 
 def detect_org_id(cookies):
@@ -818,8 +1010,10 @@ def get_org_id(cookies=""):
         cookies = get_claude_cookies()
     org_id = detect_org_id(cookies)
     if org_id:
-        cfg["org_id"] = org_id
-        save_config(cfg)
+        # Through update_config rather than save_config(cfg): cfg was read
+        # before the network call above, so writing it back whole would undo
+        # any key the widget stored while that request was in flight.
+        update_config(lambda current: current.__setitem__("org_id", org_id))
     return org_id
 
 
@@ -1173,7 +1367,7 @@ def scope_label(scope_key, block):
     return ALERT_SCOPES.get(scope_key, scope_key)
 
 
-def detect_usage_transitions(prev_state, curr_data):
+def detect_usage_transitions(prev_state, curr_data, thresholds=None):
     """Função pura: compara snapshot anterior com dados atuais e devolve a lista
     de eventos disparados e o snapshot novo.
 
@@ -1191,6 +1385,12 @@ def detect_usage_transitions(prev_state, curr_data):
     events = []
     new_snapshot = {"lastRun": datetime.now(timezone.utc).isoformat(),
                     "measured": measured}
+
+    # Defaults when no pair is handed in, so a caller that does not care about
+    # the configuration still gets the behaviour every installation had.
+    # process_usage_events() passes the configured pair; nothing here reads the
+    # file, which keeps the detection function free of disk.
+    warn_at, alert_at = thresholds if thresholds else (USAGE_WARN_AT, USAGE_ALERT_AT)
 
     prev_measured = (prev_state or {}).get("measured", True)
 
@@ -1229,9 +1429,14 @@ def detect_usage_transitions(prev_state, curr_data):
             warn_id = "weeklyWarn" if is_weekly else "sessionWarn"
             alert_id = "weeklyAlert" if is_weekly else "sessionAlert"
 
-            def emit(event_id):
+            def emit(event_id, threshold=None):
+                # The threshold travels with the event because the titles in
+                # USAGE_EVENT_DEFAULTS carry the default number, frozen at
+                # import time. A toast that fires at 60% and says 75% is worse
+                # than one that says nothing.
                 events.append({"id": event_id, "scope": scope_key,
-                               "label": label, "percent": curr_pct})
+                               "label": label, "percent": curr_pct,
+                               "threshold": threshold})
 
             # ACABOU: 1ª execução já em 100%, ou transição de <100 para >=100.
             # Só conta como primeira execução se a anterior também foi medida.
@@ -1245,14 +1450,14 @@ def detect_usage_transitions(prev_state, curr_data):
             # janela, na subida; o de 90% suprime o de 75% quando os dois são
             # cruzados na mesma execução.
             if curr_pct is not None and curr_pct < 100:
-                crossed = [(t, e) for t, e in ((USAGE_ALERT_AT, alert_id),
-                                               (USAGE_WARN_AT, warn_id))
+                crossed = [(t, e) for t, e in ((alert_at, alert_id),
+                                               (warn_at, warn_id))
                            if curr_pct >= t and t not in fired]
                 if crossed:
-                    emit(crossed[0][1])
+                    emit(crossed[0][1], crossed[0][0])
                     fired.extend(t for t, _ in crossed)
             elif curr_pct is not None and curr_pct >= 100:
-                fired.extend(t for t in (USAGE_WARN_AT, USAGE_ALERT_AT)
+                fired.extend(t for t in (warn_at, alert_at)
                              if t not in fired)
 
             # RESETOU: resetsAt avançou claramente E havia uso significativo.
@@ -1360,6 +1565,12 @@ def notify_usage_event(event, config):
     else:
         title = defaults["title"]
 
+    threshold = event.get("threshold") if isinstance(event, dict) else None
+    if threshold is not None:
+        # The number written into the default title is the default threshold.
+        # Once the pair is configurable it is only right by coincidence.
+        title = re.sub(r"\d+(?:[.,]\d+)?%", f"{threshold:g}%", title, count=1)
+
     body = defaults["body"]
     if percent is not None:
         body = f"{round(percent)}% usado. {body}"
@@ -1380,7 +1591,8 @@ def process_usage_events(curr_data, config):
         return
 
     prev_state = _load_events_state()
-    events, new_snapshot = detect_usage_transitions(prev_state, curr_data)
+    events, new_snapshot = detect_usage_transitions(
+        prev_state, curr_data, usage_thresholds(config))
     for ev in events:
         notify_usage_event(ev, config)
     _save_events_state(new_snapshot)
@@ -2523,7 +2735,7 @@ def compute_month_to_date(model="claude-opus-5"):
     }
 
 
-def build_widget_data():
+def build_widget_data(config=None):
     """Build the complete widget data JSON."""
     stats = load_stats_cache()
     now = datetime.now(timezone.utc)
@@ -2664,6 +2876,12 @@ def build_widget_data():
 
     widget_data = {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
+        # The zone boundaries travel with the data on purpose. The plasmoid
+        # used to carry its own copy of these two numbers, so a threshold
+        # changed on one side painted a bar the other side never announced.
+        # Published here, the bar is drawn with the number this run would have
+        # raised a notification at.
+        "thresholds": thresholds_payload(config),
         "rateLimits": rate_limits,
         "today": {
             "inputTokens": today_total_input,
@@ -2923,8 +3141,31 @@ def main():
         run_test_sounds(load_config())
         return
 
+    # --set-thresholds=WARN,ALERT — how the plasmoid stores the pair.
+    #
+    # It goes through this script rather than being written from QML because
+    # the merge, the lock and the atomic rename all live here; a second writer
+    # implemented in another language is a second chance to drop org_id.
+    # Values outside the range, or in the wrong order, land on the defaults
+    # instead of being refused: this runs from a panel with no place to show
+    # an error.
+    for arg in sys.argv[1:]:
+        if arg.startswith("--set-thresholds="):
+            parts = arg.split("=", 1)[1].split(",")
+            def _num(text):
+                try:
+                    return float(text)
+                except (TypeError, ValueError):
+                    return None
+            warn = _num(parts[0]) if len(parts) > 0 else None
+            alert = _num(parts[1]) if len(parts) > 1 else None
+            warn, alert = set_usage_thresholds(warn, alert)
+            print(f"OK: thresholds warn={warn} alert={alert}")
+            return
+
     try:
-        data = build_widget_data()
+        config = load_config()
+        data = build_widget_data(config)
 
         # --test-state override for HITL testing
         for arg in sys.argv:
@@ -2953,7 +3194,10 @@ def main():
 
         # Notificações + sons em transições de sessão/semanal
         try:
-            process_usage_events(data, load_config())
+            # The same config object the data was built from. Re-reading
+            # here would let a write between the two calls paint the bar with
+            # one pair and fire the toast with another.
+            process_usage_events(data, config)
         except Exception as e:
             print(f"warn: process_usage_events falhou: {e}", file=sys.stderr)
 

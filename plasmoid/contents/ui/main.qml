@@ -131,7 +131,14 @@ PlasmoidItem {
         var base = "Session: " + Math.round(p) + "% | Weekly: " +
                    Math.round(usageData.rateLimits?.weeklyAll?.percentUsed ?? 0) + "%";
         var status = usageData.serviceStatus?.description ?? "";
-        return (status && status !== "All Systems Operational") ? base + "\n⚠ " + status : base;
+        var text = (status && status !== "All Systems Operational")
+                 ? base + "\n⚠ " + status : base;
+        // The adaptive panel is the one that changes shape without being
+        // asked, so it has to be able to say why it looks the way it does.
+        // Otherwise the only way to find out is to open the popup and guess.
+        if (displayMode === "adaptive")
+            text += "\n" + tr("panelMode") + ": " + tr(adaptiveReasonKey);
+        return text;
     }
 
     // ─── Language ───
@@ -162,6 +169,11 @@ PlasmoidItem {
             "today": "Today", "perHour": "Per hour", "lifetime": "Lifetime",
             "sessions": "sessions", "refresh": "Refresh", "panelMode": "Panel mode",
             "clickToCycle": "Click to cycle", "loading": "Loading...",
+            "panelAdaptive": "Adaptive - shows what matters now",
+            "adaptiveIncident": "service incident",
+            "adaptiveQuota": "quota in the red",
+            "adaptiveEta": "limit approaching",
+            "adaptiveNormal": "nothing to report",
             "harness": "Harness", "backToUsage": "Back to usage",
             "installed": "Installed", "enforced": "Enforced", "conformant": "Conformant",
             "componentsInManifest": "components in the manifest",
@@ -229,6 +241,11 @@ PlasmoidItem {
             "today": "Hoje", "perHour": "Por hora", "lifetime": "Total",
             "sessions": "sessões", "refresh": "Atualizar", "panelMode": "Modo do painel",
             "clickToCycle": "Clique para alternar", "loading": "Carregando...",
+            "panelAdaptive": "Adaptativo - mostra o que importa agora",
+            "adaptiveIncident": "incidente no serviço",
+            "adaptiveQuota": "cota no vermelho",
+            "adaptiveEta": "limite se aproximando",
+            "adaptiveNormal": "nada a relatar",
             "harness": "Harness", "backToUsage": "Voltar ao uso",
             "installed": "Instalado", "enforced": "Imposto", "conformant": "Conforme",
             "componentsInManifest": "componentes no manifesto",
@@ -450,6 +467,13 @@ PlasmoidItem {
             if (Plasmoid.configuration.buddyMode === undefined) return;
             running = false;
             root.previousBuddyMode = root.buddyMode;
+            // Same reason this timer exists: the thresholds are read off
+            // Plasmoid.configuration, which is not readable during creation.
+            // Pushed on every start and not only on change, so an install
+            // whose push failed once — no collector on PATH yet, a full disk —
+            // repairs itself the next time the panel comes up instead of
+            // leaving a dialog that shows a pair nothing acts on.
+            root.pushThresholds();
             if (root.buddyMode !== "off") root.syncCompanion();
         }
     }
@@ -873,9 +897,143 @@ PlasmoidItem {
     // difference is noise: a burst at the start of a window is normal.
     readonly property real paceTolerance: 15
 
-    // Zone boundaries, shared by the gauges and by the collector's alerts.
-    readonly property real warnAt: 75
-    readonly property real alertAt: 90
+    // ── Zone boundaries ───────────────────────────────────
+    //
+    // These were two literals here and two constants in the collector, kept in
+    // step by a test that compared them. That test could only ever check the
+    // defaults: the moment the pair became configurable, one number changed
+    // and the other did not, and the failure is silent in the worst possible
+    // way — the bar goes red and no notification arrives, or a notification
+    // arrives about a bar that is still amber.
+    //
+    // So the pair is not decided here any more. The collector resolves it once
+    // (usage_thresholds()), fires its notifications on it, and publishes it in
+    // widget-data.json; this is where the widget reads it back. Whatever
+    // painted the bar is therefore, by construction, the number that run would
+    // have announced.
+    //
+    // Two fallbacks behind that, in order:
+    //   * the pair from the config dialog, for a provider whose collector
+    //     publishes none — the Codex one raises no usage notifications at all,
+    //     so there is nothing for it to disagree with;
+    //   * 75 / 90, which is what every installation had before this was
+    //     configurable.
+    readonly property var thresholds: resolveThresholds(
+        usageData.thresholds, configuredThresholds)
+    readonly property real warnAt: thresholds.warn
+    readonly property real alertAt: thresholds.alert
+
+    // Pure, so tests can lift it out of this file and run it against the
+    // collector's own payload rather than against a copy of it.
+    //
+    // Both halves of a pair are rejected together. Falling back on one alone
+    // is how you get warn above alert, which paints the amber zone on top of
+    // the red one and warns about a quota already past the alert.
+    function resolveThresholds(published, configured) {
+        // Published first, always: it is the pair the collector actually
+        // fired on, and anything preferred over it paints a boundary no
+        // notification was raised at.
+        var pair = thresholdPair(published);
+        if (pair) return pair;
+        // Then the dialog's pair, for a provider whose collector publishes
+        // none — the Codex one raises no usage notifications at all, so there
+        // is nothing there for it to contradict.
+        pair = thresholdPair(configured);
+        if (pair) return pair;
+        // And last, what every installation had before this was configurable.
+        return { "warn": 75, "alert": 90 };
+    }
+
+    function thresholdPair(raw) {
+        if (!raw) return null;
+        var w = cleanThreshold(raw.warn);
+        var a = cleanThreshold(raw.alert);
+        if (w === null || a === null || !(w < a)) return null;
+        return { "warn": w, "alert": a };
+    }
+
+    // One number out of a file on disk. Everything refused here is something
+    // that file can hold: a string, a null, a NaN, a number outside the range.
+    // A threshold of "90" compares false against every percentage in
+    // JavaScript too, which disables the zone in silence.
+    function cleanThreshold(value) {
+        if (typeof value !== "number" || !isFinite(value)) return null;
+        if (value < 5 || value > 99) return null;
+        return value;
+    }
+
+    // The dialog's pair, mirrored into a root property for one reason: there
+    // is nowhere else to hang a change handler. Kept as `var` rather than two
+    // ints because Plasmoid.configuration answers undefined until the applet's
+    // configuration is readable, and coercing that into an int would silently
+    // make it a zero.
+    readonly property var configuredThresholds: ({
+        "warn": Plasmoid.configuration.usageWarnAt,
+        "alert": Plasmoid.configuration.usageAlertAt
+    })
+    onConfiguredThresholdsChanged: root.pushThresholds()
+
+    // The last pair handed to the collector, so the refresh below can tell a
+    // push that changed something from one that confirmed what was already
+    // there.
+    property real pushedWarnAt: -1
+    property real pushedAlertAt: -1
+
+    // The bridge between the dialog and the collector.
+    //
+    // The dialog writes KConfig; the collector reads
+    // ~/.claude/widget-config.json and knows nothing about KConfig. This runs
+    // the collector's own --set-thresholds rather than writing that file from
+    // QML, because the merge, the lock and the atomic rename all live on that
+    // side — and a second writer implemented here would be a second chance to
+    // drop org_id, without which every remote read in the collector fails.
+    //
+    // Always the Claude collector, whatever provider this instance follows:
+    // that file is the one it owns, and it is the only script that knows how
+    // to write it without losing the keys it does not recognise.
+    function pushThresholds() {
+        // Numeric by construction. The string below is a shell command line
+        // and these values arrive from a text file KConfig wrote, so they are
+        // rounded and range-checked here instead of being interpolated as
+        // they came. An unusable pair is not pushed at all: the collector then
+        // keeps the last pair it was given, which is still a pair the widget
+        // and the notifications agree on.
+        var w = cleanThreshold(Math.round(Number(Plasmoid.configuration.usageWarnAt)));
+        var a = cleanThreshold(Math.round(Number(Plasmoid.configuration.usageAlertAt)));
+        if (w === null || a === null || !(w < a)) return;
+        pushedWarnAt = w;
+        pushedAlertAt = a;
+        thresholdWriter.connectSource(
+            "$HOME/.local/bin/usage-buddies-collector.py --set-thresholds="
+            + w + "," + a);
+    }
+
+    P5Support.DataSource {
+        id: thresholdWriter
+        engine: "executable"
+        connectedSources: []
+        onNewData: function(source, data) {
+            // Load-bearing. The executable engine keys a source by its command
+            // string and ignores a connect for one already connected, so
+            // without this the second push of the same pair never runs — and
+            // the second push is precisely the one that repairs a first that
+            // failed.
+            disconnectSource(source);
+            // The pair the widget paints with comes back inside
+            // widget-data.json, so the colours only move once the collector
+            // has run again. Asking for that read here is the difference
+            // between the setting taking effect now and at the next tick.
+            //
+            // Only when it would change something, though. This handler also
+            // runs at every panel start, and the collector reaches the
+            // network — an unconditional read here would mean two round trips
+            // a second apart every time the panel comes up.
+            if (root.warnAt !== root.pushedWarnAt
+                    || root.alertAt !== root.pushedAlertAt) {
+                dataLoader.readData();
+            }
+        }
+    }
 
     // The calm colour is a desaturated neutral, NOT Kirigami.Theme.highlightColor.
     //
@@ -927,8 +1085,18 @@ PlasmoidItem {
 
     // Worst zone across every quota on screen, so the widget has one answer to
     // "how am I doing" that the mascot and the gauges can both react to.
-    readonly property string worstZone: {
-        var limits = usageData.rateLimits;
+    readonly property string worstZone: worstZoneOf(usageData)
+
+    // Taking a payload rather than reading usageData is not style.
+    //
+    // A property change handler runs before every binding that depends on the
+    // same property has been re-evaluated, so a handler that read `worstZone`
+    // would get the zone of the *previous* refresh — measured, not assumed:
+    // the adaptive panel was written that way first and sat in "normal" with a
+    // quota at 95%, one refresh behind for as long as it ran, with nothing in
+    // the output to say so. The handler now passes the payload it was handed.
+    function worstZoneOf(data) {
+        var limits = (data || {}).rateLimits;
         if (!limits) return "calm";
         var worst = "calm";
         var scopes = ["session", "weeklyAll", "weeklyOpus", "weeklySonnet",
@@ -942,6 +1110,294 @@ PlasmoidItem {
             if (z === "warn") worst = "warn";
         }
         return worst;
+    }
+
+    // ── Adaptive panel mode ───────────────────────────────
+    //
+    // The panel is about forty pixels that stay on screen all day. The six
+    // fixed modes each answer one question, chosen once and never revisited,
+    // so the mode picked on a calm afternoon is still showing a weekly bar
+    // during an outage. This one shows whichever of them matters now.
+    //
+    // Nothing new is measured for it: the order below is over predicates this
+    // file already computes and the popup already draws — serviceStatus,
+    // worstZone/usageZone, windowPace and limitEta.
+    //
+    // Priority, highest first, and why:
+    //
+    //   3  a major or critical service incident. It is the only state where
+    //      slowing your own usage down is the wrong response, and it is the
+    //      only one the user cannot infer from their own numbers.
+    //   2  a quota in the alert zone. It is what stops work soonest, and it
+    //      is the one the user can still act on.
+    //  1.5 a minor incident — degraded, not down. Work continues, so it
+    //      ranks under a spent quota and over a limit that is merely coming.
+    //   1  the limit arriving: an ETA inside two hours, or a quota ahead of
+    //      the pace its window refills at. Two hours because that is where
+    //      the popup already starts marking the ETA (see limitIn, which goes
+    //      DemiBold under 120 minutes) — the panel and the popup agreeing on
+    //      one boundary is worth more than a second one invented here.
+    //   0  normal, which is always available.
+    //
+    // Both failure modes of a mode that changes on its own are handled below:
+    // flicker by adaptiveHolds() plus the dwell, and width by the delegate,
+    // which is a fixed shape whatever state it is in.
+    //
+    // The functions are pure — plain values in, plain values out, the clock
+    // passed as an argument — so tests/test_adaptive_panel.py can lift them
+    // out of this file and drive a hundred refreshes through them. A binding
+    // expression could only ever have been checked by reading it.
+
+    // The release margin, in percentage points, for every entry condition
+    // measured in them. Once a state is entered it is held until its own
+    // condition has lapsed by this much.
+    //
+    // 3 points, from the geometry of the window rather than from taste: the
+    // widget refreshes every 30 s (refreshInterval), and a 5 h window spent at
+    // exactly the rate that would exhaust it moves percentUsed by
+    // 100 / (5 * 3600 / 30) = 0.17 points per refresh. Three points is
+    // eighteen refreshes of that, about nine minutes, so nothing a refresh can
+    // do to the number crosses it — while the one thing that genuinely ends
+    // the state, a window reset, drops it by tens of points at once and
+    // crosses it immediately.
+    readonly property real adaptiveDeadband: 3
+
+    // And a floor in time for everything not measured in points — a service
+    // incident appearing and clearing, an ETA that stops being computable.
+    //
+    // 120 s is four refreshes at the 30 s interval this widget polls on: a
+    // reason that has gone has to stay gone across four consecutive refreshes
+    // before the panel gives the state up. It bounds the way down only. The
+    // way up is immediate, for the reason in pickAdaptive().
+    readonly property int adaptiveDwellMs: 120000
+
+    // Entry and release for the ETA, in minutes. The entry matches what the
+    // popup already marks; the release is an hour beyond it, so a projection
+    // has to move a full hour before the panel gives the state up. Unlike a
+    // percentage, an ETA moves in both directions between refreshes: it is
+    // recomputed from a burn rate that is re-averaged every run.
+    readonly property int adaptiveEtaEnterMin: 120
+    readonly property int adaptiveEtaHoldMin: 180
+
+    property string adaptiveState: "normal"
+    property string adaptiveScope: "session"
+    // The last time the state being shown still had a reason to be — not the
+    // time it was entered. Measuring the dwell from entry looks equivalent and
+    // is not: a signal that flaps on and off, like an incident page that
+    // answers "none" once in the middle of an outage, would then release the
+    // state every two minutes and take it back on the next refresh. Measured
+    // from the last time the reason held, a signal that keeps coming back
+    // keeps the state, and only a reason that stays gone releases it.
+    property real adaptiveHeldAt: 0
+
+    readonly property real sessionPct: sessionPctOf(usageData)
+    readonly property real worstWeeklyPct: worstWeeklyPctOf(usageData)
+
+    function sessionPctOf(data) {
+        return (data || {}).rateLimits?.session?.percentUsed ?? 0;
+    }
+
+    // The worst of the weekly quotas. Several are reported at once — the
+    // all-models cap plus a per-model one — and the panel has room for one
+    // number.
+    function worstWeeklyPctOf(data) {
+        var limits = (data || {}).rateLimits;
+        if (!limits) return 0;
+        var scopes = ["weeklyAll", "weeklyOpus", "weeklySonnet",
+                      "weeklyFable", "weeklyHaiku", "weeklyScoped"];
+        var worst = 0;
+        for (var i = 0; i < scopes.length; i++) {
+            var b = limits[scopes[i]];
+            var pct = b ? (b.percentUsed ?? 0) : 0;
+            if (pct > worst) worst = pct;
+        }
+        return worst;
+    }
+
+    // How far ahead of even burn the worst quota is, in points. The same
+    // comparison usageZone() makes, kept as a number rather than a zone so
+    // the release margin can be applied to it in the same units as everything
+    // else.
+    function worstPaceGapOf(data) {
+        var limits = (data || {}).rateLimits;
+        if (!limits) return -1;
+        var scopes = ["session", "weeklyAll", "weeklyOpus", "weeklySonnet",
+                      "weeklyFable", "weeklyHaiku", "weeklyScoped"];
+        var gap = -1;
+        for (var i = 0; i < scopes.length; i++) {
+            var b = limits[scopes[i]];
+            if (!b) continue;
+            var hours = scopes[i] === "session" ? (b.windowHours ?? 5) : 168;
+            var pace = windowPace(b.resetsAt ?? "", hours);
+            if (pace < 0) continue;
+            var g = (b.percentUsed ?? 0) - pace * 100;
+            if (g > gap) gap = g;
+        }
+        return gap;
+    }
+
+    // Everything the decision needs, as plain values, computed from the
+    // payload rather than from the bindings over it — see worstZoneOf().
+    function adaptiveSignals(data) {
+        var d = data || usageData || ({});
+        var session = sessionPctOf(d);
+        var weekly = worstWeeklyPctOf(d);
+        return {
+            "incident": d.serviceStatus?.indicator ?? "none",
+            "worstZone": worstZoneOf(d),
+            "pcts": { "session": session, "weekly": weekly },
+            // Ties go to the session: it is the shorter window, so it is the
+            // one that both stops work sooner and clears sooner.
+            "worstScope": weekly > session ? "weekly" : "session",
+            "worstPct": Math.max(session, weekly),
+            "paceGap": worstPaceGapOf(d),
+            "paceTolerance": paceTolerance,
+            "etaMinutes": d.limitEta?.minutesToLimit ?? -1,
+            "warnAt": warnAt,
+            "alertAt": alertAt,
+            "deadband": adaptiveDeadband,
+            "dwellMs": adaptiveDwellMs,
+            "etaEnterMin": adaptiveEtaEnterMin,
+            "etaHoldMin": adaptiveEtaHoldMin
+        };
+    }
+
+    // What each state is worth right now, or -1 when its condition is not met
+    // at all. The numbers are the priority list at the top of this block.
+    function adaptiveUrgency(state, s) {
+        if (state === "incident") {
+            if (s.incident === "major" || s.incident === "critical") return 3;
+            return s.incident === "minor" ? 1.5 : -1;
+        }
+        if (state === "quota") return s.worstZone === "alert" ? 2 : -1;
+        if (state === "eta") {
+            var arriving = s.etaMinutes > 0 && s.etaMinutes <= s.etaEnterMin;
+            return (arriving || s.worstZone === "warn") ? 1 : -1;
+        }
+        return 0;
+    }
+
+    // What a state outranks while it is the one being shown, whether or not
+    // its condition still holds. Comparing against adaptiveUrgency() instead
+    // would read a lapsed condition as -1 and let anything at all take the
+    // panel over immediately, which is the flicker this exists to stop. The
+    // incident case is not a constant because a degraded service and an
+    // outage are not the same claim.
+    function adaptiveRank(state, s) {
+        if (state === "incident")
+            return (s.incident === "major" || s.incident === "critical") ? 3 : 1.5;
+        if (state === "quota") return 2;
+        if (state === "eta") return 1;
+        return 0;
+    }
+
+    function adaptiveDesired(s) {
+        var best = "normal";
+        var bestUrgency = 0;
+        var order = ["incident", "quota", "eta"];
+        for (var i = 0; i < order.length; i++) {
+            var u = adaptiveUrgency(order[i], s);
+            if (u > bestUrgency) { bestUrgency = u; best = order[i]; }
+        }
+        return best;
+    }
+
+    // Whether the state being shown still has a reason to be, with the
+    // release margin applied. Every branch is the entry condition of the same
+    // state, relaxed by the deadband.
+    function adaptiveHolds(state, s) {
+        if (state === "incident")
+            return s.incident !== "none" && s.incident !== ""
+                && s.incident !== "unknown";
+        if (state === "quota")
+            return s.worstPct >= s.alertAt - s.deadband;
+        if (state === "eta")
+            return s.worstPct >= s.warnAt - s.deadband
+                || s.paceGap > s.paceTolerance - s.deadband
+                || (s.etaMinutes > 0 && s.etaMinutes <= s.etaHoldMin);
+        return true;
+    }
+
+    // The whole state machine, in one pure function. Takes the state being
+    // shown and when its reason last held, returns both.
+    function pickAdaptive(current, heldAt, nowMs, s) {
+        // Rising is immediate, falling is held, and that asymmetry is the
+        // design. Showing a problem late is the one failure this widget
+        // cannot afford — it exists to warn while there is still something to
+        // do about it — whereas staying serious for two minutes after the
+        // problem has gone costs nothing.
+        var holds = adaptiveHolds(current, s);
+        if (holds) heldAt = nowMs;
+
+        var desired = adaptiveDesired(s);
+        var state = current;
+        if (desired !== current) {
+            if (adaptiveUrgency(desired, s) > adaptiveRank(current, s)) {
+                state = desired;
+            } else if (!holds && nowMs - heldAt >= s.dwellMs) {
+                // Only here does the panel change its face on the way down,
+                // and only after the reason has been gone for the whole
+                // dwell without once coming back.
+                state = desired;
+            }
+        }
+        if (state !== current) heldAt = nowMs;
+        return { "state": state, "heldAt": heldAt };
+    }
+
+    // Which quota the panel is describing. A challenger has to be ahead of the
+    // incumbent by the same margin before it takes over, or two quotas a tenth
+    // of a point apart trade the icon back and forth on every refresh — the
+    // same defect as above, one level down.
+    function pickAdaptiveScope(current, s) {
+        if (!current || s.pcts[current] === undefined) return s.worstScope;
+        if (s.worstScope === current) return current;
+        return (s.worstPct - s.pcts[current] > s.deadband) ? s.worstScope
+                                                           : current;
+    }
+
+    function updateAdaptive(data) {
+        var s = adaptiveSignals(data);
+        var picked = pickAdaptive(adaptiveState, adaptiveHeldAt, Date.now(), s);
+        adaptiveState = picked.state;
+        adaptiveHeldAt = picked.heldAt;
+        adaptiveScope = pickAdaptiveScope(adaptiveScope, s);
+    }
+
+    // Two triggers. New data is the obvious one; nowMs is the timer that
+    // already ticks once a minute for the forecasts, and without it a dwell
+    // that expires while nothing else changes would never be noticed — the
+    // panel would sit in a state whose reason went away until the next
+    // refresh happened to arrive.
+    onUsageDataChanged: root.updateAdaptive(usageData)
+    onNowMsChanged: root.updateAdaptive(usageData)
+
+    // What the delegate draws. Kept here so the delegate has no decisions left
+    // in it, and so the state and its appearance cannot drift apart.
+    readonly property string adaptiveIcon: {
+        if (adaptiveState === "incident") return "network-disconnect";
+        if (adaptiveState === "quota")
+            return adaptiveScope === "weekly" ? "view-calendar-week" : "chronometer";
+        if (adaptiveState === "eta") return "chronometer";
+        return "";
+    }
+
+    readonly property color adaptiveColor: {
+        if (adaptiveState === "incident")
+            return statusColor(usageData.serviceStatus?.indicator ?? "none");
+        if (adaptiveState === "quota") return redAlert;
+        if (adaptiveState === "eta") return claudeAmberLight;
+        return Kirigami.Theme.textColor;
+    }
+
+    readonly property real adaptivePct: adaptiveScope === "weekly" ? worstWeeklyPct
+                                                                   : sessionPct
+
+    readonly property string adaptiveReasonKey: {
+        if (adaptiveState === "incident") return "adaptiveIncident";
+        if (adaptiveState === "quota") return "adaptiveQuota";
+        if (adaptiveState === "eta") return "adaptiveEta";
+        return "adaptiveNormal";
     }
 
     function paceFill(pct, pace) {
@@ -1410,6 +1866,7 @@ PlasmoidItem {
                 if (root.displayMode === "fableBarOnly")      return compFableBar;
                 if (root.displayMode === "sessionCountdown")  return compSessionCountdown;
                 if (root.displayMode === "weeklyCountdown")   return compWeeklyCountdown;
+                if (root.displayMode === "adaptive")          return compAdaptive;
                 return compFull;
             }
         }
@@ -1670,6 +2127,92 @@ PlasmoidItem {
                         return Kirigami.Theme.textColor;
                     }
                     Layout.alignment: Qt.AlignVCenter
+                }
+            }
+        }
+
+        // ── Mode: adaptive ────────────────────────────────────────
+        //
+        // One shape, four states. The icon, the colour and which quota the
+        // number belongs to change; the geometry does not, and that is the
+        // point.
+        //
+        // Every other mode here is chosen by a person and then sits still. A
+        // panel item that changes width shoves every icon to its right along
+        // the panel, and this is the one mode that changes its own content
+        // with nobody touching it — so it would do that shoving on its own,
+        // repeatedly, while the user is looking somewhere else. Hence the
+        // fixed slots: the icon column is one icon wide whichever icon it
+        // holds, the bar is a constant 34 px, and the label is pinned to the
+        // width of the widest string it can ever contain rather than to the
+        // string it happens to hold. "7%" and "100%" are not the same width.
+        //
+        // Cost of that decision: the mode is always as wide as its widest
+        // state, so it takes a few pixels more than it strictly needs most of
+        // the time. That is the right trade — the alternative is paid by
+        // every other applet in the panel.
+        Component {
+            id: compAdaptive
+            RowLayout {
+                spacing: Kirigami.Units.smallSpacing
+
+                // A fixed slot holding both possible marks. The normal state
+                // draws the brand logo and the others draw a themed icon;
+                // swapping the item type inside a layout would resize the
+                // column, which is the one thing this mode must not do.
+                Item {
+                    Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
+                    Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
+                    Layout.alignment: Qt.AlignVCenter
+
+                    Image {
+                        anchors.fill: parent
+                        visible: root.adaptiveState === "normal"
+                        source: Qt.resolvedUrl("../icons/" + root.brand.logo)
+                        sourceSize: Qt.size(Kirigami.Units.iconSizes.smallMedium,
+                                            Kirigami.Units.iconSizes.smallMedium)
+                        fillMode: Image.PreserveAspectFit
+                    }
+
+                    Kirigami.Icon {
+                        anchors.fill: parent
+                        visible: root.adaptiveState !== "normal"
+                        source: root.adaptiveIcon
+                        color: root.adaptiveColor
+                        isMask: true
+                    }
+                }
+
+                PlasmaComponents3.Label {
+                    Layout.preferredWidth: adaptiveWidest.width
+                    horizontalAlignment: Text.AlignRight
+                    text: root.hasData ? Math.round(root.adaptivePct) + "%" : "--"
+                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 1.15
+                    font.weight: Font.Bold
+                    color: root.adaptiveColor
+                    Layout.alignment: Qt.AlignVCenter
+                }
+
+                // The pin. Measured through Qt's own font engine rather than
+                // guessed at in grid units, because the string is digits and
+                // the font is the user's.
+                TextMetrics {
+                    id: adaptiveWidest
+                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 1.15
+                    font.weight: Font.Bold
+                    text: "100%"
+                }
+
+                Rectangle {
+                    Layout.preferredWidth: 34; Layout.preferredHeight: 5
+                    Layout.alignment: Qt.AlignVCenter
+                    radius: 3; color: root.subtleBorder
+                    Rectangle {
+                        width: parent.width * Math.min(1, root.adaptivePct / 100)
+                        height: parent.height; radius: 3
+                        color: root.adaptiveColor
+                        Behavior on width { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
+                    }
                 }
             }
         }
@@ -2935,14 +3478,19 @@ PlasmoidItem {
                 // Display mode switcher — cycles through the panel modes
                 PlasmaComponents3.ToolButton {
                     id: modeBtn
-                    readonly property var modes: ["full", "weeklyBarOnly", "fableBarOnly", "sessionCountdown", "weeklyCountdown", "sparkline"]
+                    // "adaptive" is appended, never inserted: the order
+                    // anyone has learned by clicking stays what it was, and
+                    // the default in main.xml is still "full". Somebody who
+                    // chose a mode chose it.
+                    readonly property var modes: ["full", "weeklyBarOnly", "fableBarOnly", "sessionCountdown", "weeklyCountdown", "sparkline", "adaptive"]
                     readonly property var modeIcons: ({
                         "full":             "view-split-left-right",
                         "weeklyBarOnly":    "office-chart-bar",
                         "fableBarOnly":     "office-chart-bar-stacked",
                         "sessionCountdown": "chronometer",
                         "weeklyCountdown":  "view-calendar-week",
-                        "sparkline":        "office-chart-bar"
+                        "sparkline":        "office-chart-bar",
+                        "adaptive":         "view-filter"
                     })
                     readonly property var modeLabels: ({
                         "full":             "Full (default)",
@@ -2950,7 +3498,8 @@ PlasmoidItem {
                         "fableBarOnly":     "Fable bar only",
                         "sessionCountdown": "Session countdown",
                         "weeklyCountdown":  "Weekly countdown",
-                        "sparkline":        "7-day sparkline"
+                        "sparkline":        "7-day sparkline",
+                        "adaptive":         root.tr("panelAdaptive")
                     })
                     icon.name: modeIcons[root.displayMode] ?? "configure"
                     onClicked: {

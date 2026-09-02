@@ -104,7 +104,11 @@ fi
 
 # ── Remove only our widget data files (never touch other .claude files) ──
 # NOTE: stats-cache.json belongs to Claude Code itself — never delete it.
-for f in widget-data.json widget-config.json widget-status-prev.json; do
+# widget-config.json.lock is the flock file the collector and the widget
+# take before touching the config; it is created empty and never removed by
+# whoever took it. Left out of this list, an uninstall leaves one empty file
+# behind in ~/.claude, which is the kind of leftover nobody ever finds.
+for f in widget-data.json widget-config.json widget-config.json.lock widget-status-prev.json; do
     if [ -f "$HOME/.claude/$f" ]; then
         rm -f "$HOME/.claude/$f"
     fi

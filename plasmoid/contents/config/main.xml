@@ -37,6 +37,22 @@
     <entry name="displayMode" type="String">
       <default>full</default>
     </entry>
+    <!-- Where a quota turns amber, and where it turns red, in percent.
+         These two are mirrored into ~/.claude/widget-config.json, which is
+         what the collector reads before deciding whether to raise a
+         notification; the widget then paints from the pair the collector
+         publishes back in widget-data.json, so the bar and the toast cannot
+         end up drawn from different numbers. 75 and 90 are what every
+         installation had before this was configurable, so an installation
+         that never opens this page is unchanged.
+         The dialog is what keeps warn below alert: each spin box's range is
+         bound to the other's value. -->
+    <entry name="usageWarnAt" type="Int">
+      <default>75</default>
+    </entry>
+    <entry name="usageAlertAt" type="Int">
+      <default>90</default>
+    </entry>
     <!-- How long a focus session runs, in minutes. 25 is the pomodoro
          convention: long enough to finish something, short enough that
          someone will actually start one. -->
