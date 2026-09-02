@@ -55,6 +55,7 @@ import buddy_signals as signals                                                 
 import buddy_focus as focus_engine                                               # noqa: E402
 import buddy_actions as actions                                                  # noqa: E402
 import buddy_peers as peers                                                      # noqa: E402
+import buddy_hoop                                                                # noqa: E402
 from buddy_lines import LINES                                                    # noqa: E402
 import virtual_pointer                                                           # noqa: E402
 
@@ -115,6 +116,26 @@ DRAG_TUG_ALWAYS = 10.0   # held this long there is no cooldown: at ten seconds
                          # of hauling it around you are asking for it, and
                          # having to wait seven minutes to ask again turns a
                          # deliberate act into a lottery
+
+# Being thrown, and the basket offered instead of retaliating for it. The
+# arithmetic of both is buddy_hoop's; what lives here is the drawing, the
+# window it goes in, and the frame clock they are stepped on.
+#
+# The scale is the sprite's, and it is passed to the drawing rather than left
+# to each side to assume. buddy_hoop.rim_width() converts HOOP_RIM with
+# buddy_sprites.SCALE, so a window drawn at any other scale is one size to look
+# at and another size to hit — the hit area at half the drawing's width is not
+# a visible bug, it is a basket that merely feels impossible.
+HOOP_SCALE = sprites.SCALE
+# The frame the basket rests on between the one-shots. Named once, because it
+# is both what is drawn when it appears and what the score clip returns to.
+HOOP_RESTING = "hoop_hang"
+# How long the run at the pointer may take before the getaway starts anyway.
+# The character has just been let go of, so the cursor is normally within a
+# sprite or two of it and the leg is over in a few frames; the ceiling is for
+# the case where it is not, and it is there so the getaway cannot be lost by
+# a run that never arrives.
+CHASE_SECONDS = 3.0
 
 # The swing. The body is not glued to the cursor: it hangs from it on a spring
 # and trails, which is what makes a dragged sprite read as having weight.
@@ -825,6 +846,170 @@ def _menu_labels(sessions):
     return labels
 
 
+# ── the basket's own window ────────────────────────────────────────────────
+
+def _stick_to_all_desktops(widget):
+    """Show a window on every virtual desktop.
+
+    Without this it lives on whichever desktop it was launched from and has
+    to be hunted for. KWin's own scripting sets it, but the X property has
+    to be written too — KWin reported onAllDesktops=true while the window
+    still carried desktop 0, and only the property made it follow.
+
+    A function rather than a method because there are two windows now, and a
+    second copy of the incantation is a second thing to get wrong. Every
+    failure is silent and costs the stickiness: this is reached from a timer
+    slot, where raising ends the process.
+    """
+    try:
+        wid = int(widget.winId())
+        subprocess.Popen(
+            ["sh", "-c",
+             f"xprop -id {wid} -f _NET_WM_DESKTOP 32c "
+             f"-set _NET_WM_DESKTOP 0xFFFFFFFF 2>/dev/null"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        return
+
+
+class HoopWindow(QWidget):
+    """The basket: a second top-level window, and scenery in every other way.
+
+    Its own window because it is 192 by 144 while the character's is 56 by 56
+    and moves every frame. One window cannot be both, and a window grown to
+    hold the drawing would take the sprite's position, the side the bubble
+    opens on and the drop target with it — all three are measured off this
+    window's own geometry.
+
+    It does not take the mouse. WA_TransparentForMouseEvents is the whole of
+    that promise and it is not decoration: a frameless always-on-top window of
+    this size over somebody's editor would otherwise swallow every click that
+    landed inside it, which is a defect wearing the costume of a game. Nothing
+    here has a mouse handler either, so there is no second way in.
+
+    The clip table is walked here rather than handed to sprites.Animator: the
+    Animator resolves names against CLIPS, which is the character's, and a
+    hoop frame looked up there resolves to nothing. Every name is checked
+    against this window's own sheet before it is drawn, so a table naming a
+    frame the art does not have costs that frame and not the process.
+    """
+
+    def __init__(self, scale=HOOP_SCALE):
+        super().__init__(None)
+        # The character's flags, for the character's reasons: no frame, above
+        # the windows it is drawn over, out of the taskbar, and never taking
+        # the focus away from whatever is being typed into.
+        self.setWindowFlags(
+            Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
+            | Qt.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.scale = int(scale)
+        self.sheet = sprites.build_hoop_sheet(self.scale)
+        self.frame = HOOP_RESTING
+        self._frames = []
+        self._at = 0
+        self._elapsed = 0.0
+        self._stuck = False
+        image = self.sheet.get(HOOP_RESTING)
+        if image is not None:
+            self.resize(image.width(), image.height())
+
+    @property
+    def opening(self):
+        """The centre of the drawn hole, as an offset from the top-left.
+
+        Read off the art's own HOOP_RIM at this window's scale. The number is
+        never written down here: the basket is positioned by the middle of its
+        opening, because that is the point buddy_hoop measures a throw
+        against, and a second copy of where the hole is would put the drawing
+        and the hit area in two different places.
+        """
+        left, top, width, height = sprites.HOOP_RIM
+        return ((left + width / 2.0) * self.scale,
+                (top + height / 2.0) * self.scale)
+
+    @staticmethod
+    def duration(name):
+        """How long a hoop clip runs for, in seconds. Zero if there is none."""
+        clip = getattr(sprites, "HOOP_CLIPS", {}).get(name) or {}
+        return sum(ms for _frame, ms in clip.get("frames", ())) / 1000.0
+
+    def place(self, centre):
+        """Move so the middle of the opening lands on `centre`.
+
+        Snapped to the drawing's own scale, for the reason Companion._place
+        gives: a grid that sits on half a source pixel does not look blurry,
+        it looks like the picture is crawling.
+        """
+        ox, oy = self.opening
+        step = max(1, self.scale)
+        self.move(int(round((centre[0] - ox) / step) * step),
+                  int(round((centre[1] - oy) / step) * step))
+
+    def rest(self):
+        """Back to the hanging net, with nothing playing."""
+        self._frames = []
+        self._at = 0
+        self._elapsed = 0.0
+        self.frame = HOOP_RESTING
+        self.update()
+
+    def play(self, name):
+        """Start a one-shot from HOOP_CLIPS, skipping frames the sheet lacks."""
+        clip = getattr(sprites, "HOOP_CLIPS", {}).get(name) or {}
+        self._frames = [(frame, ms) for frame, ms in clip.get("frames", ())
+                        if frame in self.sheet]
+        self._at = 0
+        self._elapsed = 0.0
+        if self._frames:
+            self.frame = self._frames[0][0]
+        self.update()
+
+    def advance(self, dt):
+        """Step whatever is playing. Nothing here loops, and nothing repaints
+        when nothing is playing: a still basket costs no frames at all."""
+        if not self._frames:
+            return
+        self._elapsed += max(0.0, float(dt))
+        while self._frames:
+            _frame, ms = self._frames[self._at]
+            if self._elapsed < ms / 1000.0:
+                break
+            self._elapsed -= ms / 1000.0
+            self._at += 1
+            if self._at >= len(self._frames):
+                self._frames = []
+                self._at = 0
+                break
+        self.frame = self._frames[self._at][0] if self._frames else HOOP_RESTING
+        self.update()
+
+    def appear(self, centre):
+        """Put it up at a point, hanging still, on every virtual desktop."""
+        self.rest()
+        self.place(centre)
+        self.show()
+        if not self._stuck:
+            self._stuck = True
+            # After the window is mapped, or there is nothing to set the
+            # property on. The same delay the character's own window uses.
+            QTimer.singleShot(600, lambda: _stick_to_all_desktops(self))
+
+    def paintEvent(self, _event):
+        image = self.sheet.get(self.frame)
+        if image is None:
+            return
+        p = QPainter(self)
+        # Pixel art, like everything else drawn here: no antialiasing and no
+        # smoothing, or the hard edges that carry the style become gradients.
+        p.setRenderHint(QPainter.Antialiasing, False)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, False)
+        p.drawImage(0, 0, image)
+        p.end()
+
+
 class Companion(QWidget):
     """The character. Everything here is presentation; Brain decides what it says.
 
@@ -961,6 +1146,24 @@ class Companion(QWidget):
         # under its own momentum instead of being carried by something.
         self.throw_samples = []
         self.flying = False
+
+        # The temper and the basket. buddy_hoop owns both, and the rim it is
+        # built with is the drawing's own opening converted once — None when
+        # the art has no basket in it, which turns the game off and leaves the
+        # temper working. `hoop_enabled` is the one switch that disarms all of
+        # it: the failure path sets it, and so does --self-test, because a
+        # second window appearing on a desktop nobody is watching is exactly
+        # what that mode exists to prevent.
+        self.game = buddy_hoop.HoopGame(BUDDY_PX, buddy_hoop.rim_width())
+        self.hoop_enabled = True
+        self.hoop_window = None
+        self.hoop_hide_at = 0.0      # the score clip is allowed to finish
+        self.hoop_tries_at = 0       # misses at the moment this one went up
+        # The first leg of the getaway: running to where the pointer is, so
+        # the carry starts on it rather than a body's length away from it.
+        self.chasing = False
+        self.chase_until = 0.0
+        self.chase_seconds = 0.0
 
         # The other mascot. One presence file per process, both halves on a
         # one-second cadence inside PeerDirectory, and the state machine of an
@@ -1434,22 +1637,9 @@ class Companion(QWidget):
                    key=lambda g: (g.center().x() - cx) ** 2 + (g.center().y() - cy) ** 2)
 
     def _make_sticky(self):
-        """Show on every virtual desktop.
-
-        Without this it lives on whichever desktop it was launched from and has
-        to be hunted for. KWin's own scripting sets it, but the X property has
-        to be written too — KWin reported onAllDesktops=true while the window
-        still carried desktop 0, and only the property made it follow.
-        """
-        try:
-            wid = int(self.winId())
-        except Exception:
-            return
-        subprocess.Popen(
-            ["sh", "-c",
-             f"xprop -id {wid} -f _NET_WM_DESKTOP 32c "
-             f"-set _NET_WM_DESKTOP 0xFFFFFFFF 2>/dev/null"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        """Show on every virtual desktop. The basket's window asks for the
+        same thing, so the incantation itself lives at module scope."""
+        _stick_to_all_desktops(self)
 
     def _place(self):
         """Move the window, snapped to the sprite grid.
@@ -1501,7 +1691,11 @@ class Companion(QWidget):
             moving = abs(dx) > 1.5 or abs(dy) > 1.5
 
             if moving:
-                running = now < self.tug_until
+                # The run at the pointer moves at the getaway's speed and not
+                # at the walking one. It is the same movement in two legs, and
+                # a character that strolls over to take your mouse is not
+                # angry, it is browsing.
+                running = now < self.tug_until or self.chasing
                 speed_x = TUG_RUN_SPEED if running else WALK_SPEED
                 speed_y = TUG_RUN_SPEED * 0.6 if running else CLIMB_SPEED
                 if abs(dx) > 1.5:
@@ -1511,6 +1705,15 @@ class Companion(QWidget):
                     self.pos_y += min(abs(dy), speed_y * dt) * (1 if dy > 0 else -1)
                 self.settled_at = now
                 self._wake()
+                if self.chasing and now >= self.chase_until:
+                    # Still running when the leg ran out. Taking the pointer
+                    # from here is worse aim and it is not nothing; a leg that
+                    # never arrives losing the getaway altogether is.
+                    self._chase_arrived(now)
+            elif self.chasing:
+                # Arrived. The pointer is under it, and the carry can start
+                # without the displacement the second leg cannot correct.
+                self._chase_arrived(now)
             elif self.docked:
                 self._doze()
             elif self.focus.silences(now):
@@ -1531,6 +1734,7 @@ class Companion(QWidget):
             self._place()
 
         self._tug(now)
+        self._hoop_tick(now, dt)
         self._animate(dt, now, moving)
         self.update()
 
@@ -1597,6 +1801,7 @@ class Companion(QWidget):
         the bottom of the screen was not placed there — docking it would end
         every throw with the mascot asleep in whichever corner it rolled to.
         """
+        was = (self.pos_x, self.pos_y)
         step = actions.integrate((self.pos_x, self.pos_y), (self.vel_x, self.vel_y),
                                  dt, self._corner_bounds())
         self.pos_x, self.pos_y = step.x, step.y
@@ -1606,6 +1811,11 @@ class Companion(QWidget):
         if step.bounced:
             self._play_once("land")
         self._place()
+        # Judged step by step and against the travel rather than against this
+        # frame's position: a throw covers up to 120 px in one integration
+        # step, which is more than two sprite widths, so asking only where it
+        # is now misses every throw fast enough to be worth aiming.
+        self._hoop_landed(was, (self.pos_x, self.pos_y), now)
         if step.resting:
             self.flying = False
             self.vel_x = self.vel_y = 0.0
@@ -1613,6 +1823,7 @@ class Companion(QWidget):
             self.settled_at = now
             self.next_move = now + random.uniform(IDLE_MIN, IDLE_MAX)
             self._play_once("land")
+            self._hoop_ended(now)
 
     def swing_frame(self):
         """The pose for the current speed: how far it leans, and how far it is
@@ -1634,22 +1845,23 @@ class Companion(QWidget):
         them: PeerDirectory writes and reads on a cadence of a second and
         answers from its cache in between.
 
-        The encounter is suspended in five states, and all five are the same
+        The encounter is suspended in six states, and all six are the same
         objection — the position this process is publishing is not where the
         character is going to be. Dragged and thrown it is wherever the hand or
-        the arc puts it; during a tug it is covering 340 px/s, four times the
-        walking speed the notice radius was measured against. Docked, it is
-        somewhere it was put on purpose, and walking off to say hello is
-        exactly what putting it in a corner says not to do. And a focus block
-        is a decision not to be interrupted, which two mascots greeting each
-        other in the middle of one plainly is.
+        the arc puts it; during a tug, and during the run at the pointer that
+        leads into one, it is covering 340 px/s, four times the walking speed
+        the notice radius was measured against. Docked, it is somewhere it was
+        put on purpose, and walking off to say hello is exactly what putting
+        it in a corner says not to do. And a focus block is a decision not to
+        be interrupted, which two mascots greeting each other in the middle of
+        one plainly is.
 
         Publishing carries on through all five, because being seen costs
         nothing and going quiet would make this companion disappear from the
         other one's directory every time it was picked up.
         """
         me = self.yard.publish(self.options.brand, self.pos_x, self.pos_y, now)
-        if (self.dragging or self.flying or self.docked
+        if (self.dragging or self.flying or self.docked or self.chasing
                 or now < self.tug_until or self.focus.silences(now)):
             return
         meeting = self.encounter.update(me, self.yard.peers(now), now)
@@ -1722,6 +1934,17 @@ class Companion(QWidget):
             return
         self.pointer = virtual_pointer.VirtualPointer().open() or False
 
+    def _may_take_the_pointer(self):
+        """Whether the setting allows the cursor to be moved at all.
+
+        One truth and two callers — the getaway and the run that leads into
+        one — because the check being at some of the call sites rather than at
+        all of them is the defect this already paid for once: the insistence
+        ladder asked and the drag retaliation did not, so a companion set to
+        `off` still took the mouse when it was hauled around.
+        """
+        return INSISTENCE_CEILING.get(self.options.insistence, 0) > 0
+
     def _begin_tug(self, now, seconds, target):
         """Start a run that carries the pointer along with it, if allowed.
 
@@ -1745,7 +1968,7 @@ class Companion(QWidget):
         gating it on the ladder's top rung would silently remove it from the
         default and from every level but one.
         """
-        if INSISTENCE_CEILING.get(self.options.insistence, 0) <= 0:
+        if not self._may_take_the_pointer():
             return
         self.tug_until = now + seconds
         self.tugged_at = now
@@ -1864,6 +2087,185 @@ class Companion(QWidget):
                 self.pointer = False
                 return
 
+    # ── the run at the pointer ──
+
+    def _far_target(self, here):
+        """Somewhere on this screen worth running to.
+
+        The furthest of a handful of candidates rather than a random one: a
+        kidnapping that ends four pixels away is a shrug.
+
+        Within the screen it is already on. Crossing a monitor boundary loses
+        the pointer: the two displays this was measured on are different
+        heights, so on the way across the compositor clamps the pointer to
+        whatever is a valid position, the deltas that were clamped away are
+        gone, and it reappears behind — which on screen is the cursor lagging
+        and then arriving displaced.
+        """
+        screen = self._screen_at(*here)
+        lo_x = screen.left() + 8
+        hi_x = max(lo_x, screen.right() - BUDDY_PX - 8)
+        lo_y = screen.top() + 8
+        hi_y = max(lo_y, screen.bottom() - BUDDY_PX - 8)
+        candidates = [(float(random.randint(lo_x, hi_x)),
+                       float(random.randint(lo_y, hi_y))) for _ in range(6)]
+        return max(candidates,
+                   key=lambda t: (t[0] - here[0]) ** 2 + (t[1] - here[1]) ** 2)
+
+    def _begin_chase(self, now, spot, seconds):
+        """Leg one of the getaway: run to the pointer. True if it started.
+
+        Why there is a first leg at all. _tug moves the pointer by the
+        character's own per-frame delta and never by an absolute position —
+        it cannot, there is no readable absolute position on this desktop —
+        so the cursor arrives displaced from the character by exactly the gap
+        between them when the carry began. A body's length of gap is a body's
+        length of error, every time. Starting the run on the cursor makes the
+        gap zero, and the two arrive together.
+
+        Guarded by the same setting as the getaway itself: a run that ends in
+        a carry that is not allowed to happen is a character lunging at
+        somebody's cursor for no reason.
+        """
+        if not self._may_take_the_pointer():
+            return False
+        self.chasing = True
+        self.chase_until = now + CHASE_SECONDS
+        self.chase_seconds = float(seconds)
+        self.target = spot
+        self.docked = False
+        # Held past both legs, so the wandering timer cannot pick a target of
+        # its own halfway through.
+        self.next_move = now + CHASE_SECONDS + seconds + 1.0
+        self._wake()
+        return True
+
+    def _chase_arrived(self, now):
+        """Standing on the pointer: drop the leg and take it."""
+        seconds = self.chase_seconds
+        self.chasing = False
+        self.chase_until = 0.0
+        self.chase_seconds = 0.0
+        self._begin_tug(now, seconds, self._far_target((self.pos_x, self.pos_y)))
+
+    # ── the basket ──
+
+    def _hoop_off(self):
+        """Turn the game off for good and take the drawing down.
+
+        Reached from the two guards below. A failure inside a frame timer slot
+        is the process rather than the frame, so the answer to one is to stop
+        playing rather than to raise thirty times a second until somebody
+        notices — which, on a mascot, is when it disappears.
+        """
+        self.hoop_enabled = False
+        try:
+            self.game.clear()
+            if self.hoop_window is not None:
+                self.hoop_window.hide()
+        except Exception:
+            return
+
+    def _hoop_tick(self, now, dt):
+        """Offer the basket, draw it, and take it away again.
+
+        Everything the game does on a frame is inside this one guard, and the
+        only part of it that can fail on a desktop rather than in arithmetic
+        is the second window: a top-level window, a second sheet of images,
+        and a property set on somebody else's compositor.
+        """
+        if not self.hoop_enabled:
+            return
+        try:
+            self._hoop_frame(now, dt)
+        except Exception:
+            self._hoop_off()
+
+    def _hoop_frame(self, now, dt):
+        """One frame of the basket. See _hoop_tick for why it is wrapped."""
+        if self.dragging:
+            # Held long enough, and it offers a target instead of retaliating.
+            # buddy_hoop answers with the basket on the frame it goes up and
+            # with None on every other one, so the sentence below cannot
+            # repeat once per frame for as long as the basket lasts.
+            offered = self.game.offer(now, now - self.drag_started,
+                                      (self.pos_x, self.pos_y),
+                                      self._screen_rects())
+            if offered is not None:
+                self._hoop_ready().appear(offered.centre)
+                self.hoop_hide_at = 0.0
+                self.hoop_tries_at = self.game.state(now).misses
+                self._say(self._t("hoopUp"))
+
+        if self.game.expired(now):
+            # It ran out. Which sentence depends on whether anybody threw at
+            # it, and the module's own counter is what answers that: the
+            # bookmark taken when it went up is the only thing kept here.
+            tried = self.game.state(now).misses > self.hoop_tries_at
+            self._say(self._t("hoopMissed" if tried else "hoopGone"))
+            self.game.clear()
+            self.hoop_hide_at = now
+
+        window = self.hoop_window
+        if window is None:
+            return
+        if self.game.live(now) or now < self.hoop_hide_at:
+            # advance() repaints nothing while nothing is playing, so a basket
+            # hanging still for twelve seconds costs no frames.
+            window.advance(dt)
+        elif window.isVisible():
+            window.hide()
+
+    def _hoop_ready(self):
+        """The basket's window, made the first time one is offered.
+
+        Lazily, so a companion that is never held long enough never builds a
+        second window or a second sheet of images. A window that cannot be
+        built raises here, which is what _hoop_tick's guard is for.
+        """
+        if self.hoop_window is None:
+            self.hoop_window = HoopWindow()
+        return self.hoop_window
+
+    def _hoop_landed(self, start, end, now):
+        """Judge one step of a flight against the basket.
+
+        Guarded like _hoop_tick and for the same reason: this is reached from
+        the frame timer, by way of _fly.
+        """
+        if not self.hoop_enabled:
+            return
+        try:
+            if self.game.landed(start, end, now):
+                self._hoop_scored(now)
+        except Exception:
+            self._hoop_off()
+
+    def _hoop_scored(self, now):
+        """It went in. The net, the pose, the sentence, and the debt cleared.
+
+        The clearing is buddy_hoop's and not this file's: scoring is the only
+        thing that forgives a throw, so playing along is the way out of the
+        getaway and there is no other. Missing leaves every throw counted,
+        which is why a miss says nothing here.
+        """
+        self.mood_clip = clip_or_fallback("celebrate")
+        self.mood_until = now + MOOD_SECONDS
+        self._say(self._t("hoopScored"))
+        window = self.hoop_window
+        if window is not None:
+            window.play("score")
+        # Long enough for the net to finish snapping back. The basket is
+        # already gone as far as the game is concerned; this is the drawing
+        # being allowed to say so.
+        self.hoop_hide_at = now + HoopWindow.duration("score")
+
+    def _hoop_ended(self, now):
+        """A flight that came to rest. It scored on the way or it missed."""
+        if not self.hoop_enabled or not self.game.live(now):
+            return
+        self.game.missed()
+
     def _play_once(self, name):
         """A one-shot clip, or nothing at all.
 
@@ -1913,6 +2315,13 @@ class Companion(QWidget):
             # Above talking: the gesture is the escalation, and a session that
             # has been waiting ten minutes has already been talked at.
             clip = self.insist_clip
+        elif self.chasing:
+            # Running at the pointer. Above talking for the same reason the
+            # mood is: the sentence and the pose are one statement, and this
+            # is the leg where the pose is the whole of it — a character that
+            # crosses the desktop to take your mouse wearing the walk cycle
+            # is not angry, it is running an errand.
+            clip = "furious"
         elif self.mood_clip and now < self.mood_until:
             # Also above talking: the pose and the sentence are one statement,
             # and the pose is the half that is read first.
@@ -2102,8 +2511,14 @@ class Companion(QWidget):
         self._play_once("land")
         self._ensure_pointer()
         # Caught in mid-air. The flight is the character moving under its own
-        # momentum, and a hand on it is the end of that by definition.
+        # momentum, and a hand on it is the end of that by definition. The run
+        # at the pointer ends the same way and for a sharper reason: the leg
+        # is aimed at where the pointer was at the last release, and a hand on
+        # the character means that reading is now old. The release that
+        # follows decides again, with a reading of its own.
         self.flying = False
+        self.chasing = False
+        self.chase_until = 0.0
         self.press_pos = event.globalPosition()
         # Against the character's own top-left, not the window's. With a bubble
         # open on the left the two are a bubble's width apart, and the offset
@@ -2164,6 +2579,11 @@ class Companion(QWidget):
             self.throw_samples = []
             thrown = velocity != (0.0, 0.0)
             if thrown:
+                # Remembered, and by the module that decides what a pattern of
+                # throws means. Once is the discovery that the character can
+                # be thrown; twice inside buddy_hoop's memory is a decision,
+                # and the answer to it is below.
+                self.game.thrown(now)
                 self._launch(now, velocity)
             else:
                 self.vel_x = self.vel_y = 0.0
@@ -2177,41 +2597,55 @@ class Companion(QWidget):
             provoked = (held_for >= DRAG_TUG_SECONDS
                         or self.drag_distance >= DRAG_TUG_DISTANCE
                         or len(self.recent_drags) >= DRAG_TUG_AFTER)
-            # A throw takes precedence over the tug, and _launch has already
-            # called off one that was running. Both want the same position for
-            # the next few seconds — the tug drives it along a Bézier at a
-            # bounded 340 px/s while a flight integrates up to 2400, and the
-            # pointer is carried by whatever the character's per-frame delta
-            # turns out to be — so a tug started out of a throw would fling the
-            # cursor at ballistic speed, which is the one thing the carry was
-            # measured not to do. The provocation is not forgiven, only
-            # deferred: this drag is still in recent_drags, and the next
-            # release that is a placement collects on it.
-            if not thrown and (insistent
-                               or (provoked and now - self.tugged_at > TUG_COOLDOWN)):
+            # And the third: thrown more than once and it has had enough. It
+            # is a provocation and not a tier of its own, under the same
+            # cooldown as the drag one, because the temper remembers for
+            # ninety seconds and is cleared by nothing but a basket scored —
+            # so without the cooldown every release inside that window would
+            # be another seven seconds of getaway.
+            furious = self.game.should_chase(now)
+            # A throw takes precedence over the tug within this release, and
+            # _launch has already called off one that was running. Both want
+            # the same position for the next few seconds — the tug drives it
+            # along a Bézier at a bounded 340 px/s while a flight integrates up
+            # to 2400, and the pointer is carried by whatever the character's
+            # per-frame delta turns out to be — so a tug started out of a throw
+            # would fling the cursor at ballistic speed, which is the one thing
+            # the carry was measured not to do. What the throw no longer does
+            # is forgive: it is counted above, and the next release that is not
+            # itself a throw collects on it.
+            #
+            # The basket suspends all three while it is up. It was offered a
+            # moment ago as the alternative to exactly this, and taking the
+            # mouse before it has expired is the offer being withdrawn before
+            # anybody could accept it. It does expire, which is what stops
+            # holding the button down from being a way never to be retaliated
+            # against at all.
+            if (not thrown and not self.game.suspends_getaway(now)
+                    and (insistent
+                         or ((provoked or furious)
+                             and now - self.tugged_at > TUG_COOLDOWN))):
                 self.recent_drags = []
-                # Somewhere far, so the run is worth watching. Picked as the
-                # furthest of a handful of candidates rather than at random:
-                # a kidnapping that ends four pixels away is a shrug.
                 here = (self.pos_x, self.pos_y)
-                # Within the screen it is already on. Crossing a monitor
-                # boundary loses the pointer: the two displays here are
-                # different heights, so on the way across the compositor
-                # clamps the pointer to whatever is a valid position, the
-                # deltas that were clamped away are gone, and it reappears
-                # behind — which is the cursor lagging and then arriving
-                # displaced.
-                screen = self._screen_at(*here)
-                lo_x = screen.left() + 8
-                hi_x = max(lo_x, screen.right() - BUDDY_PX - 8)
-                lo_y = screen.top() + 8
-                hi_y = max(lo_y, screen.bottom() - BUDDY_PX - 8)
-                candidates = [(float(random.randint(lo_x, hi_x)),
-                               float(random.randint(lo_y, hi_y))) for _ in range(6)]
-                target = max(candidates,
-                             key=lambda t: (t[0] - here[0]) ** 2 + (t[1] - here[1]) ** 2)
-                self._begin_tug(now, random.uniform(TUG_SECONDS - 1, TUG_SECONDS),
-                                target)
+                seconds = random.uniform(TUG_SECONDS - 1, TUG_SECONDS)
+                # Angry, it runs to the pointer before it takes it. The
+                # position is the one this release arrived with and the age is
+                # measured from it, both of which buddy_hoop requires and
+                # neither of which QCursor.pos() can supply: that reads
+                # XWayland's shadow of the pointer, which stops following the
+                # pointer while it is over a native Wayland window and cannot
+                # be told apart from a pointer that is not moving. An age this
+                # cannot vouch for is answered with None, and None means the
+                # leg is skipped and the getaway starts from where it stands,
+                # which is exactly the behaviour that shipped before this.
+                spot = None
+                if furious:
+                    where = event.globalPosition()
+                    spot = buddy_hoop.chase_target(
+                        (where.x(), where.y()), time.monotonic() - now,
+                        BUDDY_PX, self._corner_bounds())
+                if spot is None or not self._begin_chase(now, spot, seconds):
+                    self._begin_tug(now, seconds, self._far_target(here))
                 self._say(self._t("tugging"))
             return
         # A click, not a drag: go to whatever most needs attention.
@@ -2506,6 +2940,10 @@ class Companion(QWidget):
             "en": {"quit": "Quit companion", "roam": "Let it roam again",
                    "stopThat": "Put me down. I have places to be.",
                    "tugging": "Right. My turn. Come along.",
+                   "hoopUp": "There is a basket over there. Use it.",
+                   "hoopScored": "In. That settles it.",
+                   "hoopMissed": "The basket is gone. So is your aim.",
+                   "hoopGone": "Nobody threw. The basket is gone.",
                    "dropped": "...fine. Keep your mouse.",
                    "askAbout": "How is it going in...",
                    "thinking": "Looking at {name}...",
@@ -2535,6 +2973,10 @@ class Companion(QWidget):
             "pt": {"quit": "Fechar o companion", "roam": "Deixar passear de novo",
                    "stopThat": "Me larga. Tenho compromissos.",
                    "tugging": "Certo. Agora é a minha vez. Vem comigo.",
+                   "hoopUp": "Tem uma cesta ali. Aproveita.",
+                   "hoopScored": "Entrou. Ficamos quites.",
+                   "hoopMissed": "A cesta foi embora. A tua mira também.",
+                   "hoopGone": "Ninguém arremessou. A cesta foi embora.",
                    "dropped": "...tá bom. Fica com o teu mouse.",
                    "askAbout": "Como vai o...",
                    "thinking": "Deixa eu ver o {name}...",
@@ -2591,6 +3033,12 @@ def main():
         # over to say hello to it; silencing this also keeps a throwaway
         # process out of the other companions' presence directory.
         companion._mingle = lambda *_a: None
+        # And no basket. Nothing drags it here, so none would be offered, but
+        # the switch is set rather than reasoned about: this mode runs where
+        # nobody is watching, and a second always-on-top window put up by a
+        # throwaway process is the one thing it cannot be allowed to leave
+        # behind on a desktop somebody is using.
+        companion.hoop_enabled = False
         start = (companion.pos_x, companion.pos_y)
         companion.docked = False
         companion.target = (
