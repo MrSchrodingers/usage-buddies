@@ -198,7 +198,24 @@ PlasmoidItem {
             "tools": "Tools", "runningTotals": "running totals, no time window",
             "activation": "Activation", "activationNote": "which layer of the precedence chain instructions came from",
             "verifyGate": "Verify gate", "passRate": "pass rate", "invocations": "invocations",
-            "distinctSessions": "sessions", "noneRecorded": "none recorded"
+            "distinctSessions": "sessions", "noneRecorded": "none recorded",
+            "weeklyForecast": "Weekly forecast", "noPaceToProject": "no pace to project from",
+            "resetComesFirst": "the reset comes first", "ceilingAround": "ceiling around",
+            "ceilingReached": "weekly ceiling reached", "atWeekPace": "at this week's pace",
+            "noWindow": "no window to project in",
+            "part_night": "night", "part_morning": "morning",
+            "part_afternoon": "afternoon", "part_evening": "evening",
+            "wd0": "Sun", "wd1": "Mon", "wd2": "Tue", "wd3": "Wed",
+            "wd4": "Thu", "wd5": "Fri", "wd6": "Sat",
+            "costByProject": "Cost by project", "projects": "projects",
+            "oneSessionEach": "one session each",
+            "todayVsUsual": "Today vs your usual",
+            "aboveYourRange": "above your range", "withinYourRange": "within your range",
+            "belowYourRange": "below your range",
+            "medianOf": "median of", "activeDays": "active days",
+            "adjustedForHour": "scaled to the hour",
+            "tooEarlyToCompare": "too early in the day to compare",
+            "needMoreDays": "not enough days to compare"
         },
         "pt": {
             "rolling5h": "janela de 5h",
@@ -248,7 +265,24 @@ PlasmoidItem {
             "tools": "Ferramentas", "runningTotals": "totais acumulados, sem janela de tempo",
             "activation": "Ativação", "activationNote": "de qual camada da precedência vieram as instruções",
             "verifyGate": "Verify gate", "passRate": "taxa de aprovação", "invocations": "invocações",
-            "distinctSessions": "sessões", "noneRecorded": "nada registrado"
+            "distinctSessions": "sessões", "noneRecorded": "nada registrado",
+            "weeklyForecast": "Previsão semanal", "noPaceToProject": "sem ritmo para projetar",
+            "resetComesFirst": "o reset chega antes", "ceilingAround": "teto por volta de",
+            "ceilingReached": "teto semanal atingido", "atWeekPace": "no ritmo desta semana",
+            "noWindow": "sem janela para projetar",
+            "part_night": "de madrugada", "part_morning": "de manhã",
+            "part_afternoon": "à tarde", "part_evening": "à noite",
+            "wd0": "Dom", "wd1": "Seg", "wd2": "Ter", "wd3": "Qua",
+            "wd4": "Qui", "wd5": "Sex", "wd6": "Sáb",
+            "costByProject": "Custo por projeto", "projects": "projetos",
+            "oneSessionEach": "uma sessão cada",
+            "todayVsUsual": "Hoje vs o seu normal",
+            "aboveYourRange": "acima da sua faixa", "withinYourRange": "dentro da sua faixa",
+            "belowYourRange": "abaixo da sua faixa",
+            "medianOf": "mediana de", "activeDays": "dias ativos",
+            "adjustedForHour": "escalado para a hora",
+            "tooEarlyToCompare": "cedo demais no dia para comparar",
+            "needMoreDays": "dias insuficientes para comparar"
         }
     })
 
@@ -924,6 +958,271 @@ PlasmoidItem {
         if (pct > 50) return claudeAmberLight;
         return Kirigami.Theme.textColor;
     }
+
+    // ── Projections and baselines ─────────────────────────
+    //
+    // Everything in this block is plain JavaScript over plain values: no
+    // `root.`, no Qt types, no theme lookups, and the clock arrives as an
+    // argument instead of being read. That is not style. A binding expression
+    // inside a delegate can only ever be checked by reading it, because the
+    // widget does not load outside a Plasma session; a free function over
+    // numbers can be lifted out of this file and run against real ones, which
+    // is how the awkward cases below (a rate of zero, a projection past the
+    // reset, a day that is three hours old, a series too short to mean
+    // anything) are verified rather than merely asserted. The words and the
+    // colours stay in the delegates; only the arithmetic lives here.
+
+    // Fed to those functions by a timer rather than by Date.now() inside a
+    // binding, which would never re-evaluate: the expression has no dependency
+    // that changes, so the forecast would be frozen at the instant the popup
+    // was built and look correct while going stale.
+    property real nowMs: Date.now()
+    Timer {
+        // A minute is finer than anything this drives — the forecast resolves
+        // to a quarter of a day and the comparison to the hour — and coarse
+        // enough that it costs nothing while the popup is closed.
+        interval: 60000
+        running: true; repeat: true
+        onTriggered: root.nowMs = Date.now()
+    }
+
+    // When the weekly ceiling is reached at the pace this week has kept.
+    //
+    // The 5h window already has limitEta. The week — the one that actually
+    // stops the week — had a bar and a reset time, which say where you are and
+    // never whether you arrive.
+    //
+    // The rate is percentUsed divided by the hours elapsed in the window, and
+    // deliberately NOT burnRate.total_per_hour. The two are in different units,
+    // percent of an undisclosed weekly allowance against tokens per hour, and
+    // the payload carries no factor between them: the weekly cap is not
+    // denominated in tokens and it weighs models differently, so a
+    // tokens-to-percent conversion invented here would make the number look
+    // more current while making it less true. burnRate is read for the one
+    // question it can answer on its own — whether anything is being spent at
+    // all — and that is what gates the forecast. It can serve as a gate
+    // because the collector averages it over a rolling two hours
+    // (calculate_burn_rate), so it reaches zero after an idle stretch rather
+    // than flickering between refreshes.
+    //
+    // Damping, because a projection that walks from Thursday to Saturday
+    // between two refreshes is noise wearing a date:
+    //   - the pace is an average over the whole elapsed window, so a single
+    //     idle hour moves it by at most 1/elapsed;
+    //   - the caller renders a quarter of a day, not an instant, so a couple
+    //     of hours of wobble does not change the label, and the label
+    //     advertises the precision it actually has;
+    //   - the far tail, where a small pace makes the projected instant wildly
+    //     sensitive, is absorbed by the reset: past it the answer stops being
+    //     a date at all and becomes "the window turns over first", which does
+    //     not depend on where in the tail the projection landed.
+    function weeklyForecast(weekly, burnPerHour, now) {
+        var out = { state: "unknown", pctPerHour: 0, hoursToLimit: -1,
+                    atMs: -1, resetMs: -1, elapsedHours: 0, percentUsed: 0 };
+        if (!weekly) return out;
+        // Loose on purpose: a scope the API reported with a null percentage
+        // has an unknown position in the window, and Number(null) is 0, which
+        // would quietly turn "we were not told" into "nothing spent".
+        if (weekly.percentUsed == null) return out;
+        var pct = Number(weekly.percentUsed);
+        if (!isFinite(pct)) return out;
+        out.percentUsed = pct;
+
+        var reset = Date.parse(weekly.resetsAt || "");
+        if (isNaN(reset)) return out;
+        out.resetMs = reset;
+
+        // The weekly window is 168h wide and resetsAt is its far edge, so how
+        // far into it we are follows from the reset alone.
+        var elapsed = 168 - (reset - now) / 3600000;
+        // A reset already behind us, or further ahead than the window is long,
+        // means the timestamp and the clock disagree. There is no position in
+        // the window to divide by, and inventing one would silently scale
+        // every number below it.
+        if (!(elapsed > 0) || elapsed > 168) return out;
+        out.elapsedHours = elapsed;
+
+        if (pct >= 100) { out.state = "atLimit"; return out; }
+
+        // No rate: nothing spent this week, or nothing being spent right now.
+        // Dividing by it yields infinity, and "never" is a claim about the
+        // future that this data cannot make. The honest statement is that
+        // there is nothing to project from.
+        if (!(pct > 0) || !(Number(burnPerHour) > 0)) { out.state = "noPace"; return out; }
+
+        out.pctPerHour = pct / elapsed;
+        var hours = (100 - pct) / out.pctPerHour;
+        out.hoursToLimit = hours;
+        out.atMs = now + hours * 3600000;
+        // Landing after the reset is good news and a different statement, not
+        // a quieter rendering of the same alarm.
+        out.state = out.atMs >= reset ? "resetFirst" : "limitFirst";
+        return out;
+    }
+
+    // How loud the forecast should be, in hours rather than percent: a ceiling
+    // three days out is information, one twelve hours out is a decision.
+    function forecastZone(f) {
+        if (!f) return "calm";
+        if (f.state === "atLimit") return "alert";
+        if (f.state !== "limitFirst") return "calm";
+        if (f.hoursToLimit < 24) return "alert";
+        if (f.hoursToLimit < 72) return "warn";
+        return "calm";
+    }
+
+    // Where an instant falls on the reader's calendar.
+    //
+    // Every getter here is a local-time getter, deliberately. resetsAt is UTC;
+    // a reader three hours west told "Friday" about an instant that is Thursday
+    // 23:00 where they are has been handed the wrong day, and the mistake is
+    // invisible because the percentage beside it is right.
+    //
+    // The hour is bucketed into quarters of a day because the forecast is not
+    // accurate to the hour and must not look as though it is.
+    function calendarParts(ms, now) {
+        var d = new Date(ms);
+        var h = d.getHours();
+        var part = h < 6 ? "night" : h < 12 ? "morning" : h < 18 ? "afternoon" : "evening";
+        return { part: part, weekday: d.getDay(), hour: h };
+    }
+
+    // Cost per project, from the per-session rows.
+    //
+    // The key is the project string exactly as the collector emits it, and
+    // that is not laziness. Those strings are Claude's project directory
+    // names, in which a path separator and a literal dash in a directory name
+    // have both become "/": "home/ti/claude/usage/widget" is one repository
+    // called claude-usage-widget, not a widget inside a usage inside a claude.
+    // Splitting on "/" to find "the repo" would invent a hierarchy that is not
+    // in the data. Two sessions in the same checkout emit byte-identical
+    // strings, which makes grouping on the whole string the correct general
+    // answer as well as the safe one.
+    //
+    // Nothing here accumulates across days, and nothing should: sessionCosts
+    // is today's list, and the payload carries no per-project series.
+    function costsByProject(rows) {
+        var list = rows || [];
+        var index = {}, out = [], total = 0;
+        for (var i = 0; i < list.length; i++) {
+            var r = list[i] || {};
+            var key = r.project ? String(r.project) : (r.id ? String(r.id) : "?");
+            var g = index[key];
+            if (!g) {
+                g = { project: key, costUSD: 0, tokens: 0, messages: 0,
+                      sessions: 0, share: 0 };
+                index[key] = g;
+                out.push(g);
+            }
+            var cost = Number(r.costUSD) || 0;
+            g.costUSD += cost;
+            g.tokens += Number(r.tokens) || 0;
+            g.messages += Number(r.messages) || 0;
+            g.sessions += 1;
+            total += cost;
+        }
+        for (var j = 0; j < out.length; j++)
+            out[j].share = total > 0 ? out[j].costUSD / total : 0;
+        // Cost descending, then name, so rows with equal cost do not reshuffle
+        // between refreshes.
+        out.sort(function (a, b) {
+            return (b.costUSD - a.costUSD)
+                || (a.project < b.project ? -1 : a.project > b.project ? 1 : 0);
+        });
+        return out;
+    }
+
+    // How much of the reader's local day has gone by, 0..1.
+    function dayFraction(now) {
+        var midnight = new Date(now);
+        midnight.setHours(0, 0, 0, 0);
+        var f = (now - midnight.getTime()) / 86400000;
+        return f < 0 ? 0 : f > 1 ? 1 : f;
+    }
+
+    // Today against this account's own recent days.
+    //
+    // A number with no baseline is decoration, and three separate things make
+    // the naive version of this a lie. Each is handled rather than hidden.
+    //
+    //   Partial day. Today is a few hours old; the days it is measured against
+    //   are whole. Compared with yesterday's total, 11:00 reads "below normal"
+    //   every single day, which is a gauge that says the same thing whatever
+    //   happens. The baseline is scaled by how much of today has elapsed —
+    //   the same even-burn assumption the window gauges above already make,
+    //   and just as much an assumption: it reads high for someone who works
+    //   mornings and low for someone who works nights.
+    //
+    //   Too early. Before the day is a couple of hours old the scaled baseline
+    //   is near zero and the ratio against it explodes; one request at 00:10
+    //   would show as ten normal days. Below that the honest answer is that
+    //   the day has not started yet.
+    //
+    //   Too little history. Seven prior days is a very small sample, and the
+    //   idle ones say nothing about how much work a working day carries, so
+    //   they are dropped — left in, they drag the centre down until every
+    //   working day reads as a spike. The centre is a median, because one
+    //   6.7-billion-token day out of five drags a mean somewhere no day has
+    //   ever been. The verdict is a rank statement, inside or outside the
+    //   range those days actually spanned, because a spread that wide supports
+    //   no tighter claim. Under three active days there is no verdict at all.
+    //
+    // Deliberately NOT built: "high for a Wednesday morning". peakHours counts
+    // by hour of day with no weekday in it, and eight days of trend give
+    // exactly one sample per weekday. There is no day-of-week baseline in this
+    // payload to compare against, and one sample is not a baseline.
+    function baselineComparison(trend, field, now) {
+        var out = { state: "insufficient", days: 0, value: 0, expected: 0,
+                    ratio: 0, verdict: "typical", fraction: 0,
+                    median: 0, lo: 0, hi: 0 };
+        var rows = trend || [];
+        if (rows.length < 2) return out;
+
+        out.value = Number((rows[rows.length - 1] || {})[field]) || 0;
+
+        var prior = [];
+        for (var i = 0; i < rows.length - 1; i++) {
+            var v = Number((rows[i] || {})[field]) || 0;
+            if (v > 0) prior.push(v);
+        }
+        out.days = prior.length;
+        if (prior.length < 3) return out;
+
+        var frac = dayFraction(now);
+        out.fraction = frac;
+        if (frac < 1 / 12) { out.state = "tooEarly"; return out; }
+
+        prior.sort(function (a, b) { return a - b; });
+        var mid = Math.floor(prior.length / 2);
+        out.median = prior.length % 2 ? prior[mid]
+                                      : (prior[mid - 1] + prior[mid]) / 2;
+        out.lo = prior[0] * frac;
+        out.hi = prior[prior.length - 1] * frac;
+        out.expected = out.median * frac;
+        out.ratio = out.expected > 0 ? out.value / out.expected : 0;
+        out.verdict = out.value > out.hi ? "above"
+                    : out.value < out.lo ? "below" : "typical";
+        out.state = "ok";
+        return out;
+    }
+
+    // Words for a projected instant. A thin wrapper so the arithmetic above
+    // stays free of tr() and the vocabulary stays in one place.
+    //
+    // The weekday is spelled out even when the instant is today: the window is
+    // at most seven days wide, so an abbreviation is unambiguous, and "today"
+    // followed by a part of the day does not survive translation into both
+    // languages without a special case per language.
+    function whenLabel(ms, now) {
+        var p = calendarParts(ms, now);
+        return tr("wd" + p.weekday) + " " + tr("part_" + p.part);
+    }
+
+    // A rate below 1%/h needs the second decimal to say anything at all.
+    function formatPctPerHour(v) {
+        return (v >= 1 ? v.toFixed(1) : v.toFixed(2)) + "%/h";
+    }
+
 
     // Weekly rows, derived from whatever rateLimits actually carries.
     //
@@ -2184,7 +2483,13 @@ PlasmoidItem {
         // what keeps the title from having to elide on the common case.
         Layout.preferredWidth: Kirigami.Units.gridUnit * 25
         Layout.preferredHeight: Kirigami.Units.gridUnit * 40
-        Layout.minimumWidth: Kirigami.Units.gridUnit * 20
+        // Raised because the old value was a minimum the popup could not
+        // actually draw. Rendering the header at the declared minimum put the
+        // level badge and the Live/Offline word on top of the tool buttons —
+        // not clipped, so it never looked like the overflow it is. Declaring a
+        // width you cannot honour is the same defect as overflowing one; this
+        // is the width the header measured as needing, plus a unit.
+        Layout.minimumWidth: Kirigami.Units.gridUnit * 21
         Layout.maximumHeight: Kirigami.Units.gridUnit * 44
 
         header: PlasmaExtras.PlasmoidHeading { visible: false }
@@ -2472,7 +2777,18 @@ PlasmoidItem {
                             }
                         }
                     }
+                    // The other half of the same lesson. Giving the title label a
+                    // zero minimum stopped the row cutting the whole popup off at
+                    // the preferred width, and left this row still pinning the
+                    // column at about 108 px — so dragged down to the width the
+                    // popup itself declares as its minimum, this text is drawn
+                    // over the tool buttons. Nothing is clipped, so it does not
+                    // look like the first defect; it looks like the plan name
+                    // printed on top of a button. Found by rendering the QML at
+                    // the declared minimum, not by reading it.
                     RowLayout {
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
                         spacing: Kirigami.Units.smallSpacing
                         // Provider logo small
                         Image {
@@ -2483,6 +2799,9 @@ PlasmoidItem {
                             fillMode: Image.PreserveAspectFit
                         }
                         PlasmaComponents3.Label {
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            elide: Text.ElideRight
                             text: root.usageData.rateLimits?.plan ?? "Max (20x)"
                             font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.8
                             color: root.claudeAmber
@@ -2493,6 +2812,8 @@ PlasmoidItem {
                             color: Kirigami.Theme.textColor; opacity: 0.2
                         }
                         PlasmaComponents3.Label {
+                            Layout.minimumWidth: 0
+                            elide: Text.ElideRight
                             text: {
                                 var src = root.usageData.rateLimits?.source ?? "";
                                 return src === "api" ? "Live" : "Offline";
@@ -3053,6 +3374,102 @@ PlasmoidItem {
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            // ══════════════════════════════════
+            // ── Weekly forecast ──
+            // The rolling 5h window already has limitEta. The week — the limit
+            // that actually ends a week — had a bar and a reset time, which
+            // say where you are and never whether you arrive.
+            //
+            // The arithmetic, and the reasons for choosing that pace and that
+            // resolution, are in weeklyForecast(). What lives here is the
+            // vocabulary, and each state is a different sentence rather than a
+            // louder version of one: "the reset comes first" is good news and
+            // must not read like a countdown to a wall.
+            // ══════════════════════════════════
+            Rectangle {
+                Layout.fillWidth: true
+                visible: root.usageData.rateLimits?.weeklyAll != null
+                implicitHeight: fcCol.implicitHeight + Kirigami.Units.mediumSpacing * 2
+                radius: 10
+                color: root.cardBg
+
+                ColumnLayout {
+                    id: fcCol
+                    anchors.fill: parent
+                    anchors.margins: Kirigami.Units.mediumSpacing
+                    spacing: 3
+
+                    readonly property var fc: root.weeklyForecast(
+                        root.usageData.rateLimits?.weeklyAll ?? null,
+                        root.usageData.burnRate?.total_per_hour ?? 0,
+                        root.nowMs)
+                    readonly property string zone: root.forecastZone(fc)
+
+                    PlasmaComponents3.Label {
+                        text: root.tr("weeklyForecast")
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
+                        font.weight: Font.DemiBold
+                        opacity: 0.45
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Kirigami.Units.smallSpacing
+
+                        Rectangle {
+                            Layout.preferredWidth: 8
+                            Layout.preferredHeight: 8
+                            Layout.alignment: Qt.AlignVCenter
+                            radius: 4
+                            color: root.zoneColor(fcCol.zone)
+                        }
+
+                        // fillWidth and elide: a weekday plus a part of the day
+                        // is longer in Portuguese than in English, and the
+                        // popup's Flickable clips horizontally instead of
+                        // scrolling, so anything that overflows here does not
+                        // wrap, it disappears — and takes the popup's width
+                        // with it.
+                        PlasmaComponents3.Label {
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            elide: Text.ElideRight
+                            text: {
+                                var f = fcCol.fc;
+                                if (f.state === "atLimit") return root.tr("ceilingReached");
+                                if (f.state === "noPace") return root.tr("noPaceToProject");
+                                if (f.state === "resetFirst") return root.tr("resetComesFirst");
+                                if (f.state === "limitFirst")
+                                    return root.tr("ceilingAround") + " "
+                                         + root.whenLabel(f.atMs, root.nowMs);
+                                return root.tr("noWindow");
+                            }
+                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.95
+                            font.weight: fcCol.zone === "calm" ? Font.Normal : Font.DemiBold
+                            color: fcCol.zone === "calm" ? Kirigami.Theme.textColor
+                                                         : root.zoneColor(fcCol.zone)
+                        }
+                    }
+
+                    // Which pace produced the line above. Without it a
+                    // projection reads as a measurement.
+                    PlasmaComponents3.Label {
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        elide: Text.ElideRight
+                        visible: fcCol.fc.pctPerHour > 0
+                        text: root.tr("atWeekPace") + " · "
+                            + root.formatPctPerHour(fcCol.fc.pctPerHour)
+                            + (fcCol.fc.state === "resetFirst"
+                               && (root.usageData.rateLimits?.weeklyAll?.resetsLabel ?? "") !== ""
+                               ? " · " + root.usageData.rateLimits.weeklyAll.resetsLabel : "")
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.78
+                        font.features: ({ "tnum": 1 })
+                        opacity: 0.4
                     }
                 }
             }
@@ -3824,6 +4241,149 @@ PlasmoidItem {
                 }
             }
 
+            // ── Cost by project ──
+            // sessionCosts is a flat list, and the card above shows several
+            // sessions in the same checkout as unrelated rows. Grouping
+            // answers what the list cannot: which piece of work the money went
+            // to, rather than which individual session was expensive.
+            //
+            // On a day with one session per checkout this collapses into the
+            // list above. The subtitle therefore counts the sessions, so an
+            // identity is not dressed up as an aggregation.
+            //
+            // No history: sessionCosts is today, and the payload carries no
+            // per-project series to accumulate over days.
+            Rectangle {
+                Layout.fillWidth: true
+                visible: (root.usageData.sessionCosts ?? []).length > 0
+                implicitHeight: projCol.implicitHeight + Kirigami.Units.mediumSpacing * 2
+                radius: 10
+                color: root.cardBg
+
+                ColumnLayout {
+                    id: projCol
+                    anchors.fill: parent
+                    anchors.margins: Kirigami.Units.mediumSpacing
+                    spacing: 3
+
+                    readonly property var groups: root.costsByProject(
+                        root.usageData.sessionCosts ?? [])
+
+                    readonly property real peak: {
+                        var m = 0;
+                        for (var i = 0; i < groups.length; i++)
+                            m = Math.max(m, groups[i].costUSD);
+                        return m > 0 ? m : 1;
+                    }
+
+                    // True when every group holds exactly one session, which
+                    // is to say when the grouping changed nothing today.
+                    readonly property bool identity: {
+                        for (var i = 0; i < groups.length; i++)
+                            if (groups[i].sessions > 1) return false;
+                        return true;
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Kirigami.Units.smallSpacing
+
+                        PlasmaComponents3.Label {
+                            text: root.tr("costByProject")
+                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.82
+                            font.weight: Font.DemiBold
+                            opacity: 0.45
+                        }
+                        PlasmaComponents3.Label {
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            horizontalAlignment: Text.AlignRight
+                            elide: Text.ElideRight
+                            text: projCol.groups.length + " " + root.tr("projects")
+                                + (projCol.identity ? ", " + root.tr("oneSessionEach") : "")
+                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.72
+                            opacity: 0.3
+                        }
+                    }
+
+                    Repeater {
+                        model: projCol.groups
+
+                        delegate: RowLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            spacing: Kirigami.Units.smallSpacing
+
+                            // fillWidth with minimumWidth 0, not a fixed
+                            // preferredWidth: the popup's Flickable clips
+                            // horizontally instead of scrolling, so a label
+                            // that cannot shrink does not overflow, it takes
+                            // the whole popup with it.
+                            PlasmaComponents3.Label {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                Layout.preferredWidth: Kirigami.Units.gridUnit * 7
+                                text: modelData.project
+                                // The tail identifies the checkout; every one
+                                // of these strings opens with the same home or
+                                // var prefix.
+                                elide: Text.ElideLeft
+                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.74
+                                opacity: 0.7
+                            }
+
+                            PlasmaComponents3.Label {
+                                visible: modelData.sessions > 1
+                                text: modelData.sessions + "x"
+                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.7
+                                font.features: ({ "tnum": 1 })
+                                opacity: 0.45
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: Kirigami.Units.gridUnit * 2
+                                Layout.preferredWidth: Kirigami.Units.gridUnit * 4
+                                Layout.preferredHeight: 5
+                                Layout.alignment: Qt.AlignVCenter
+                                radius: 2.5
+                                color: root.subtleBorder
+
+                                Rectangle {
+                                    width: parent.width * (modelData.costUSD / projCol.peak)
+                                    height: parent.height
+                                    radius: 2.5
+                                    color: root.calmFill
+                                    Behavior on width { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
+                                }
+                            }
+
+                            PlasmaComponents3.Label {
+                                Layout.preferredWidth: Kirigami.Units.gridUnit * 3
+                                horizontalAlignment: Text.AlignRight
+                                text: root._usd(modelData.costUSD)
+                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.74
+                                font.features: ({ "tnum": 1 })
+                                font.weight: Font.Bold
+                                opacity: 0.6
+                            }
+
+                            // Share of the day, which the bar cannot give: the
+                            // bar is scaled to the biggest project, not to the
+                            // total.
+                            PlasmaComponents3.Label {
+                                Layout.preferredWidth: Kirigami.Units.gridUnit * 1.8
+                                horizontalAlignment: Text.AlignRight
+                                text: Math.round(modelData.share * 100) + "%"
+                                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.7
+                                font.features: ({ "tnum": 1 })
+                                opacity: 0.35
+                            }
+                        }
+                    }
+                }
+            }
+
             // ── Service health, against this account's own baseline ──
             // A fixed threshold cannot know that 10s is normal here. The
             // verdict is withheld until there is enough history to compare
@@ -4269,6 +4829,149 @@ PlasmoidItem {
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            // ══════════════════════════════════
+            // ── Today against your own days ──
+            // The chart above draws eight bars and leaves the reader to
+            // eyeball whether the last one is unusual. A number with nothing
+            // to compare it against is decoration, and the series to compare
+            // it against was already on screen.
+            //
+            // The three things that would make this a lie are handled in
+            // baselineComparison(), with the reasoning there: a partial day is
+            // scaled before it is compared, a day that has barely started is
+            // not compared at all, and under three active days there is no
+            // verdict. What the band below adds to the ratio is width — the
+            // same 1.4x means something different against days that ranged
+            // 0.8B to 6.7B than against days that all landed near 3B.
+            // ══════════════════════════════════
+            Rectangle {
+                Layout.fillWidth: true
+                visible: (root.usageData.trend7d ?? []).length > 1
+                implicitHeight: baseCol.implicitHeight + Kirigami.Units.mediumSpacing * 2
+                radius: 10
+                color: root.cardBg
+
+                ColumnLayout {
+                    id: baseCol
+                    anchors.fill: parent
+                    anchors.margins: Kirigami.Units.mediumSpacing
+                    spacing: 4
+
+                    // Tokens rather than messages, to match the chart directly
+                    // above it: two adjacent panels disagreeing about which
+                    // quantity "activity" means is worse than either choice.
+                    readonly property var cmp: root.baselineComparison(
+                        root.usageData.trend7d ?? [], "tokens", root.nowMs)
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Kirigami.Units.smallSpacing
+
+                        PlasmaComponents3.Label {
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            elide: Text.ElideRight
+                            text: root.tr("todayVsUsual")
+                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.8
+                            opacity: 0.4
+                        }
+                        PlasmaComponents3.Label {
+                            visible: baseCol.cmp.state === "ok"
+                            text: baseCol.cmp.ratio.toFixed(1) + "x"
+                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 1.05
+                            font.weight: Font.Bold
+                            font.features: ({ "tnum": 1 })
+                            color: baseCol.cmp.verdict === "above" ? root.claudeAmberLight
+                                 : baseCol.cmp.verdict === "below" ? root.calmFill
+                                 : Kirigami.Theme.textColor
+                        }
+                    }
+
+                    // The band the prior active days actually spanned, scaled
+                    // to the same fraction of the day today has reached, with
+                    // today's mark on it.
+                    Item {
+                        id: band
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 8
+                        visible: baseCol.cmp.state === "ok"
+
+                        // Not named `scale`: Item already has one, and
+                        // shadowing it silently resizes the row.
+                        readonly property real span: {
+                            var m = Math.max(baseCol.cmp.hi, baseCol.cmp.value);
+                            return m > 0 ? m * 1.08 : 1;
+                        }
+
+                        Rectangle {
+                            id: bandTrack
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            height: 6
+                            radius: 3
+                            color: root.subtleBorder
+
+                            Rectangle {
+                                x: bandTrack.width * (baseCol.cmp.lo / band.span)
+                                width: Math.max(2, bandTrack.width
+                                       * ((baseCol.cmp.hi - baseCol.cmp.lo) / band.span))
+                                height: parent.height
+                                radius: 3
+                                color: root.calmFill
+                                opacity: 0.35
+                            }
+
+                            Rectangle {
+                                x: Math.min(bandTrack.width - 2,
+                                            Math.max(0, bandTrack.width
+                                                     * (baseCol.cmp.value / band.span) - 1))
+                                width: 2
+                                height: parent.height
+                                color: baseCol.cmp.verdict === "typical"
+                                       ? Kirigami.Theme.textColor : root.claudeAmberLight
+                                Behavior on x { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
+                            }
+                        }
+                    }
+
+                    // The verdict is a rank statement, not a p-value: today is
+                    // inside or outside the range those days spanned. Seven
+                    // days, some of them idle, supports nothing tighter.
+                    PlasmaComponents3.Label {
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        elide: Text.ElideRight
+                        text: {
+                            var c = baseCol.cmp;
+                            if (c.state === "tooEarly") return root.tr("tooEarlyToCompare");
+                            if (c.state !== "ok") return root.tr("needMoreDays");
+                            var v = c.verdict === "above" ? root.tr("aboveYourRange")
+                                  : c.verdict === "below" ? root.tr("belowYourRange")
+                                  : root.tr("withinYourRange");
+                            return v + " · " + root.formatTokens(c.value)
+                                 + " / " + root.formatTokens(c.expected);
+                        }
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.78
+                        opacity: 0.5
+                    }
+
+                    // The method, spelled out. Without it the ratio looks like
+                    // a measurement instead of a projection of a partial day
+                    // onto a median of five.
+                    PlasmaComponents3.Label {
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        elide: Text.ElideRight
+                        visible: baseCol.cmp.state === "ok"
+                        text: root.tr("medianOf") + " " + baseCol.cmp.days + " "
+                            + root.tr("activeDays") + ", " + root.tr("adjustedForHour")
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 0.72
+                        opacity: 0.3
                     }
                 }
             }
