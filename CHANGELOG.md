@@ -1,5 +1,99 @@
 # Changelog
 
+## Unreleased
+
+The desktop companion stops being a character that walks and comments, and
+becomes one that can be configured, interrupted and worked with.
+
+### The mascot of a quota widget now reads the quota
+
+`Brain.line()` decided what to say from efficiency, compaction, tool use and
+the clock, and never opened `rateLimits`. The proof that this was an oversight
+rather than a choice was already in the table: the `twoRed` category shipped
+with four English lines and four Portuguese ones about two red quotas at once,
+and no code path could select them.
+
+Detection moved to `scripts/buddy_signals.py`, a pure function over the two
+payloads. Sixteen signals are new — both quota windows, the limit ETA, credits
+and extra usage, service incidents, MCP servers waiting on auth, Opus quietly
+answering as Sonnet, error and latency drift, cost runway, the session eating
+the day's budget, the branch, the streak, and off-peak hours derived from this
+account's own history. The five existing diagnostics carry over unchanged, so
+moving the decision cannot change what a given desktop says. The phrase table
+moved to `scripts/buddy_lines.py`: 14 categories became 30, and a test now
+holds both directions so a category nothing can reach fails the suite.
+
+### Focus, escort, and an insistence that escalates
+
+`scripts/buddy_focus.py` is a pure engine — no Qt, no I/O, time as an argument.
+A focus block silences everything except a session actually asking. An escort
+locks onto one session rather than rotating. Insistence climbs while a session
+waits — speak, approach, wave, and at the top carry the pointer — and never
+regresses while the condition holds.
+
+The pointer step is opt-in. `off` is the only level that also stops the drag
+getaway, and the permission check lives inside the one function that moves a
+cursor rather than at one of its two call sites, which is how `--insistence
+off` used to take the mouse anyway.
+
+### Throwing, dropping, perching, and the other mascot
+
+`scripts/buddy_actions.py` and `scripts/buddy_peers.py`. Releasing mid-drag
+throws instead of discarding the gesture; releasing without motion still snaps
+to the corner it was put in. A folder dropped on the companion starts the
+reading the menu already offered, with dropped URIs treated as untrusted input
+and every refusal named. Two mascots on one desktop notice each other, greet
+once and walk on, discovered through a presence file rather than the window
+tree — measured at 0.26 ms against 23.9 ms, which is 72% of a frame.
+
+### Twelve clips, five expressions, and a shadow
+
+The character had ten clips and stood upright forever, including in the corner
+it was put in. It can now sit, yawn, wave, point, nod, shake, read, panic,
+celebrate, peek, turn and type, with rolling, dizzy, sparkling and sleepy eyes
+and a genuine side-glance — the eye spec may be a pair now, where before both
+pupils could only point away from each other. No new bodies: every pose is an
+exact operation on a grid that exists, so the 76 pre-existing frames are
+byte-identical and the header mascots did not drift.
+
+A creature with no arms gestures with its body. The first attempt extended a
+limb sideways along the floor row, which on two-pixel stubs reads as a skid
+mark rather than a gesture; a raised leg must have visible empty space beneath
+it. Found by rendering at 12x and looking, as was Rex being decapitated —
+`celebrate` and `panic` pushed the ear tufts past the top of the grid, which is
+a shift, so nothing raised and the symptom was an owl with two loose marks
+above it.
+
+### Six settings, and a channel to a running process
+
+Focus duration, how far insistence may climb, quiet hours, the gag layer, the
+contact shadow, and whether it escorts one session at a time. Starting a focus
+block reaches the running companion through
+`~/.cache/usage-buddies/companion-command.json`, written through a temporary
+file in the same directory and renamed, each command carrying `issuedAt` so a
+restarting companion ignores yesterday's request.
+
+### Defects fixed along the way
+
+- The bubble opened past the right edge of the screen when the companion was
+  docked there; it picks its side from the space available now.
+- Running the test suite stopped whatever companion the user had running.
+  `test_ctl_does_not_kill_its_own_shell` called the real `companion-ctl.sh
+  stop`. The scan root is injectable now and the tests build their own.
+- `companion-ctl.sh stop` matched the script name anywhere in a command line,
+  so it killed `vim` on the file and the `cp` inside `install.sh` — truncating
+  the file being installed.
+- Seven library modules were installed into `~/.local/bin` and never removed by
+  the uninstaller.
+- A dropped `file:///work/src/#scratch` came back as `/work/src`: `urlsplit`
+  answers by discarding, and the truncation was accepted rather than reported.
+- `or {}` over a payload is only a guard against the falsy; `"lifetime": 1` is
+  valid JSON, truthy, and raised every poll — leaving the companion walking
+  around and never speaking again.
+- The drop limit counted accepted entries rather than entries looked at, so a
+  large selection made tens of thousands of filesystem calls on the Qt thread.
+- Two public, documented, tested functions had no caller at all.
+
 ## 2.0.0
 
 The project is renamed **claude-usage-widget → usage-buddies**, it watches a

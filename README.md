@@ -347,6 +347,81 @@ Two traps worth recording, both hit here:
 - A shebang script is exec'd as `/usr/bin/python3 /path/script.py`, so argv[0]
   is the interpreter. Matching only argv[0] finds nothing, and `status`
   reported zero while the companion was running.
+- Matching the name *anywhere* in the command line is the opposite mistake and
+  costs more: it takes `vim scripts/usage-buddy-companion.py` and the `cp` in
+  `install.sh`, so a `stop` during an install truncated the file being
+  installed. Position does not separate them either — an editor puts the name
+  in argv[1] exactly as an interpreter does. The rule is who is running it:
+  argv[0] is the script, or argv[0] is a `python`/`pypy` with the script next.
+  `companion-ctl.sh` and `buddy_peers.is_companion` implement it against one
+  shared table, because two implementations that drift are a contract nobody
+  wrote.
+
+#### What it says
+
+`buddy_signals.py` reads the same two files the widget reads and returns every
+signal that fires, ordered by priority; the companion says the first one it is
+allowed to. Thirty categories, four lines each per language, and a test holds
+both directions — every key a signal can emit has lines, and every category
+except the two ambient fallbacks is reachable by some signal. That test exists
+because `twoRed` shipped with eight written lines and no code path that could
+select them, for exactly as long as nobody looked.
+
+Beyond the session states, it now reads quota (both windows, the ETA, credits,
+extra usage), service incidents, MCP servers waiting on auth, Opus quietly
+answering as Sonnet, error and latency drift, cost runway, the session eating
+the day's budget, the branch being committed to, the streak, and the hours this
+account actually works.
+
+#### Focus, escort, insistence
+
+| | what it does |
+|---|---|
+| **focus block** | It sits down and goes quiet for the duration. Only a session actually *asking* gets through — finishing is not an interruption. Started from the popup header or its own menu. |
+| **escort** | Locks onto one session instead of rotating between them. Rotation is right for watching and wrong for concentrating. |
+| **insistence** | While a session waits, it climbs: speak, walk to the window, wave, and at the top carry your pointer there. The ladder never regresses while the condition holds, and resets when the session moves on. |
+
+The pointer step is opt-in, and `off` is the one setting that also stops the
+companion running off with your mouse when you drag it around — that getaway
+answers being handled rather than a session waiting, so every other level keeps
+it. There is one function that moves the cursor, and the permission check is
+inside it: it used to sit at one of the two call sites, and the other one did
+not ask.
+
+Quiet hours come from `lifetime.peakHours` — this account's own hours rather
+than a guess about everyone's. With too little history to tell, it does not
+silence anything: "nobody works at any hour" and "I cannot say" are the same
+value unless you keep them apart, and the first one mutes the companion around
+the clock.
+
+#### What you can do to it
+
+Drag it anywhere; dropped near an edge it stays, dropped mid-screen it carries
+on. **Release it mid-motion and it flies**, bounces off the edges and lands.
+**Drop a folder on it** and it reads that repository — dropped URIs are treated
+as untrusted input, since what arrives becomes a process's working directory
+and the body of a prompt, and every refusal says which one it is rather than
+ignoring the drop in silence. Left-click to jump to the session that needs you.
+Right-click for focus, escort, "how is it going in…", and quit.
+
+Two mascots on one desktop (Clawd for Claude, Rex for Codex) now notice each
+other, greet once, and walk on. Discovery is a presence file per process rather
+than a look at the window tree: the X11 route works and costs 23.9 ms against
+0.26 ms, which is 72% of a frame spent in three fork/execs on the thread that
+draws, and the geometry it returns is the window's rather than the character's.
+
+#### Not verified, and why
+
+- **Not speaking while you type** needs a source of user idle time. This
+  desktop has none: XWayland does not carry `MIT-SCREEN-SAVER` and
+  `org.freedesktop.ScreenSaver.GetSessionIdleTime` answers `NotSupported`. The
+  probe returns `None` here, always, and `None` means "cannot tell" rather than
+  "just typed" — so on this machine the feature is a no-op rather than a
+  companion that never speaks.
+- **Notification inhibition during a focus block** holds a real cookie from
+  KDE's server and releases it. Whether notifications are actually suppressed
+  was not observed, because this machine has Do Not Disturb on: `Inhibited`
+  reads true before, during and after.
 
 ### Notification and focus
 
