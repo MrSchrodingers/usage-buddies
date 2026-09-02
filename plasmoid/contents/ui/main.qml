@@ -3280,14 +3280,15 @@ PlasmoidItem {
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 6
-                        PlasmaComponents3.Label {
-                            Layout.fillWidth: true
-                            Layout.minimumWidth: 0
-                            elide: Text.ElideRight
-                            text: root.brand.name
-                            font.pixelSize: Kirigami.Theme.defaultFont.pixelSize * root.fontScale * 1.5
-                            font.weight: Font.Bold
-                        }
+                        // The brand name is gone rather than elided. Letting it
+                        // shrink is what stopped it cutting the popup off, but
+                        // at the width the popup actually opens at there is not
+                        // enough room for it, so what it bought was "Cla..." —
+                        // three characters and an ellipsis where a word used to
+                        // be, which is worse than the word being absent. The
+                        // mascot beside it and the provider logo on the line
+                        // below already say which one this is, and the width it
+                        // was holding is what the header was short of.
                         Rectangle {
                             visible: root.hasData && root.usageData.dumbness !== undefined
                             radius: height / 2
