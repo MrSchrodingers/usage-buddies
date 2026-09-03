@@ -81,6 +81,7 @@ for f in "$HOME/.local/bin/usage-buddies-collector.py" \
          "$HOME/.local/bin/buddy_peers.py" \
          "$HOME/.local/bin/buddy_hoop.py" \
          "$HOME/.local/bin/buddy_idle.py" \
+         "$HOME/.local/bin/buddy_target.py" \
          "$HOME/.local/bin/buddy_voice.py" \
          "$HOME/.local/bin/repo_brief.py" \
          "$HOME/.local/bin/virtual_pointer.py" \

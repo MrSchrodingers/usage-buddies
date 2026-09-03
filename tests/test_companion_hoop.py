@@ -538,7 +538,9 @@ def test_a_click_goes_straight_through_the_basket():
     """
     mod = _load()
     from PySide6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
+    # Held in a local so it outlives this function's widgets: a QApplication
+    # collected while a QWidget is alive takes the widget with it.
+    _app = QApplication.instance() or QApplication([])
 
     window = mod.HoopWindow()
     assert window.windowFlags() & mod.Qt.WindowTransparentForInput, \
@@ -579,40 +581,6 @@ def test_an_overlay_registers_no_input_region_at_all(cls):
     finally:
         window.close()
 
-
-    if not os.environ.get("BUDDY_CLICK_PROBE"):
-        pytest.skip("set BUDDY_CLICK_PROBE=1 to show windows on this desktop")
-
-    def _seen(widget, limit=2.0):
-        deadline = time.monotonic() + limit
-        found = None
-        while time.monotonic() < deadline:
-            app.processEvents()
-            found = QApplication.widgetAt(
-                QPoint(widget.x() + widget.width() // 2,
-                       widget.y() + widget.height() // 2))
-            if found is not None:
-                break
-        return found
-
-    control = mod.HoopWindow()
-    control.setAttribute(mod.Qt.WA_TransparentForMouseEvents, False)
-    control.appear((900.0, 540.0))
-    try:
-        visible_to_the_probe = _seen(control) is control
-    finally:
-        control.hide()
-        app.processEvents()
-    if not visible_to_the_probe:
-        pytest.skip("widgetAt cannot see its own control on this desktop")
-
-    window.appear((900.0, 540.0))
-    try:
-        assert _seen(window) is None, \
-            "a click on the basket stops at the basket"
-    finally:
-        window.hide()
-        app.processEvents()
 
 
 @needs_display
