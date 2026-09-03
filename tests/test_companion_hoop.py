@@ -486,43 +486,99 @@ def test_the_window_is_hung_by_its_opening_and_not_by_its_corner():
 
 
 @needs_display
+def _x_input_rectangles(window_id):
+    """How many rectangles make up a mapped window's X input region.
+
+    Zero means the server delivers clicks straight through it. This reads the
+    property itself rather than inferring it: no pointer to warp, no
+    compositor stacking to resolve, and no click taken off the operator to
+    find out. Returns None when there is no X display to ask.
+    """
+    import ctypes
+    import ctypes.util
+    try:
+        X = ctypes.CDLL(ctypes.util.find_library("X11"))
+        E = ctypes.CDLL(ctypes.util.find_library("Xext"))
+    except (OSError, TypeError):
+        return None
+    X.XOpenDisplay.restype = ctypes.c_void_p
+    X.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    E.XShapeGetRectangles.restype = ctypes.c_void_p
+    E.XShapeGetRectangles.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int,
+                                      ctypes.POINTER(ctypes.c_int),
+                                      ctypes.POINTER(ctypes.c_int)]
+    display = X.XOpenDisplay(None)
+    if not display:
+        return None
+    count, order = ctypes.c_int(0), ctypes.c_int(0)
+    E.XShapeGetRectangles(display, int(window_id), 2,  # ShapeInput
+                          ctypes.byref(count), ctypes.byref(order))
+    return count.value
+
+
 def test_a_click_goes_straight_through_the_basket():
     """It is scenery. A frameless always-on-top window of this size that took
     the mouse would swallow every click that landed inside it, and what is
     under it is somebody's work.
 
-    Asserted on the attribute, and that is a decision rather than a shortcut.
-    WA_TransparentForMouseEvents is the mechanism — Qt turns it into an empty
-    X input region, and the click is then delivered to whatever is underneath
-    by the server rather than by us. MEASURED here, end to end, on a desktop
-    that was cooperating at the time: with the attribute set,
-    QApplication.widgetAt over the middle of the shown window answered None;
-    with it cleared, the same call answered the window itself.
+    This test used to assert WA_TransparentForMouseEvents and say in its own
+    docstring that Qt turns that into an empty X input region. It does not.
+    The attribute governs Qt's hit testing inside an application; on a
+    separate top level the X input region is left alone and the server goes on
+    delivering the click to whatever is on top. It shipped that way, and the
+    symptom was the operator reporting that he could no longer click the
+    mascot — only its speech bubble, which is the one part that grows outside
+    the overlay's rectangle. Measured then: one input rectangle, not zero.
 
-    That measurement is *not* what this test does by default, for two
-    reasons. The instrument is not dependable on a desktop the suite does not
-    own: measured again an hour later on the same machine, widgetAt could not
-    see a plain opaque QWidget anywhere on the screen, because it resolves
-    through the compositor's stacking and anything above our window turns a
-    true answer into None. And the positive control it needs is a window that
-    *does* eat clicks, put on somebody's live desktop for as long as the probe
-    takes — a suite that swallows a click of the operator's to prove that the
-    product does not is a bad trade. So it is opt-in, and it checks its own
-    control before it believes its answer.
+    Qt.WindowTransparentForInput is the flag that empties the region, and the
+    region is what this checks now. The old measurement used
+    QApplication.widgetAt, which resolves through the compositor's stacking
+    and had already been observed failing to see an opaque control window —
+    an instrument that cannot see the positive case cannot report its absence.
     """
     mod = _load()
     from PySide6.QtWidgets import QApplication
-    from PySide6.QtCore import QPoint
     app = QApplication.instance() or QApplication([])
 
     window = mod.HoopWindow()
+    assert window.windowFlags() & mod.Qt.WindowTransparentForInput, \
+        "the basket is in front of everything and the server will give it clicks"
     assert window.testAttribute(mod.Qt.WA_TransparentForMouseEvents), \
-        "the basket is in front of everything and it eats clicks"
+        "the attribute is not sufficient on its own but it is still wanted"
     # And there is no second way in. A handler on this class would be a mouse
-    # event acted on by scenery, whatever the attribute says.
+    # event acted on by scenery, whatever the flags say.
     handlers = sorted(name for name in vars(mod.HoopWindow)
                       if name.startswith(("mouse", "wheel", "tablet")))
     assert not handlers, f"the basket handles input: {handlers}"
+
+
+@pytest.mark.parametrize("cls", ["HoopWindow", "HaloWindow"])
+def test_an_overlay_registers_no_input_region_at_all(cls):
+    """The effect, not the mechanism, read off the server.
+
+    Skipped rather than passed when there is no X display: a check that
+    quietly succeeds where it cannot look is the reason the previous version
+    of this shipped a false claim.
+    """
+    mod = _load()
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    if app.platformName() != "xcb":
+        pytest.skip("no X display: the input region cannot be read here")
+
+    window = getattr(mod, cls)()
+    window.show()
+    app.processEvents()
+    try:
+        rectangles = _x_input_rectangles(int(window.winId()))
+        if rectangles is None:
+            pytest.skip("libX11/libXext unavailable")
+        assert rectangles == 0, (
+            "%s registered %d input rectangle(s); the server will deliver "
+            "clicks to it instead of to what is underneath" % (cls, rectangles))
+    finally:
+        window.close()
+
 
     if not os.environ.get("BUDDY_CLICK_PROBE"):
         pytest.skip("set BUDDY_CLICK_PROBE=1 to show windows on this desktop")

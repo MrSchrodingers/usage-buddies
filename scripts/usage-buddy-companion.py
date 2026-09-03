@@ -1059,9 +1059,19 @@ class HoopWindow(QWidget):
         # The character's flags, for the character's reasons: no frame, above
         # the windows it is drawn over, out of the taskbar, and never taking
         # the focus away from whatever is being typed into.
+        # WindowTransparentForInput, and not only the attribute below it.
+        # WA_TransparentForMouseEvents governs Qt's own hit testing inside an
+        # application; on a separate top level it leaves the X input region
+        # alone, and the compositor goes on delivering the click to whatever
+        # window is on top. Measured with XShapeGetRectangles: with the
+        # attribute and without this flag, an overlay reports one input
+        # rectangle and swallows everything under it — which is how a 116x90
+        # effects layer sitting over a 56x66 character made the character
+        # unclickable while its speech bubble, which grows outside that
+        # rectangle, still answered. The flag is what empties the region.
         self.setWindowFlags(
             Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
-            | Qt.WindowDoesNotAcceptFocus)
+            | Qt.WindowDoesNotAcceptFocus | Qt.WindowTransparentForInput)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
@@ -1279,9 +1289,19 @@ class HaloWindow(QWidget):
 
     def __init__(self, brand="claude", scale=None):
         super().__init__(None)
+        # WindowTransparentForInput, and not only the attribute below it.
+        # WA_TransparentForMouseEvents governs Qt's own hit testing inside an
+        # application; on a separate top level it leaves the X input region
+        # alone, and the compositor goes on delivering the click to whatever
+        # window is on top. Measured with XShapeGetRectangles: with the
+        # attribute and without this flag, an overlay reports one input
+        # rectangle and swallows everything under it — which is how a 116x90
+        # effects layer sitting over a 56x66 character made the character
+        # unclickable while its speech bubble, which grows outside that
+        # rectangle, still answered. The flag is what empties the region.
         self.setWindowFlags(
             Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
-            | Qt.WindowDoesNotAcceptFocus)
+            | Qt.WindowDoesNotAcceptFocus | Qt.WindowTransparentForInput)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
