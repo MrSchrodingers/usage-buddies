@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import random
 import subprocess
@@ -56,6 +57,7 @@ import buddy_focus as focus_engine                                              
 import buddy_actions as actions                                                  # noqa: E402
 import buddy_peers as peers                                                      # noqa: E402
 import buddy_hoop                                                                # noqa: E402
+import buddy_target as target_game                                            # noqa: E402
 import buddy_idle                                                                # noqa: E402
 from buddy_lines import LINES                                                    # noqa: E402
 import virtual_pointer                                                           # noqa: E402
@@ -201,6 +203,16 @@ def clip_or_fallback(name, default="idle"):
 # length as the insistence gesture: long enough to be read next to the sentence
 # that caused it, short enough that the character is not still panicking while
 # the bubble is halfway through its sixteen seconds.
+# Four force bands, three landings. Written out rather than zipped, because a
+# fourth landing or a fifth band would otherwise pair up by position and be
+# wrong without failing.
+LANDING_FOR_BAND = {
+    "toss": "land_soft",
+    "throw": "land",
+    "hurl": "land_hard",
+    "launch": "land_hard",
+}
+
 MOOD_SECONDS = 4.0
 
 # Which lines are delivered in a panic, taken off buddy_signals' own priority
@@ -2319,7 +2331,20 @@ class Companion(QWidget):
         if abs(step.vx) > 1.0:
             self.facing = 1 if step.vx > 0 else -1
         if step.bounced:
-            self._play_once("land")
+            # Chosen from the speed of *this* impact rather than from the
+            # throw that began it: a hard fling that has already spent itself
+            # on two walls arrives gently, and raising its original cloud
+            # would say the opposite of what happened. The bands come from
+            # buddy_target so the same arithmetic decides the dust and the
+            # word for the throw; there are four of them and three landings,
+            # mapped by name because mapping by index would silently pair the
+            # wrong ones the moment either table grows.
+            # The screen height matters to the top band, so it is the one the
+            # character is actually on rather than the module's default.
+            screen = self._screen_at(self.pos_x, self.pos_y)
+            band = target_game.force_band(math.hypot(step.vx, step.vy),
+                                          BUDDY_PX, float(screen.height()))
+            self._play_once(LANDING_FOR_BAND.get(band, "land"))
         self._place()
         # Judged step by step and against the travel rather than against this
         # frame's position: a throw covers up to 120 px in one integration
@@ -3059,9 +3084,12 @@ class Companion(QWidget):
                 self.drag_complained = True
                 self._say(self._t("stopThat"))
         elif self.flying:
-            # In the air under its own momentum. The dangle is the pose being
-            # carried uses, for the same reason: nothing is under its feet.
-            clip = "held"
+            # In the air under its own momentum, and tumbling rather than
+            # dangling. Carried and thrown are not the same thing to look at:
+            # one hangs from a hand and the other is going somewhere on its
+            # own. The trail follows from this for free, because the particle
+            # effect is keyed by the clip that is playing.
+            clip = "tumble"
         elif now < self.alert_until:
             clip = "alert"
         elif self.insist_clip and now < self.insist_until:

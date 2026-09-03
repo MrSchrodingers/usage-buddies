@@ -334,6 +334,24 @@ CLAUDE_LEGS = {
         "............................",
         "............................",
     ],
+    # Thrown, and spinning. Also off the ground, and drawn its own way rather
+    # than borrowing one of the two bands above, for a reason that only shows
+    # up once the frame is turned on its side.
+    #
+    # This band is the only one the quarter turns are applied to, and a turn
+    # makes a column of the drawing into a row of it. `tuck` steps its feet
+    # down and outward by a row, which upright is a foot with a toe on it and
+    # sideways is a pixel with a hole between it and the body. `celebrate`
+    # spreads four separate two-pixel nubs along one row, which sideways is a
+    # row of teeth. So the feet here are two solid blocks that taper rather
+    # than step: every column of them is unbroken from the body down, which is
+    # what keeps the sideways frames from reading as a creature coming apart.
+    "tumble": [
+        "......oooooooooooooooo......",
+        "........ssss....ssss........",
+        ".........oo......oo.........",
+        "............................",
+    ],
     # Typing: the two front feet tap in alternation and nothing else moves.
     # The whole gesture is one row of two pixels changing, which is the point —
     # a part moving on its own schedule reads better than a body redrawn.
@@ -619,6 +637,15 @@ CODEX_LEGS = {
         "......oooooooooooooooo......",
         "..........aa....aa..........",
         "............................",
+        "............................",
+    ],
+    # Thrown, and spinning. Rex's talons normally step outward by a row as they
+    # come down, and that diagonal is a hole once the frame is turned onto its
+    # side — see the note on Clawd's band. Here they go straight down instead.
+    "tumble": [
+        "......oooooooooooooooo......",
+        ".........aa......aa.........",
+        ".........aa......aa.........",
         "............................",
     ],
     "type0": [
@@ -970,6 +997,241 @@ def build_hoop_frames():
     return {"hoop_" + name: build_hoop(name) for name in HOOP_NETS}
 
 
+# ── the target ─────────────────────────────────────────────────────────────
+# The other thing to throw the character at. A basket answers yes or no; a
+# target answers how close, which is the whole reason for concentric rings —
+# hitting the middle has to be worth more than clipping the edge, and the
+# drawing has to say so without a legend.
+#
+# Its own canvas and its own palette, on the hoop's precedent and for the hoop's
+# reasons: 72 by 70 source pixels at the same integer SCALE as everything else,
+# which is 144 by 140 on screen. The 28-square sweep is not asked to reach it.
+#
+# Two things this owes to the hoop's first version, which was drawn 64 by 48
+# with a 44-pixel opening and passed every test there was while promising a
+# game nobody could win:
+#
+#   It is drawn at a size the character fits inside with room to spare. The
+#   outer ring is 56 source pixels across, which is 112 on screen against a
+#   character 56 wide — the whole creature, twice over. There is a test for
+#   that ratio, because the number that went wrong last time was a ratio.
+#
+#   The geometry is declared once, here, in source pixels, and the drawing is
+#   generated from it. HOOP_RIM is four numbers *beside* a hand-drawn ring and
+#   there is a test that walks the pixels to prove they still agree; rings are
+#   regular enough that the drawing can simply be built out of the numbers
+#   instead, and then there is nothing left to diverge. What a reviewer reads
+#   in a diff is the radius that moved, which is more legible than the seventy
+#   rows of ASCII it would have moved.
+#
+# Whoever scores a throw reads TARGET_RINGS and TARGET_CENTRE and converts them
+# with SCALE, exactly as buddy_hoop.rim_width() converts HOOP_RIM. Writing any
+# of these numbers down a second time is two truths that diverge the first time
+# a ring moves by a pixel.
+#
+# The legend is this palette's, not the body's or the hoop's:
+#   .  transparent   o  outline, and the line between one ring and the next
+#   q  bullseye      y  ring, red        l  ring, bone
+#   h  the flash: the bullseye lit, and nothing else in the file is this colour
+
+TARGET_W, TARGET_H = 72, 70
+
+# Where the rings are centred on this canvas, in source pixels, as (col, row).
+# A pixel at column c covers [c, c+1), so the centre falls on the boundary
+# between columns 35 and 36 and the drawing is symmetric about it.
+#
+# It is not the middle of the canvas and it must not be assumed to be: the
+# drawing hangs from a hook, so there are twelve rows above the disc and two
+# below it. Placing the target by the middle of its image puts the bullseye
+# five rows off whatever it was aimed at, which is exactly the kind of wrong
+# that looks like bad luck rather than like a bug.
+TARGET_CENTRE = (36, 40)
+
+# The rings, innermost first: (radius in source pixels, the colour inside it).
+#
+# The ring a point falls in is the first one whose radius is greater than the
+# point's distance from TARGET_CENTRE; a point at or past the last radius has
+# missed the target altogether. So scoring is `for i, (r, _) in
+# enumerate(TARGET_RINGS)`, the number of rings is the length of this table,
+# and adding a fifth ring needs no change anywhere else.
+#
+# The bullseye is wider than the rings around it — 10 against 6 — and that is a
+# drawing decision rather than a rounding. At SCALE 2 a ring six source pixels
+# wide is twelve on screen and reads as a band; a bullseye of the same width
+# would be a twelve-pixel dot, which reads as a dent in the middle rather than
+# as the thing to aim at. The gold has to be unmistakable from across a desktop
+# or the target does not say where its middle is, and saying that is its job.
+#
+# The other side of the throw is free to be more generous than these radii —
+# the hoop's is, and a target that only counts on a pixel-perfect line through
+# the middle is an exam rather than a joke. But being generous about the *bull*
+# specifically undoes the rings: a middle that cannot be missed is not a middle,
+# it is the whole target with extra colours in it.
+TARGET_RINGS = ((10, "q"), (16, "y"), (22, "l"), (28, "y"))
+
+# Warm and saturated, and never black. `h` exists only in the frames where the
+# bullseye is lit; it is one step past the bone of the third ring, so the flash
+# reads as light rather than as the middle turning into another ring.
+TARGET_PALETTE = {
+    "o": "#43291B", "q": "#F5C242", "y": "#D8452B",
+    "l": "#F4E7D6", "h": "#FFF6DE",
+}
+
+# The target hangs. Nothing in this game stands on anything — buddy_hoop puts
+# the basket at a random point on a screen and the same will be true here — so
+# a drawing with feet would be a drawing standing in mid-air. A hook and a cord
+# say the thing is hung there, which is what it is, and they give the reaction
+# below something to swing about.
+#
+# Its own little band rather than more generated geometry: a ring four pixels
+# across has no formula worth writing, and it is the one part of this drawing a
+# reviewer would want to see as pixels.
+TARGET_HOOK = [
+    ".oo.",
+    "o..o",
+    "o..o",
+    ".oo.",
+]
+TARGET_HOOK_AT = (0, 34)          # (row, column) of the band's top-left
+TARGET_CORD_COLS = (35, 36)       # the cord, before it swings
+TARGET_CORD_TOP = 4               # the row it leaves the hook on
+
+# What a throw is answered with. Named states rather than five drawings, in the
+# shape HOOP_NETS uses: `swing` is how many source pixels the disc has been
+# knocked sideways, and `lit` is whether the bullseye is flashing.
+#
+# The swing damps — five columns out, three back, then two — because a swing
+# that returns to where it started at the same amplitude is a pendulum in a
+# vacuum, and what is being drawn is a disc on a cord that has just been hit by
+# a small creature. The flash is only on the first two: it is the moment of the
+# hit, and a light that stays on is a lamp rather than an impact.
+#
+# The swing is a whole-pixel translation of the disc, not a rotation of it.
+# Rule one at the top of this file applies to circles as much as to creatures:
+# there is no correct rotation of a pixel grid below ninety degrees, and a
+# rocked ellipse would resample every edge in the drawing. The cord bends with
+# it by a whole pixel per row, which is a shear, which is exact.
+TARGET_STATES = {
+    "rest":   (0, False),
+    "lit":    (0, True),
+    "left":   (-5, True),
+    "right":  (3, False),
+    "settle": (-2, False),
+}
+
+# The state nothing is happening in. Named here rather than in whoever paints
+# it: "which frame is the still one" is a fact about the drawing.
+TARGET_RESTING = "target_rest"
+
+# Same shape as HOOP_CLIPS and a table of its own, for the same reason: CLIPS
+# is what the character's Animator resolves names against, and a target frame
+# listed there is a name that resolves to nothing on the character's sheet.
+#
+# Non-uniform, and the shape of it is the point. The flash is the shortest
+# frame in the clip because an impact is instantaneous; the first swing out is
+# the longest of the moving frames because that is the one that carries the
+# force; and the hold at the end is what says the target has stopped mattering
+# and gone back to waiting.
+TARGET_CLIPS = {
+    "hit": {"loop": False, "frames": [("target_lit", 60), ("target_left", 120),
+                                      ("target_right", 95), ("target_settle", 80),
+                                      ("target_rest", 320)]},
+}
+
+
+def target_disc(lit=False):
+    """The rings alone, as a square grid the width of the outermost one.
+
+    Built from TARGET_RINGS rather than drawn, so the radii and the pixels
+    cannot disagree. The comparison is in whole numbers: the distance from the
+    centre to a pixel's own centre is a half-integer, so both sides are doubled
+    and squared, and no float and no square root is involved anywhere. That is
+    not an optimisation — a circle drawn with rounding is a circle whose edge
+    moves when the arithmetic library does, and this one cannot.
+
+    `lit` swaps the bullseye for the flash and its outline for the gold, which
+    is the whole of the reaction's first frame. It is a change of two colours
+    and not of any geometry: a bullseye that also grew would be a ring whose
+    radius depends on the animation, and the radius is what scores.
+    """
+    outer = TARGET_RINGS[-1][0]
+    n = outer * 2
+    grid = [["."] * n for _ in range(n)]
+    for r in range(n):
+        for c in range(n):
+            # Twice the offset from the centre, so the half-pixel is an
+            # integer: a pixel centre is at c + 0.5 and the disc's centre is
+            # at n / 2, and 2 * (c + 0.5) - n is exact for every c.
+            dx, dy = 2 * c + 1 - n, 2 * r + 1 - n
+            d2 = dx * dx + dy * dy
+            for i, (radius, colour) in enumerate(TARGET_RINGS):
+                if d2 >= (2 * radius) ** 2:
+                    continue
+                # The last pixel of a ring is the line that separates it from
+                # the next one out. Drawn without it, four bands of two hues
+                # read as stripes; with it they read as scoring zones, which is
+                # what they are. The line belongs to the ring it is the edge
+                # of, so a point on it scores that ring.
+                edge = d2 >= (2 * (radius - 1)) ** 2
+                if i == 0:
+                    grid[r][c] = ("q" if lit else "o") if edge else \
+                        ("h" if lit else colour)
+                else:
+                    grid[r][c] = "o" if edge else colour
+                break
+    return ["".join(row) for row in grid]
+
+
+def build_target(state="rest"):
+    """The hook, the cord and the disc, as one TARGET_W by TARGET_H grid."""
+    swing, lit = TARGET_STATES[state]
+    grid = [["."] * TARGET_W for _ in range(TARGET_H)]
+
+    disc = target_disc(lit)
+    n = len(disc)
+    top = TARGET_CENTRE[1] - n // 2
+    left = TARGET_CENTRE[0] - n // 2 + swing
+    # Raised rather than clipped, and rather than allowed to happen. A negative
+    # column into a list of rows is not an error in Python, it is the far side
+    # of the row: a swing four pixels too wide would draw the left edge of the
+    # target down its own right-hand side and nothing at all would say so. That
+    # is the same silence as the hoop rendered as a 28-square corner of itself,
+    # and it is why the canvas is eight columns wider than the disc.
+    if not (0 <= left and left + n <= TARGET_W
+            and 0 <= top and top + n <= TARGET_H):
+        raise ValueError(
+            f"state {state!r} swings the disc off the "
+            f"{TARGET_W}x{TARGET_H} canvas")
+    for r, row in enumerate(disc):
+        for c, ch in enumerate(row):
+            if ch != ".":
+                grid[top + r][left + c] = ch
+
+    hook_row, hook_col = TARGET_HOOK_AT
+    for r, row in enumerate(TARGET_HOOK):
+        for c, ch in enumerate(row):
+            if ch != ".":
+                grid[hook_row + r][hook_col + c] = ch
+
+    # The cord, from the hook down to where the disc now is. One whole-pixel
+    # step per row and never a fraction of one, and it goes on *behind* the
+    # disc — a cord painted over the rings is a dark line across the target,
+    # which is the same mistake the net would make over the hoop's ring.
+    span = max(1, top - TARGET_CORD_TOP)
+    for i, r in enumerate(range(TARGET_CORD_TOP, top + 2)):
+        dx = round(swing * min(1.0, i / span))
+        for c in TARGET_CORD_COLS:
+            if grid[r][c + dx] == ".":
+                grid[r][c + dx] = "o"
+    return ["".join(row) for row in grid]
+
+
+def build_target_frames():
+    """Every target frame as an ASCII grid, keyed by the names TARGET_CLIPS
+    uses. The `target_` prefix is not decoration; see build_hoop_frames."""
+    return {"target_" + name: build_target(name) for name in TARGET_STATES}
+
+
 # ── overlays: the drawings that are not the creature ───────────────────────
 # Three families below are not the character and do not belong on its canvas:
 # the particles it throws off, the props it is handed, and the mood band over
@@ -1125,6 +1387,23 @@ PARTICLES = {
         ".ccc",
         "eee.",
     ],
+    # The last of a trail, and the only thing the throw needed that the run did
+    # not have. The two above are the run's, and the throw borrows them rather
+    # than getting a diagonal pair of its own — see the note over the `tumble`
+    # effect for why a diagonal is the one shape this mechanism cannot draw.
+    #
+    # What a flight does need and a run does not is somewhere to fade to. The
+    # run's streaks go long, short, gone, and a mark that is four pixels wide
+    # on one frame and absent on the next pops out rather than fading. Three
+    # sizes is the shortest ramp that reads as a tail thinning out.
+    #
+    # Short enough that its slant says nothing: mirrored it is still a stub,
+    # which is what makes it safe on a mote that is placed on both sides of the
+    # character without ever being flipped.
+    "streak_tiny": [
+        ".cc",
+        "ee.",
+    ],
 }
 
 # Where the motes of an effect go, and in what order.
@@ -1188,6 +1467,29 @@ PARTICLE_EFFECTS = {
         ("feet", [("dust_puff", 9, -3), ("dust_wide", 11, -3), ("dust_thin", 14, -2)]),
         ("feet", [("dust_puff", -14, -3), ("dust_wide", -16, -3), ("dust_thin", -19, -2)]),
     ],
+    # The same landing at two other speeds. A throw arrives at anything from a
+    # nudge to the full ceiling of the arc, and one set of puffs for all of it
+    # is the drawing saying the same thing about a drop and a crash.
+    #
+    # What changes is how far the dust goes and how much of it there is, and
+    # nothing else: all three stay on the floor row. Dust that rises is smoke,
+    # and something that lands does not smoke however hard it lands — the
+    # temptation to throw a hard landing's dust upward is exactly the note over
+    # `land` above, and it is wrong at every speed.
+    #
+    # Which of the three plays is not decided here. That is a reading of a
+    # velocity, and a velocity is a clock's; see LANDING_BY_FORCE, which is the
+    # three of them in order of the force they are drawn for.
+    "land_soft": [
+        ("feet", [("dust_thin", 8, -2), ("dust_thin", 11, -2)]),
+        ("feet", [("dust_thin", -14, -2), ("dust_thin", -17, -2)]),
+    ],
+    "land_hard": [
+        ("feet", [("dust_puff", 7, -3), ("dust_wide", 12, -3), ("dust_thin", 18, -2)]),
+        ("feet", [("dust_puff", -13, -3), ("dust_wide", -18, -3), ("dust_thin", -24, -2)]),
+        ("feet", [("dust_wide", 4, -3), ("dust_thin", 8, -2), ("dust_thin", 12, -2)]),
+        ("feet", [("dust_wide", -10, -3), ("dust_thin", -14, -2), ("dust_thin", -18, -2)]),
+    ],
     # Running off with the pointer at 340 px/s, which is four times the walk and
     # looked exactly like the walk. The streaks are behind the character and
     # nowhere else — a streak in front of a runner is a runner going backwards.
@@ -1195,6 +1497,32 @@ PARTICLE_EFFECTS = {
         ("left", [("streak_long", -8, 6), ("streak_short", -13, 6)]),
         ("left", [("streak_long", -9, 10), ("streak_short", -15, 10)]),
         ("left", [("streak_short", -7, 14), ("streak_short", -12, 14)]),
+    ],
+    # In the air, thrown. The run's streaks, laid along a rising line instead of
+    # a level one, and shrinking as they go.
+    #
+    # The layout is the arc and the marks are not, and that division is forced
+    # rather than chosen. A throw descends, so the path behind the character
+    # goes back and *up*, and the honest mark for it is a diagonal. A diagonal
+    # cannot be drawn here: facing is a reflected column and never a mirrored
+    # drawing — a mirrored Z is a different letter, and `reflect` and
+    # build_effect_sheet both exist to make that impossible — so a stroke drawn
+    # leaning one way for a throw to the right stays leaning that way for a
+    # throw to the left, where it is the wrong diagonal and reads as the trail
+    # having come from in front. A level mark has no wrong direction to be in.
+    # So the slope is carried by where the marks are, which reflects correctly,
+    # and never by what they are.
+    #
+    # Three trails at three heights, because one line of marks behind a body
+    # this wide reads as a single wire it is threaded on. Each fades long,
+    # short, tiny rather than long, short, gone.
+    "tumble": [
+        ("left", [("streak_long", -8, 3), ("streak_short", -14, 0),
+                  ("streak_tiny", -18, -3)]),
+        ("left", [("streak_long", -6, 9), ("streak_short", -12, 5),
+                  ("streak_tiny", -17, 2)]),
+        ("left", [("streak_short", -9, 15), ("streak_tiny", -14, 11),
+                  ("streak_tiny", -18, 8)]),
     ],
 }
 
@@ -1526,6 +1854,42 @@ def mirror(rows):
     return ["".join(reversed(row)) for row in rows]
 
 
+def quarter_turn(rows, turns=1):
+    """Turn a square grid by whole right angles, clockwise.
+
+    The one rotation rule 1 at the top of this file allows, and it allows it
+    for a reason that is not a convention: at ninety degrees every source pixel
+    lands on exactly one destination pixel and no destination pixel has to ask
+    two of them what colour it is. At five degrees, or forty-five, most of them
+    do, and the answer is an average — which is resampling, which is the thing
+    the whole file is arranged around not doing.
+
+    It is what the tumble is made of, and it is also why the tumble has four
+    frames and not eight. The poses between the quarter turns have no exact
+    version: a shear leans a body but does not turn it, and shearing a finished
+    frame pulls the eye boxes apart into two offset halves, which is the failure
+    `sway_shift` exists to avoid on a face. Forty-five degrees would have to be
+    drawn by hand, once per brand.
+
+    Square grids only, and it raises rather than guessing. On a 28 by 28 the
+    result is the same square and a turned frame goes on the character's own
+    sheet at the character's own size; on anything else the width and the height
+    swap, and the caller is handed a picture that no longer fits the window it
+    asked for — the hoop's crop bug, arriving from the other direction.
+    """
+    turns %= 4
+    if turns == 0:
+        return list(rows)
+    size = len(rows)
+    if any(len(row) != size for row in rows):
+        raise ValueError("a quarter turn needs a square grid")
+    out = list(rows)
+    for _ in range(turns):
+        out = ["".join(out[size - 1 - r][c] for r in range(size))
+               for c in range(size)]
+    return out
+
+
 def _eye_bands(eyes):
     """The left eye and the right eye, out of either one band or a pair.
 
@@ -1626,6 +1990,27 @@ CLIPS = {
     "land":  {"loop": False, "frames": [("squash_shut", 70), ("squash_happy", 90),
                                         ("stand_happy", 110), ("stretch_happy", 90),
                                         ("stand_open", 130)]},
+    # The same landing at the two speeds `land` is wrong for. A throw arrives
+    # at anything between a nudge and the ceiling of the arc, and one animation
+    # for all of it says the same thing about a drop and a crash.
+    #
+    # The difference is depth and dwell, not extra poses. `land_soft` never
+    # reaches the deep squash and never rebounds: it touches, it settles, it is
+    # over in a third of a second. `land_hard` holds the squash more than twice
+    # as long as `land` does — a compression that springs straight back is a
+    # ball, and a body that hits hard stays flat for a beat — then overshoots
+    # through the stretch and spends a moment not knowing which way is up.
+    #
+    # Which one plays is not decided here; see LANDING_BY_FORCE.
+    "land_soft": {"loop": False, "frames": [("squash_happy", 60),
+                                            ("stand_happy", 120),
+                                            ("stand_open", 190)]},
+    "land_hard": {"loop": False, "frames": [("squash_shut", 150),
+                                            ("squash_happy", 80),
+                                            ("stretch_wide", 90),
+                                            ("stand_wide", 130),
+                                            ("panic_dizzy", 210),
+                                            ("stand_open", 160)]},
     # Sat down where it stopped. It looks around from there rather than holding
     # one pose: something that has not moved for four seconds is a statue, and
     # it is a statue in whichever pose you left it in.
@@ -1677,7 +2062,45 @@ CLIPS = {
                                         ("stand_open", 150)]},
     "type":  {"loop": True,  "frames": [("type0_open", 120), ("type1_open", 90),
                                         ("type0_half", 140), ("type1_open", 100)]},
+    # In the air, thrown. Four frames, and the count is the whole design.
+    #
+    # A turn on a pixel grid exists at ninety degrees and nowhere else — see
+    # `quarter_turn` — so these four are every orientation that can be had
+    # exactly from one drawing. The eight-frame version was built and looked at:
+    # the poses in between have to be a shear, a shear of a finished frame
+    # splits the eye boxes into two offset halves, and a shear applied at
+    # compose time is limited by the grid to about eleven degrees, which reads
+    # as the creature hesitating before each quarter turn rather than as a
+    # smoother spin.
+    #
+    # Four is not a tremor, which is the thing to avoid. A tremor is a return —
+    # two nearby poses alternating — and nothing here returns: the cycle goes
+    # one way round, no two of its frames are alike, and it covers the whole
+    # turn. What four costs is that a single frame in isolation does not say
+    # which way round it is going; what says that is the trail, which is only
+    # ever behind.
+    #
+    # Not a metronome either, and not only because a table of equal numbers is
+    # forbidden upstairs. Upright and upside down are the two the eye can read
+    # at 28 pixels; edge on, the creature is a bar with two eyes in it. Holding
+    # the readable poses a fifth longer is the oldest rule there is about which
+    # frames of a cycle deserve the time.
+    "tumble": {"loop": True, "frames": [("tumble_dizzy", 90),
+                                        ("tumble_dizzy_90", 70),
+                                        ("tumble_dizzy_180", 90),
+                                        ("tumble_dizzy_270", 70)]},
 }
+
+# The three landings, gentlest first. The art knows which of its own drawings
+# is the gentle one and which is the crash; what it does not know is where one
+# speed stops and the next begins, because that is a reading of a velocity and
+# velocities belong to the clock the companion owns.
+#
+# So this is the ordering and nothing else: index into it with however the
+# force is bucketed. A companion that instead spelled the three names out at
+# the call site would keep working and would silently ignore a fourth, which is
+# the same defect as a prop nothing triggers.
+LANDING_BY_FORCE = ("land_soft", "land", "land_hard")
 
 # <pose>_<eyes>[_up]: pose picks the body and the legs, eyes pick the face,
 # _up raises the whole character by one row.
@@ -1752,6 +2175,16 @@ FRAME_SPECS = {
     "type0_open":     ("type0", "open", 0),
     "type1_open":     ("type1", "open", 0),
     "type0_half":     ("type0", "half", 0),
+    # The upright frame of the tumble. The other three are turns of this one and
+    # are made in build_frames, but this one goes through the table so that it
+    # gets every check the table's frames get — the floor test, the clipping
+    # tests, the hollow sweep — rather than being composed off to the side. It
+    # is `stand_roll`'s argument, one pose along.
+    #
+    # Crossed eyes rather than wide ones. Wide is the moment of being let go;
+    # this clip loops for the whole flight, and a creature that has been
+    # spinning for a second is past alarm.
+    "tumble_dizzy":   ("tumble", "dizzy", 0),
 }
 
 _BODIES = {
@@ -1998,6 +2431,9 @@ OFF_GROUND_POSES = {
             "empty, so the curl clears the floor by a row",
     "peek": "cut off above the legs; there are no feet in the frame at all",
     "celebrate": "in the air, which is the entire pose",
+    "tumble": "in the air because somebody threw it; the feet are pulled in "
+              "and the band's last row is empty, so it clears the floor by a "
+              "row in the frame the three turns are made from",
 }
 
 
@@ -2061,6 +2497,16 @@ def build_frames(brand):
     out["nod_down"] = _shift(out["stand_open"], 1)
     out["shake_left"] = sway(out["stand_roll"], -2)
     out["shake_right"] = sway(out["stand_roll"], 2)
+
+    # Thrown: the same drawing seen from four sides. Turns of one frame rather
+    # than four drawings, for the reason the swing frames are shears — a second
+    # drawing of a body is a second thing to keep in step with the first — and
+    # a quarter turn is the one rotation that keeps every edge as hard as it
+    # was. Nothing here can lose a pixel: a turn of a square grid is a
+    # permutation of it, which is a thing a test can state and does.
+    for turns in (1, 2, 3):
+        out[f"tumble_dizzy_{turns * 90}"] = \
+            quarter_turn(out["tumble_dizzy"], turns)
     return out
 
 
@@ -2378,6 +2824,28 @@ def build_hoop_sheet(scale=SCALE):
     """
     return {name: to_qimage(grid, HOOP_PALETTE, scale)
             for name, grid in build_hoop_frames().items()}
+
+
+def build_target_sheet(scale=SCALE):
+    """The target's frames as QImages, keyed as build_target_frames names them.
+
+    Its own sheet, on build_hoop_sheet's argument and for the same three
+    reasons: build_sheet takes a brand and the target has none, every image it
+    hands back is the character's 28-square and this one is 64 by 70, and it
+    paints with the brand palette, in which `q`, `y` and `l` do not exist while
+    `h` exists and means a body highlight. The first two go wrong in silence
+    and the third comes out in the wrong colour.
+
+    No `:flip` keys. Concentric rings are their own mirror.
+
+    `scale` is here rather than fixed because nothing in the drawing assumes 2.
+    Whatever is passed here is also what TARGET_RINGS and TARGET_CENTRE have to
+    be converted with by whoever scores a throw: drawn at one scale and judged
+    at another, the bullseye is one size to look at and another size to hit,
+    and the only symptom is that the game feels arbitrary.
+    """
+    return {name: to_qimage(grid, TARGET_PALETTE, scale)
+            for name, grid in build_target_frames().items()}
 
 
 def build_effect_sheet(scale=SCALE):

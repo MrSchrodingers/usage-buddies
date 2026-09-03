@@ -50,6 +50,10 @@ def _ink(grid):
 # against a 96-wide one and it fails on the first row. It has its own tests
 # below, and the exclusion has its own test too — one that fails if it grew
 # wide enough to stop the sweep watching the bodies.
+#
+# TARGET_* on the same precedent, and there is only one of them: the rings are
+# built from TARGET_RINGS rather than typed out, so the target's one literal
+# grid is the four-row hook it hangs from.
 def _swept_grid_names():
     """The module-level grids the 28-square sweep covers.
 
@@ -60,6 +64,7 @@ def _swept_grid_names():
     return [n for n in dir(sprites)
             if n.isupper() and not n.startswith("CAR_")
             and not n.startswith("HOOP_")
+            and not n.startswith("TARGET_")
             and not n.startswith("SHADOW")
             and not n.startswith("PROP_")
             and isinstance(getattr(sprites, n), list)
@@ -575,6 +580,253 @@ def test_the_score_frames_move_the_net_and_leave_the_board_alone():
         f"two hoop frames are the same drawing: {sorted(nets)}"
 
 
+# ── the target ─────────────────────────────────────────────────────────────
+# A third canvas. Both of the hoop's failure modes are live here — the
+# 28-square checks reaching a 72-wide grid, and a 72-wide grid escaping every
+# check there is because it was excluded from all of them — and one the hoop
+# does not have.
+#
+# The hoop's opening is four numbers written beside a hand-drawn ring, and the
+# test below it walks the pixels to prove the two still agree. The target's
+# rings are *built from* their numbers, so that particular disagreement cannot
+# happen and proving it does not is not worth a test. What is worth one is
+# everything the numbers do not say by themselves: that the disc ends up where
+# TARGET_CENTRE claims it is, that a target with rings is a target where the
+# middle is smaller and different, and that the drawing is big enough to be
+# worth throwing a 56-pixel creature at. The hoop was wrong about exactly that
+# last one for sixty-six passing tests.
+
+TARGET_LEGAL = set(".oqylh")
+
+
+def _ring_at(col, row):
+    """(index, radius, colour) of the ring a canvas pixel falls in, or None.
+
+    Derived from TARGET_CENTRE and TARGET_RINGS in the *canvas's* coordinates,
+    which is the half the drawing code does not work in: it builds the disc
+    about its own middle and then pastes it. So this is not the implementation
+    written twice — it is the claim TARGET_CENTRE makes, checked against where
+    the paste actually put the rings.
+
+    Doubled and squared so it is integers throughout, for the reason the
+    drawing gives: a boundary decided by a rounded square root moves when the
+    arithmetic does.
+    """
+    dx = 2 * (col - sprites.TARGET_CENTRE[0]) + 1
+    dy = 2 * (row - sprites.TARGET_CENTRE[1]) + 1
+    d2 = dx * dx + dy * dy
+    for i, (radius, colour) in enumerate(sprites.TARGET_RINGS):
+        if d2 < (2 * radius) ** 2:
+            return i, radius, ("o" if d2 >= (2 * (radius - 1)) ** 2 else colour)
+    return None
+
+
+def test_the_target_grids_are_rectangles_of_their_own_colours():
+    """A row one character short shifts every pixel after it by one, and on a
+    72-wide grid that is the whole disc sliding off its cord.
+
+    The alphabet is checked against TARGET_PALETTE and not against the body's
+    or the hoop's: `h` is the flash here, a body highlight there and a rim
+    highlight in the third, and a character with no entry in the palette it is
+    painted with raises at paint time, on a machine with a display, which is
+    not where the tests run.
+    """
+    assert set(sprites.TARGET_PALETTE) <= TARGET_LEGAL, "the palette grew a letter"
+    for name, grid in sprites.build_target_frames().items():
+        assert len(grid) == sprites.TARGET_H, f"{name}: {len(grid)} rows"
+        for i, row in enumerate(grid):
+            assert len(row) == sprites.TARGET_W, \
+                f"{name} row {i}: {len(row)} columns, not {sprites.TARGET_W}"
+            assert set(row) <= TARGET_LEGAL, f"{name} row {i}: {set(row) - TARGET_LEGAL}"
+            assert set(row) - {"."} <= set(sprites.TARGET_PALETTE), \
+                f"{name} row {i}: undrawable in TARGET_PALETTE"
+
+
+def test_every_target_colour_is_drawn_and_every_drawn_colour_has_a_colour():
+    """A palette entry nothing uses is a colour someone chose and then lost; a
+    character no palette has is a KeyError the moment it is painted.
+
+    Swept over every frame rather than over the resting one, because the flash
+    is the only place `h` appears at all — checked on `target_rest` alone this
+    would report the flash colour as dead and it is the point of the reaction.
+    """
+    used = {ch for grid in sprites.build_target_frames().values()
+            for row in grid for ch in row} - {"."}
+    assert used == set(sprites.TARGET_PALETTE), \
+        f"drawn but unpainted: {used - set(sprites.TARGET_PALETTE)}; " \
+        f"painted but undrawn: {set(sprites.TARGET_PALETTE) - used}"
+
+
+def test_the_target_is_out_of_the_28_square_sweep_and_the_bodies_are_still_in_it():
+    """Both halves, because the cheap way to pass the first is to break the
+    second. The hoop's own exclusion test, on the canvas that arrived after
+    it."""
+    swept = _swept_grid_names()
+    assert "TARGET_HOOK" not in swept, "the target's band is in the 28-square sweep"
+    for name in ("CLAUDE_BODY", "CODEX_BODY"):
+        assert name in swept, f"the sweep has stopped looking at {name}"
+
+
+def test_the_rings_are_drawn_where_the_geometry_says_they_are():
+    """TARGET_CENTRE and TARGET_RINGS are what a throw is scored against.
+
+    The rings being built from the radii settles that the drawing has the right
+    *shape*. It settles nothing about where that shape ended up: the disc is
+    composed about its own middle and pasted onto a canvas that is taller above
+    it than below, so a paste two rows out is a target whose bullseye is not
+    where the number says the bullseye is. Nothing raises, the rings look
+    perfect, and a throw dead on the middle scores the second ring.
+
+    So every pixel is checked against the geometry, in the canvas's own
+    coordinates, and the count is asserted too: a version of this that resolved
+    every pixel to None would agree with a blank grid about everything.
+    """
+    grid = sprites.build_target("rest")
+    checked = 0
+    for row in range(sprites.TARGET_H):
+        for col in range(sprites.TARGET_W):
+            ring = _ring_at(col, row)
+            if ring is None:
+                continue
+            checked += 1
+            _i, _radius, colour = ring
+            assert grid[row][col] == colour, \
+                (f"({col},{row}) is {grid[row][col]!r} and the geometry puts it "
+                 f"in ring {_i} at radius {_radius}, which is {colour!r}")
+    outer = sprites.TARGET_RINGS[-1][0]
+    assert checked > 3 * outer * outer, f"only {checked} pixels were inside any ring"
+
+
+def test_nothing_but_the_cord_is_drawn_outside_the_outermost_ring():
+    """The other half of the sweep above, which only looks inside the rings.
+
+    A stray mark outside them is not cosmetic here. Whoever scores reads the
+    outermost radius as the edge of the target, so anything drawn past it is a
+    part of the picture that cannot be hit — and the cord is exactly that on
+    purpose, which is why it has to be the only one.
+    """
+    grid = sprites.build_target("rest")
+    stray = [(c, r) for r in range(sprites.TARGET_H)
+             for c in range(sprites.TARGET_W)
+             if grid[r][c] != "." and _ring_at(c, r) is None]
+    assert stray, "nothing at all is drawn outside the rings, not even the cord"
+    _hook_row, hook_col = sprites.TARGET_HOOK_AT
+    for col, row in stray:
+        assert grid[row][col] == "o", \
+            f"({col},{row}) is outside every ring and is not the cord's colour"
+        assert row < sprites.TARGET_CENTRE[1] - sprites.TARGET_RINGS[-1][0], \
+            f"({col},{row}) is drawn outside the rings and beside them, not above"
+        assert hook_col - 2 <= col <= hook_col + len(sprites.TARGET_HOOK[0]) + 1, \
+            f"({col},{row}) is outside the rings and nowhere near the cord"
+
+
+def test_the_middle_is_worth_more_than_the_edge_and_the_drawing_says_so():
+    """A ring target is a promise about scoring, and the art has to keep it.
+
+    Three things, and each of them can be true of a drawing that is wrong. The
+    radii have to grow outward or the bands overlap and the ring a point falls
+    in stops being well defined. The bullseye has to be its own colour, or the
+    middle is not marked and the player has nothing to aim at. And it has to be
+    a small part of the target: a bullseye half the width of the whole thing is
+    not a bullseye, it is the target with a stripe round it, and it makes the
+    outer rings unreachable rather than the middle hard.
+    """
+    radii = [radius for radius, _colour in sprites.TARGET_RINGS]
+    assert len(radii) >= 3, f"{len(radii)} rings is not a ring target"
+    assert radii == sorted(set(radii)), f"the radii do not grow outward: {radii}"
+
+    colours = [colour for _radius, colour in sprites.TARGET_RINGS]
+    assert colours[0] not in colours[1:], \
+        f"the bullseye is {colours[0]!r}, which is also a ring further out"
+    assert colours[0] != colours[1], "the bullseye is the colour it sits inside"
+    assert radii[0] * 2 < radii[-1], \
+        (f"the bullseye is {radii[0] * 2} across against a target {radii[-1] * 2}: "
+         f"there is no aiming left to do")
+
+
+def test_the_target_holds_the_thing_thrown_at_it_with_room_to_spare():
+    """The hoop's own lesson, restated for the canvas it was learned on.
+
+    Its first opening was 44 screen pixels against a character 56 wide, and
+    every test there was passed. A target the character does not comfortably
+    fit inside reads as one nobody could hit, and it teaches the player not to
+    aim however generously the other side happens to score it.
+    """
+    across = sprites.TARGET_RINGS[-1][0] * 2 * sprites.SCALE
+    assert across >= sprites.SIZE * 1.5, \
+        (f"the target is {across}px across and the character thrown at it is "
+         f"{sprites.SIZE}px wide")
+
+
+def test_the_hit_clip_names_frames_that_exist_and_does_not_run_at_one_rate():
+    """A renamed frame is a KeyError on the one occasion the animation plays,
+    which is the moment somebody finally landed the throw. And a reaction at a
+    constant frame rate is a slideshow: the flash has to be shorter than the
+    swing it starts, or the hit reads as the target sliding rather than as it
+    being hit."""
+    built = set(sprites.build_target_frames())
+    assert sprites.TARGET_RESTING in built, \
+        f"{sprites.TARGET_RESTING} is named as the still frame and is not a frame"
+    for name, clip in sprites.TARGET_CLIPS.items():
+        named = {f for f, _ in clip["frames"]}
+        assert named <= built, f"{name} references {named - built}"
+        timings = [ms for _, ms in clip["frames"]]
+        assert len(timings) > 1, f"{name} is a single frame, not a clip"
+        assert len(set(timings)) > 1, f"{name} is a metronome: {timings}"
+
+
+def test_the_reaction_swings_the_disc_and_leaves_the_hook_where_it_is():
+    """Five frames of one drawing, not five drawings.
+
+    The hook is what the thing hangs from, so it is the one part that cannot
+    move: a hook that swings with the disc is a nail coming out of the wall,
+    and on screen it reads as the whole picture sliding. The disc, meanwhile,
+    has to actually go somewhere — a reaction whose frames are all the same
+    drawing is a still image played five times — and it has to go where
+    TARGET_STATES says, which is checked against the pixels because a swing
+    written down and not drawn is a table describing an animation that is not
+    happening.
+    """
+    frames = sprites.build_target_frames()
+    rest = frames[sprites.TARGET_RESTING]
+    top = sprites.TARGET_CORD_TOP
+    for name, grid in frames.items():
+        assert grid[:top] == rest[:top], f"{name} moved the hook"
+    assert len({tuple(g) for g in frames.values()}) == len(frames), \
+        f"two target frames are the same drawing: {sorted(frames)}"
+
+    edge = sprites.TARGET_CENTRE[0] - sprites.TARGET_RINGS[-1][0]
+    for state, (swing, _lit) in sprites.TARGET_STATES.items():
+        grid = frames["target_" + state]
+        drawn = min(c for row in grid for c, ch in enumerate(row) if ch != ".")
+        assert drawn == edge + swing, \
+            (f"{state} declares a swing of {swing} and the disc's left edge is "
+             f"at {drawn}, not {edge + swing}")
+    assert len({swing for swing, _lit in sprites.TARGET_STATES.values()}) > 1, \
+        "no state swings the disc; the check above is watching a still picture"
+
+
+def test_a_swing_that_would_leave_the_canvas_raises_rather_than_wrapping_round():
+    """A negative column into a row of a Python list is not an error, it is the
+    far side of the row.
+
+    So a swing four pixels too wide does not crash and does not clip: it draws
+    the left edge of the target down the right-hand side of its own canvas,
+    which is a picture that is wrong in a way no size check and no palette
+    check can see. The margin either side of the disc is what makes the
+    declared swings safe, and this is what says so out loud.
+    """
+    room = (sprites.TARGET_W - sprites.TARGET_RINGS[-1][0] * 2) // 2
+    assert room >= 2, "there is no room either side of the disc to swing into"
+    for swing in (room + 1, -room - 1):
+        with pytest.raises(ValueError), pytest.MonkeyPatch.context() as mp:
+            mp.setitem(sprites.TARGET_STATES, "off", (swing, False))
+            sprites.build_target("off")
+    for swing, _lit in sprites.TARGET_STATES.values():
+        assert abs(swing) <= room, \
+            f"a declared swing of {swing} does not fit in {room} columns"
+
+
 # ── the overlays: particles, moods and props ───────────────────────────────
 # Three more families of drawing, on canvases of their own, and they arrived in
 # a single commit with no tests at all. That was invisible rather than obvious:
@@ -720,6 +972,9 @@ def test_every_prop_is_a_rectangle_of_body_palette_colours(name):
 UNSWEPT = {
     "SHADOW": "three rows of its own two characters; it has its own tests",
     "HOOP_BOARD": "96 by 72 in a palette of its own; it has its own tests",
+    "TARGET_HOOK": "a four-row band pasted onto the target's own canvas; the "
+                   "rings beside it are built from TARGET_RINGS and are not a "
+                   "module-level grid at all",
     "PROP_BOOK": "a five-column band pasted into the read pose, like the eyes",
     "PROP_UMBRELLA": "an overlay: larger than the sprite and placed off it",
     "PROP_EXTINGUISHER": "an overlay",
@@ -1083,12 +1338,26 @@ def test_placing_an_overlay_leaves_the_frame_underneath_alone():
 # in the same module and the thing to prove about a second canvas is that the
 # first one did not move — grid by grid, not by counting files.
 #
-# To change the character on purpose: run the two lines in the test body over
-# the new grids and paste the digests. Being made to do that is the point.
+# The two digests below have never been recomputed and must not be. The tumble
+# added four frames per brand and the digest is taken over the other 108, so
+# the number that proves nothing moved is still the number that was pinned
+# before any of this existed. Re-pinning a digest to make a suite green is how
+# a digest stops meaning anything; the only honest way past this test is a
+# change that leaves these 108 grids alone.
+#
+# To change the character on purpose: run the lines in the test body over the
+# new grids and paste the digests. Being made to do that is the point.
 CHARACTER_FRAMES = {
     "claude": (108, "35d5fefadcba858d89aeba375cf5a47907bba06d99a627d52c508daabef27e28"),
     "codex":  (108, "bd57db8ff40c236c2f553f68594342525da087be3ec42b186316a00cdda90233"),
 }
+
+# Frames drawn after those digests were taken, named by a prefix so they can be
+# held out of them. A prefix is a hole in a net, which is the argument the
+# hoop's exclusion makes about the 28-square sweep, so the test below checks
+# both halves: that the held-out set is exactly the tumble, and that the frames
+# the digest was written for are still in the digest.
+LATER_FRAMES = "tumble"
 
 
 @pytest.mark.parametrize("brand", BRANDS)
@@ -1098,13 +1367,248 @@ def test_the_character_frames_did_not_move_when_the_hoop_arrived(brand):
 
     frames = sprites.build_frames(brand)
     count, digest = CHARACTER_FRAMES[brand]
+    older = {n: g for n, g in frames.items() if not n.startswith(LATER_FRAMES)}
+
+    # The exclusion, both ways. Widened by a character it would start swallowing
+    # the frames the digest exists to watch, and the digest would go on passing
+    # over whatever was left — which is the failure the hoop's own exclusion
+    # test was written for, one layer in.
+    later = set(frames) - set(older)
+    assert later == {"tumble_dizzy", "tumble_dizzy_90", "tumble_dizzy_180",
+                     "tumble_dizzy_270"}, \
+        f"{brand}: the digest is holding out {sorted(later)}"
+    for name in ("stand_open", "walk0", "tuck_shut", "celebrate_happy",
+                 "turn_open", "wob+0+0"):
+        assert name in older, f"the digest has stopped watching {name}"
+
     h = hashlib.sha256()
-    for name in sorted(frames):
+    for name in sorted(older):
         h.update(name.encode() + b"\n")
-        for row in frames[name]:
+        for row in older[name]:
             h.update(row.encode() + b"\n")
-    assert len(frames) == count, f"{brand}: {len(frames)} frames, not {count}"
+    assert len(older) == count, f"{brand}: {len(older)} frames, not {count}"
     assert h.hexdigest() == digest, f"{brand}: the character's art changed"
+
+
+# ── thrown: the spin, the trail and the landing ────────────────────────────
+# Everything a throw looks like. The three pieces fail in three different ways
+# and none of them raises:
+#
+#   the spin — a rotation that is not a right angle resamples, and a resampled
+#              frame is not an exception, it is a soft-edged frame in the
+#              middle of a hard-edged animation;
+#   the trail — a mark placed in front of the character instead of behind it
+#              reads as the character reversing, and the offsets that decide
+#              which are a sign;
+#   the dust — a landing that always throws the same amount of it says the same
+#              thing about a drop and a crash, and one drawn a row too low
+#              sinks into a floor that is not there.
+
+
+def test_a_quarter_turn_is_a_permutation_and_four_of_them_are_the_identity():
+    """The one rotation the grid allows, and the two things that make it that.
+
+    Four turns come back to where they started exactly — no drift, so a spin
+    can loop forever without walking off — and one turn moves every pixel to
+    another pixel without losing or inventing any, which is what "exact" means
+    here and what no other angle can say. A count of each colour before and
+    after is how that is stated without restating the arithmetic.
+
+    The raise is the third: a turn of a grid that is not square swaps its width
+    and its height, and the caller is handed a picture that no longer fits the
+    window it asked for. That is the hoop's crop bug arriving from the other
+    side, and it is the reason this refuses rather than obliges.
+    """
+    from collections import Counter
+
+    grid = sprites.build_frames("codex")["stand_open"]
+    assert sprites.quarter_turn(grid, 0) == grid
+    assert sprites.quarter_turn(grid, 1) != grid, "a turn changed nothing"
+
+    # Four separate turns, not `quarter_turn(grid, 4)`. The count is taken
+    # modulo four before anything happens, so asking for four is asking for
+    # none and the assertion would be about the early return rather than about
+    # the rotation. A turn that slid the whole grid a column each time came
+    # back clean from that version of this test: every count matched, the size
+    # matched, and four of them were never actually performed.
+    home = grid
+    for _ in range(4):
+        home = sprites.quarter_turn(home, 1)
+    assert home == grid, "four turns did not come home"
+    assert sprites.quarter_turn(sprites.quarter_turn(grid, 1), 1) == \
+        sprites.quarter_turn(grid, 2), "two turns are not one turn twice"
+
+    # Where the drawing ends up, and which way round it went. Everything above
+    # is satisfied by a turn that also slides the grid a column, and four of
+    # those cancel out — the slide is in a different direction each time — so
+    # the composite comes home while every single turn is off by a pixel. On
+    # screen that is a sprite that jitters sideways once per quarter of every
+    # spin. The box of a clockwise turn is the box transposed: a pixel at
+    # (row, col) lands at (col, size - 1 - row), and this is that read off the
+    # corners.
+    size = len(grid)
+    left, top, right, bottom = sprites.ink_box(grid)
+    assert sprites.ink_box(sprites.quarter_turn(grid, 1)) == \
+        (size - 1 - bottom, left, size - 1 - top, right), \
+        "a turn put the drawing somewhere other than a right angle clockwise"
+    before = Counter("".join(grid))
+    for turns in (1, 2, 3):
+        turned = sprites.quarter_turn(grid, turns)
+        assert Counter("".join(turned)) == before, \
+            f"{turns} turn(s) lost or invented pixels"
+        assert len(turned) == len(grid) and \
+            all(len(row) == len(grid[0]) for row in turned), \
+            f"{turns} turn(s) changed the size of the grid"
+
+    with pytest.raises(ValueError):
+        sprites.quarter_turn(sprites.PARTICLES["streak_long"])
+
+
+@pytest.mark.parametrize("brand", BRANDS)
+def test_the_tumble_goes_round_one_way_and_never_doubles_back(brand):
+    """This is the claim the four-frame spin is making, stated as a test.
+
+    Four frames is as many orientations as a pixel grid has, so the risk is not
+    that a frame is missing — it is that the four are played in an order that
+    is not a rotation. A cycle that goes upright, on its side, upright, upside
+    down visits all four frames, is not a metronome, and reads as a creature
+    being shaken rather than spun. That is the "tremor" the count was chosen
+    against, and nothing else in this file would notice it.
+
+    So the clip's frames are resolved back to how far each is turned, and the
+    step between one and the next has to be the same quarter every time, all
+    the way round including the wrap — because the clip loops, and a cycle that
+    is a rotation everywhere except across its own seam is a spin with a hiccup
+    once per turn.
+    """
+    frames = sprites.build_frames(brand)
+    base = frames["tumble_dizzy"]
+    turns = {tuple(sprites.quarter_turn(base, n)): n for n in range(4)}
+    assert len(turns) == 4, \
+        (f"{brand}: the tumble drawing is its own turn, so the spin would be "
+         f"invisible on at least two of its frames")
+
+    named = [name for name, _ms in sprites.CLIPS["tumble"]["frames"]]
+    seq = []
+    for name in named:
+        assert tuple(frames[name]) in turns, \
+            f"{brand}: {name} is in the tumble and is not a turn of its drawing"
+        seq.append(turns[tuple(frames[name])])
+    assert set(seq) == {0, 1, 2, 3}, f"{brand}: the spin visits {sorted(set(seq))}"
+    steps = {(b - a) % 4 for a, b in zip(seq, seq[1:] + seq[:1])}
+    assert steps in ({1}, {3}), \
+        f"{brand}: the spin turns by {sorted(steps)} quarters and is not one turn"
+
+
+def test_the_trail_is_only_ever_behind_the_character_and_it_fades():
+    """A speed line in front of a moving thing is a thing moving backwards.
+
+    Which side "behind" is on is a sign on an offset, and getting it wrong
+    draws a perfectly good trail leading the character. Nothing raises: the
+    motes are placed, the window grows to hold them, and the only symptom is
+    that a throw reads as a recoil.
+
+    The fade is the second half. A mote is the same speck at successive points
+    of its life, so a trail has to get smaller and further back as it ages —
+    steps that stay the same size are three marks in a row, which is a fence.
+    """
+    motes = sprites.PARTICLE_EFFECTS["tumble"]
+    assert len(motes) > 1, "one line of marks behind a 28-pixel body is a wire"
+    shrank = 0
+    for anchor, steps in motes:
+        assert anchor == "left", \
+            f"the trail hangs off {anchor!r}; behind is the leftmost column"
+        assert len(steps) > 1, "a trail with one mark in it does not fade"
+        cols = [dcol for _name, dcol, _drow in steps]
+        rows = [drow for _name, _dcol, drow in steps]
+        widths = [len(sprites.PARTICLES[name][0]) for name, _dcol, _drow in steps]
+        assert all(dcol + width <= 0 for dcol, width in zip(cols, widths)), \
+            f"part of this trail is drawn in front of the character: {steps}"
+        assert cols == sorted(cols, reverse=True), \
+            f"the trail does not fall behind as it ages: {cols}"
+        assert rows == sorted(rows, reverse=True), \
+            f"the trail does not rise behind the arc: {rows}"
+        areas = [_ink(sprites.PARTICLES[name]) for name, _dcol, _drow in steps]
+        assert areas == sorted(areas, reverse=True), \
+            f"a mark of this trail grows as it ages: {areas}"
+        shrank += areas[0] > areas[-1]
+    assert shrank == len(motes), "no mote of the trail actually fades"
+
+
+@pytest.mark.parametrize("brand", BRANDS)
+def test_the_trail_never_lands_on_the_character(brand):
+    """The offsets above are measured from an anchor, and the anchor moves.
+
+    `left` is read off whichever frame is being painted, and the tumble's four
+    frames are turns of one drawing, so the leftmost column is in a different
+    place on each of them. An offset that clears the body on the upright frame
+    and not on the one lying on its side is a streak drawn across the
+    creature's face for a quarter of every turn.
+    """
+    frames = sprites.build_frames(brand)
+    for name in (f for f in frames if f.startswith("tumble")):
+        body = sprites.ink_box(frames[name])[0]
+        for mote in sprites.particle_layout(brand, name, "tumble"):
+            for particle, col, _row in mote:
+                right = col + sprites.ink_box(sprites.PARTICLES[particle])[2]
+                assert right < body, \
+                    (f"{brand}/{name}: {particle} reaches column {right} and the "
+                     f"character starts at {body}")
+
+
+def test_the_three_landings_are_ordered_and_each_of_them_throws_dust():
+    """Landing at 2400 px/s and landing off a shelf are not the same drawing.
+
+    The ordering is data because the companion has to index into it: spelled
+    out at the call site instead, a fourth landing added here would be drawn,
+    keyed, tested and never once selected — which is the prop-with-no-trigger
+    defect wearing a landing's clothes. So the table has to hold every landing
+    there is, and the order has to be an order: more dust, thrown further, at
+    every step. Two entries that throw the same amount are two names for one
+    animation and the middle one will never be worth choosing.
+    """
+    order = sprites.LANDING_BY_FORCE
+    assert len(set(order)) == len(order) > 2, f"not an ordering: {order}"
+    landings = {name for name in sprites.PARTICLE_EFFECTS if name.startswith("land")}
+    assert set(order) == landings, \
+        f"declared: {sorted(order)}; drawn: {sorted(landings)}"
+
+    reach, specks = [], []
+    for name in order:
+        assert name in sprites.CLIPS, f"{name} is ordered and is not a clip"
+        steps = [step for _anchor, mote in sprites.PARTICLE_EFFECTS[name]
+                 for step in mote]
+        specks.append(len(steps))
+        reach.append(max(max(abs(dcol), abs(dcol + len(sprites.PARTICLES[p][0]) - 1))
+                         for p, dcol, _drow in steps))
+    assert reach == sorted(set(reach)), \
+        f"{list(zip(order, reach))} is not further at every step"
+    assert specks == sorted(set(specks)), \
+        f"{list(zip(order, specks))} is not more at every step"
+
+
+@pytest.mark.parametrize("brand", BRANDS)
+def test_no_landing_throws_dust_that_leaves_the_floor(brand):
+    """Dust that rises is smoke, and something that lands does not smoke.
+
+    The temptation with a hard landing is to throw its dust upward, and this is
+    what stops that — but it caught something duller and more likely first. The
+    `feet` anchor is one row *below* the lowest drawn row, so a three-row puff
+    belongs at an offset of minus three and a two-row wisp at minus two, and
+    getting that off by one puts the cloud a row under the character with a gap
+    of daylight over it. It looks like the creature is hovering, and there is
+    nothing in the drawing that says so.
+    """
+    frames = sprites.build_frames(brand)
+    for effect in sprites.LANDING_BY_FORCE:
+        for frame, _ms in sprites.CLIPS[effect]["frames"]:
+            floor = sprites.ink_box(frames[frame])[3]
+            for mote in sprites.particle_layout(brand, frame, effect):
+                for particle, _col, row in mote:
+                    bottom = row + len(sprites.PARTICLES[particle]) - 1
+                    assert bottom == floor, \
+                        (f"{brand}/{effect} on {frame}: {particle} ends on row "
+                         f"{bottom} and the floor is row {floor}")
 
 
 # ── playback ───────────────────────────────────────────────────────────────
@@ -1240,6 +1744,40 @@ def test_the_hoop_reaches_qt_at_its_own_size_and_stays_out_of_the_body_sheet():
     character = sprites.build_sheet("claude")
     assert not set(sheet) & set(character), \
         "hoop frames are in the character's sheet, on the character's palette"
+
+
+@needs_qt
+def test_the_target_reaches_qt_at_its_own_size_and_keeps_its_own_keys():
+    """The target is 72 by 70, the hoop is 96 by 72 and the character is 28.
+
+    `to_qimage` used to size its image from GRID, so anything on another canvas
+    came out as a 28-square corner of itself: the right kind of image, cropped,
+    nothing raised. Three canvases now, and every one of them can still hit it.
+
+    The keys are the second half, and they are checked against the other two
+    sheets rather than only against the character's. A name that exists in two
+    of these dictionaries is one lookup away from a basket being painted where
+    a target was asked for, in a palette where half its letters mean something
+    else.
+    """
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    sheet = sprites.build_target_sheet()
+    assert set(sheet) == set(sprites.build_target_frames()), \
+        "the sheet and the frames disagree about what a target frame is called"
+    assert not [k for k in sheet if k.endswith(":flip")], \
+        "concentric rings are their own mirror and were given one anyway"
+    for name, img in sheet.items():
+        assert img.width() == sprites.TARGET_W * sprites.SCALE, \
+            f"{name} is {img.width()} wide, not {sprites.TARGET_W * sprites.SCALE}"
+        assert img.height() == sprites.TARGET_H * sprites.SCALE, \
+            f"{name} is {img.height()} tall, not {sprites.TARGET_H * sprites.SCALE}"
+
+    for other in (sprites.build_sheet("claude"), sprites.build_sheet("codex"),
+                  sprites.build_hoop_sheet(), sprites.build_effect_sheet()):
+        assert not set(sheet) & set(other), \
+            f"a target frame shares a name with another sheet: " \
+            f"{sorted(set(sheet) & set(other))}"
 
 
 @needs_qt
