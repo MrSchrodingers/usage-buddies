@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+  <meta name="theme-color" content="#07111f">
+  <meta name="color-scheme" content="dark">
+  <title>AI Central</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/vendor/xterm.css">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div class="aurora aurora-a"></div>
+  <div class="aurora aurora-b"></div>
+  <div class="app-shell">
+    <header class="topbar reveal">
+      <div class="brand">
+        <div class="brand-mark"><span>AI</span></div>
+        <div>
+          <p class="eyebrow">COMANDO BILATERAL</p>
+          <h1>AI Central</h1>
+          <p class="subtitle">Claude Code + Codex · PC ↔ celular</p>
+        </div>
+      </div>
+      <div class="connection-card">
+        <span id="connectionDot" class="connection-dot"></span>
+        <div><strong id="connectionText">Conectando</strong><small id="updatedAt">estado ao vivo</small></div>
+      </div>
+    </header>
+
+    <nav class="action-bar reveal delay-1" aria-label="Ações rápidas">
+      <button class="button primary" data-open-launch="new"><span>＋</span> Nova sessão</button>
+      <button class="button" data-open-launch="resume"><span>↻</span> Retomar</button>
+      <button class="button" data-open-launch="worktree"><span>◇</span> Worktree</button>
+      <button id="restoreButton" class="button"><span>⟳</span> Restaurar</button>
+      <button id="notifyButton" class="button compact"><span>◉</span> Alertas</button>
+      <button id="installButton" class="button compact hidden"><span>↓</span> Instalar</button>
+    </nav>
+
+    <section id="alertStrip" class="alert-strip hidden reveal delay-1" aria-live="polite"></section>
+
+    <main>
+      <section class="usage-grid reveal delay-2" aria-label="Consumo e saúde">
+        <article id="claudeUsage" class="usage-card provider-claude skeleton"></article>
+        <article id="codexUsage" class="usage-card provider-codex skeleton"></article>
+      </section>
+
+      <section class="control-grid reveal delay-3">
+        <aside class="sessions-panel glass-panel">
+          <div class="panel-heading">
+            <div><p class="eyebrow">WORKSPACES</p><h2>Sessões</h2></div>
+            <span id="sessionCount" class="count-pill">—</span>
+          </div>
+          <label class="search-box">
+            <span>⌕</span>
+            <input id="sessionSearch" type="search" placeholder="Filtrar repo ou sessão" autocomplete="off">
+          </label>
+          <div id="sessionList" class="session-list" aria-live="polite"></div>
+        </aside>
+
+        <section class="terminal-panel glass-panel" id="terminalPanel">
+          <div class="terminal-heading">
+            <div class="traffic"><i></i><i></i><i></i></div>
+            <div class="terminal-title"><span id="terminalProvider">AI</span><strong id="terminalName">Central ao vivo</strong></div>
+            <div class="terminal-actions">
+              <button id="keyboardButton" class="icon-button" title="Forçar teclado" aria-label="Forçar abertura do teclado">⌨</button>
+              <button id="fitButton" class="icon-button" title="Ajustar terminal">⌗</button>
+              <button id="fullscreenButton" class="icon-button" title="Tela cheia">↗</button>
+            </div>
+          </div>
+          <div id="terminal" aria-label="Terminal compartilhado"></div>
+          <div class="key-deck" aria-label="Teclas do terminal">
+            <button data-sequence="keyboard" class="keyboard-key">TECLADO</button>
+            <button data-sequence="menu">MENU</button>
+            <button data-sequence="tab">TAB</button>
+            <button data-sequence="escape">ESC</button>
+            <button data-sequence="ctrl" class="modifier">CTRL</button>
+            <button data-sequence="left">←</button>
+            <button data-sequence="down">↓</button>
+            <button data-sequence="up">↑</button>
+            <button data-sequence="right">→</button>
+            <button data-sequence="enter" class="enter-key">ENTER</button>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <footer>
+      <span>Privado no Tailscale</span><i></i><span>tmux é a fonte da verdade</span><i></i><span>controle pleno</span>
+    </footer>
+  </div>
+
+  <nav class="mobile-dock" aria-label="Navegação móvel">
+    <button data-scroll-target=".sessions-panel"><span>◫</span>Sessões</button>
+    <button data-scroll-target="#terminalPanel"><span>›_</span>Terminal</button>
+    <button data-mobile-launch="new" class="dock-main"><span>＋</span>Novo</button>
+    <button data-scroll-target=".usage-grid"><span>◔</span>Consumo</button>
+    <button id="mobileKeyboard"><span>⌨</span>Teclado</button>
+  </nav>
+
+  <div id="pairing" class="pairing hidden" role="dialog" aria-modal="true">
+    <div class="modal-card pairing-card">
+      <div class="brand-mark large"><span>AI</span></div>
+      <p class="eyebrow">ACESSO PRIVADO</p>
+      <h2>Conectar à sua central</h2>
+      <p>Informe o token mostrado pelo PC. Ele fica salvo somente neste dispositivo.</p>
+      <input id="tokenInput" type="password" placeholder="Token da AI Central" autocomplete="off">
+      <button id="pairButton" class="button primary wide">Conectar com segurança</button>
+    </div>
+  </div>
+
+  <div id="launchModal" class="modal-layer hidden" role="dialog" aria-modal="true" aria-labelledby="launchTitle">
+    <form id="launchForm" class="modal-card">
+      <div class="modal-top"><div><p class="eyebrow">NOVA JANELA SYNC</p><h2 id="launchTitle">Nova sessão</h2></div><button type="button" class="close-button" data-close-modal>×</button></div>
+      <p id="launchDescription" class="modal-description"></p>
+      <div class="field-grid">
+        <label><span>Agente</span><select id="providerField"><option value="claude">Claude Code</option><option value="codex">OpenAI Codex</option></select></label>
+        <label><span>Nome curto</span><input id="nameField" required pattern="[A-Za-z0-9_.-]+" placeholder="auditoria-api"></label>
+      </div>
+      <label><span>Pasta ou repositório</span><input id="directoryField" required placeholder="/var/www/meu-repo"></label>
+      <label id="sessionIdGroup" class="hidden"><span>ID da conversa</span><input id="sessionIdField" placeholder="ID completo ou vazio para o seletor"></label>
+      <label id="branchGroup" class="hidden"><span>Branch do worktree</span><input id="branchField" placeholder="ai/auditoria-api"></label>
+      <div id="permissionCopy" class="permission-copy"></div>
+      <div class="modal-actions"><button type="button" class="button" data-close-modal>Cancelar</button><button id="launchSubmit" type="submit" class="button primary">Criar e abrir</button></div>
+    </form>
+  </div>
+
+  <div id="toastStack" class="toast-stack" aria-live="polite"></div>
+
+  <script src="/vendor/xterm.js"></script>
+  <script src="/vendor/addon-fit.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

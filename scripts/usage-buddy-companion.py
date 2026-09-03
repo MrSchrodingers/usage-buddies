@@ -1761,9 +1761,26 @@ class Companion(QWidget):
             # Only ever swaps the words. The decision of *whether* to speak
             # stays with Brain, which is bound to measured triggers; letting
             # the model decide that too is how a companion becomes noise.
-            spoken = self.voice.take()
-            if spoken:
-                line = spoken
+            # Only where the sentence carries no fact. A model line replaced
+            # whatever the table had chosen, including the categories whose
+            # whole point is a number: the batch is written from `situation()`,
+            # which hands over session names, states, and the two quotas
+            # rounded to tens — and nothing else. Efficiency, compaction, tool
+            # use, error rate, latency, burn rate, runway, the limit ETA, opus
+            # fallbacks and the streak are all absent from it, so a spoken line
+            # mentioning any of them was inventing the figure. Even the quota
+            # it does get goes stale: lines are generated in batches and spoken
+            # minutes later, against a window that has moved.
+            #
+            # So the model writes the character and the table writes the facts.
+            # A category with a placeholder in it is a fact-carrying category
+            # and keeps the line the Brain rendered from live signal vars;
+            # ambient, philosophy and greeting have none, and are where a
+            # desktop mascot's voice belongs anyway.
+            if not self._carries_a_fact(self.brain.spoke):
+                spoken = self.voice.take()
+                if spoken:
+                    line = spoken
         if line and line != self.said:
             self.said = line
             self.bubble = line
@@ -1983,6 +2000,23 @@ class Companion(QWidget):
                 self.insist_until = now + INSIST_TUG_SECONDS
                 self._begin_tug(now, INSIST_TUG_SECONDS, self.target)
         self._wake()
+
+    @staticmethod
+    def _carries_a_fact(key):
+        """Whether a category's lines are built around a value.
+
+        Read off the table rather than listed here, so a category that gains a
+        placeholder is protected the moment it does, and one that loses its
+        last placeholder stops being protected without anyone remembering to
+        edit a list.
+        """
+        if not key:
+            return False
+        for language in LINES.values():
+            for text in language.get(key) or ():
+                if "{" in text:
+                    return True
+        return False
 
     def _maybe_refill(self):
         """Buy another batch of lines, if the desktop has actually changed.

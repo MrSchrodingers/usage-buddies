@@ -1,0 +1,14 @@
+[Unit]
+Description=Private AI Central web and terminal interface
+After=claude-hub.service ai-hub-restore.service
+Requires=claude-hub.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/ti/.local/bin/ai-central-web.py --host 100.121.129.49 --port 8765
+Restart=always
+RestartSec=4
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

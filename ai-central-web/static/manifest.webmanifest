@@ -1,0 +1,10 @@
+{
+  "name": "AI Central",
+  "short_name": "AI Central",
+  "description": "Claude Code e Codex ao vivo no PC e celular",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#060d18",
+  "theme_color": "#07111f",
+  "icons": [{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}]
+}

@@ -150,7 +150,7 @@ def test_ctl_matches_the_script_behind_the_interpreter():
     """A shebang script is exec'd as `/usr/bin/python3 /path/script.py`, so
     argv[0] is the interpreter. Matching only argv[0] counts nothing."""
     body = CTL.read_text()
-    assert "head -2" in body, "only the first argv entry is inspected"
+    assert "read -r -d '' argv1" in body, "only the first argv entry is inspected"
     assert 'SELF=$$' in body and '[ "$p" = "$SELF" ]' in body, "does not skip itself"
 
 
@@ -254,10 +254,26 @@ def test_stop_during_an_install_leaves_the_installer_alone(tmp_path):
             p.wait(timeout=10)
 
 
-def test_ctl_status_is_a_number():
-    r = subprocess.run(["bash", str(CTL), "status"], capture_output=True, text=True, timeout=30)
+def test_ctl_status_is_a_number(tmp_path):
+    """Against a directory this test builds, like every other ctl check here.
+
+    It scanned the real /proc, which is the last thing in this file that did.
+    That is slow — the scan reads a cmdline per process — and on a loaded
+    machine it timed out and failed a run that had nothing wrong with it. It
+    also measured whatever the machine happened to be running, which is not
+    what the assertion is about: the claim is that `status` answers with a
+    number, and a directory with two entries proves that as well as one with
+    six hundred, in a millisecond and without depending on the operator's
+    desktop.
+    """
+    env = _fake_proc(tmp_path, {
+        4242: b"/usr/bin/python3\x00/home/u/.local/bin/usage-buddy-companion.py\x00",
+        4243: b"/usr/bin/sleep\x00300\x00",
+    })
+    r = _ctl("status", env)
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip().isdigit(), r.stdout
+    assert r.stdout.strip() == "1", r.stdout
 
 
 def test_ctl_status_does_not_report_failure_because_of_who_else_is_running(tmp_path):

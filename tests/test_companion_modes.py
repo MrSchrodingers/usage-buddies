@@ -1387,3 +1387,51 @@ def test_a_session_asking_is_never_rationed():
     spoken = [brain.spoke for _ in range(12) if brain.line(now=0.0, wall=_MIDDAY)]
     assert spoken.count("asking") == 12, (
         "a blocked session was rationed like chatter: %s" % spoken)
+
+
+# ── the model writes the voice, the table writes the facts ─────────────────
+
+def test_a_model_line_never_replaces_one_that_carries_a_number():
+    """buddy_voice.situation() hands the model session names, their states and
+    two quotas rounded to tens. Efficiency, compaction, tool use, error rate,
+    latency, burn rate, runway, the limit ETA, opus fallbacks and the streak
+    are all absent from it, so a spoken line quoting any of them invented the
+    figure — and the batch is written minutes before it is said, so even the
+    quota it does get is stale by then.
+
+    Reported as "when it goes for metrics it is never right". The line the
+    Brain rendered from live signal vars has to survive the substitution.
+    """
+    mod = _load()
+    carries = mod.Companion._carries_a_fact
+    assert carries("quotaHigh"), "a category built around {n} is not protected"
+    assert carries("readRatio")
+    assert carries("waiting"), "session categories name the session"
+    assert not carries("philosophy"), "the mascot's own voice is not a fact"
+    assert not carries("ambient")
+    assert not carries("greeting")
+    assert not carries(None)
+    assert not carries(""), "no category spoken means nothing to protect"
+
+
+def test_the_protection_is_read_off_the_table_and_not_a_list():
+    """A category that gains a placeholder has to be protected the moment it
+    does. Hardcoding the set here would leave the next fact-carrying category
+    silently replaceable, which is the defect being fixed."""
+    mod = _load()
+    import buddy_lines
+    protected = {k for k in buddy_lines.LINES["en"]
+                 if mod.Companion._carries_a_fact(k)}
+    from_table = {k for k, lines in buddy_lines.LINES["en"].items()
+                  if any("{" in text for text in lines)}
+    assert protected == from_table, sorted(protected ^ from_table)
+
+
+def test_the_live_prompt_forbids_stating_figures():
+    """Belt and braces on the other side: the structural gate above decides
+    which line is spoken, and this stops the model writing a figure into the
+    lines it is still allowed to write."""
+    import buddy_voice
+    for language, prompt in buddy_voice.SYSTEM.items():
+        assert ("Never state a number" in prompt
+                or "Nunca diga um número" in prompt), language

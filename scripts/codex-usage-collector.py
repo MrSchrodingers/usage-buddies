@@ -47,6 +47,19 @@ def parse_time(value: Any) -> datetime | None:
         return None
 
 
+def _mapping(value):
+    """`value` when it is a mapping, an empty one otherwise.
+
+    `d.get("k", {})` defends against a missing key and not against a present
+    one holding null, and the Codex logs contain both: measured on this
+    machine, 3 of 941 token_count records carry `"info": null` outright. Three
+    records out of nine hundred took the whole collection down with an
+    AttributeError, and the widget then showed data more than an hour stale
+    with nothing on screen to say so.
+    """
+    return value if isinstance(value, dict) else {}
+
+
 def token_total(usage: dict[str, Any]) -> int:
     return int(usage.get("total_tokens", 0) or 0)
 
@@ -385,7 +398,7 @@ def collect() -> dict[str, Any]:
                         timestamp = parse_time(record.get("timestamp"))
                         if not timestamp:
                             continue
-                        payload = record.get("payload", {})
+                        payload = _mapping(record.get("payload"))
                         if record.get("type") == "session_meta":
                             session_id = payload.get("session_id") or payload.get("id")
                             if session_id and timestamp >= cutoff:
@@ -394,15 +407,15 @@ def collect() -> dict[str, Any]:
                             continue
                         # Current Codex logs token counts directly in the event
                         # payload. Older logs can wrap the same object in item.
-                        item = payload if payload.get("type") == "token_count" else payload.get("item", {})
+                        item = payload if payload.get("type") == "token_count" else _mapping(payload.get("item"))
                         if item.get("type") != "token_count":
                             continue
-                        info = item.get("info", {})
-                        limits = item.get("rate_limits", {})
+                        info = _mapping(item.get("info"))
+                        limits = _mapping(item.get("rate_limits"))
                         if latest is None or timestamp > latest[0]:
                             latest = (timestamp, {"info": info, "limits": limits})
                         if timestamp >= cutoff:
-                            usage = info.get("last_token_usage", {})
+                            usage = _mapping(info.get("last_token_usage"))
                             amount = token_total(usage)
                             key = timestamp.astimezone().strftime("%a")
                             daily[key]["tokens"] += amount
@@ -421,8 +434,8 @@ def collect() -> dict[str, Any]:
     latest_info = latest[1]["info"] if latest else {}
     latest_limits = latest[1]["limits"] if latest else {}
     remote, remote_errors = fetch_authenticated_usage()
-    remote_usage = remote.get("usage", {})
-    remote_blocks = find_rate_limit_blocks(remote_usage.get("rate_limit", {}))
+    remote_usage = _mapping(remote.get("usage"))
+    remote_blocks = find_rate_limit_blocks(_mapping(remote_usage.get("rate_limit")))
     normalized = [normalize_api_block(block, now) for block in remote_blocks]
     normalized = [block for block in normalized if block.get("windowMinutes")]
     # Usage currently exposes a short rolling window and a seven-day window.
@@ -433,7 +446,7 @@ def collect() -> dict[str, Any]:
     local_weekly = rate_block(latest_limits.get("secondary"), now)
     session = remote_session or local_session or {}
     weekly = remote_weekly or local_weekly or {}
-    credits = remote_usage.get("credits") or latest_limits.get("credits", {})
+    credits = _mapping(remote_usage.get("credits")) or _mapping(latest_limits.get("credits"))
     def widget_window(block: dict[str, Any]) -> dict[str, Any]:
         reset = parse_time(block.get("resetsAt"))
         return {
@@ -459,11 +472,11 @@ def collect() -> dict[str, Any]:
             "responseKeys": {name: sorted(value.keys()) if isinstance(value, dict) else [] for name, value in remote.items()},
         },
         "account": {
-            "allowed": remote_usage.get("rate_limit", {}).get("allowed"),
-            "limitReached": remote_usage.get("rate_limit", {}).get("limit_reached"),
+            "allowed": _mapping(remote_usage.get("rate_limit")).get("allowed"),
+            "limitReached": _mapping(remote_usage.get("rate_limit")).get("limit_reached"),
             "limitReachedType": remote_usage.get("rate_limit_reached_type"),
-            "spendControlReached": remote_usage.get("spend_control", {}).get("reached"),
-            "resetCreditsAvailable": remote.get("resetCredits", {}).get("available_count", remote_usage.get("rate_limit_reset_credits", {}).get("available_count", 0)),
+            "spendControlReached": _mapping(remote_usage.get("spend_control")).get("reached"),
+            "resetCreditsAvailable": _mapping(remote.get("resetCredits")).get("available_count", _mapping(remote_usage.get("rate_limit_reset_credits")).get("available_count", 0)),
             "canBuyCredits": remote.get("limitsConfig", {}).get("show_buy_credits"),
             "canManageAutoReload": remote.get("limitsConfig", {}).get("show_manage_auto_reload"),
         },
@@ -472,7 +485,7 @@ def collect() -> dict[str, Any]:
             "last7DaysTurns": turns,
             "last7DaysSessions": len(sessions),
             "daily": days,
-            "currentThreadTokens": token_total(latest_info.get("total_token_usage", {})),
+            "currentThreadTokens": token_total(_mapping(latest_info.get("total_token_usage"))),
         },
     }
     # Compatibility contract for the richer Plasma UI, deliberately limited to

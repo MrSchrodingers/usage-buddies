@@ -1,0 +1,617 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly HUB_SESSION="claude-hub"
+readonly MOBILE_SESSION="claude-mobile"
+readonly REGISTRY_HELPER="$HOME/.local/bin/ai-hub-registry.py"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  claude-hub init
+  claude-hub attach [window]
+  claude-hub mobile
+  claude-hub view <window>
+  claude-hub here
+  claude-hub open <window>
+  claude-hub continue <window>
+  claude-hub start-claude <name> [directory]
+  claude-hub resume-claude <name> [directory] [session-id]
+  claude-hub start-codex <name> [directory]
+  claude-hub resume-codex <name> [directory] [session-id]
+  claude-hub worktree-claude <name> [repository] [branch]
+  claude-hub worktree-codex <name> [repository] [branch]
+  claude-hub wizard <claude|codex|resume-claude|resume-codex|worktree>
+  claude-hub status
+  claude-hub web
+  claude-hub gui
+  claude-hub list
+  claude-hub new <name> [directory]
+
+Short alias:
+  ch <command>   is the same as claude-hub <command>
+
+Compatibility aliases:
+  start, resume and worktree use Claude Code.
+
+Inside tmux:
+  Ctrl-b w   list/switch terminals
+  Ctrl-b c   create a terminal
+  Ctrl-b z   zoom/unzoom a pane
+  Ctrl-b d   detach without stopping anything
+EOF
+}
+
+has_session() {
+  tmux has-session -t "=$1" 2>/dev/null
+}
+
+has_window() {
+  tmux list-windows -t "=$HUB_SESSION" -F '#{window_name}' 2>/dev/null | grep -Fxq -- "$1"
+}
+
+validate_name() {
+  if [[ ! "$1" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+    printf 'Invalid name: use only letters, numbers, dot, underscore, and dash.\n' >&2
+    exit 2
+  fi
+}
+
+ensure_hub() {
+  local name directory
+
+  if ! has_session "$HUB_SESSION"; then
+    tmux new-session -d -s "$HUB_SESSION" -n shell -c "$HOME" /usr/bin/zsh -l
+  fi
+
+  if ! has_session "$MOBILE_SESSION"; then
+    tmux new-session -d -t "=$HUB_SESSION" -s "$MOBILE_SESSION"
+  fi
+
+  # A full-screen TUI has one shared character grid.  When the PC and phone
+  # watch the same window, render for the smaller client so the phone receives
+  # reflowed text instead of a cropped slice of the desktop-sized grid.
+  tmux set-option -g window-size smallest >/dev/null
+
+  while IFS='|' read -r name directory; do
+    if [[ -d "$directory" ]] && ! tmux list-windows -t "$HUB_SESSION" -F '#W' | grep -Fxq -- "$name"; then
+      tmux new-window -d -t "$HUB_SESSION" -n "$name" -c "$directory" /usr/bin/zsh -l
+    fi
+    if tmux list-windows -t "$HUB_SESSION" -F '#W' | grep -Fxq -- "$name"; then
+      tmux set-window-option -t "$HUB_SESSION:$name" aggressive-resize on >/dev/null
+    fi
+  done <<EOF
+amaral-hub|/var/www/amaral-intern-hub
+debthub|/var/www/DEBTHUB-2.1
+adb-tools|/var/www/adb_tools
+home|$HOME
+usage-widget|$HOME/claude-usage-widget
+EOF
+
+  # Keep the mobile status bar compact enough to show useful window names.
+  tmux set-option -t "$MOBILE_SESSION" status-left '#[fg=colour16,bg=colour81,bold] AI #[default] ' >/dev/null
+  tmux set-option -t "$MOBILE_SESSION" status-left-length 8 >/dev/null
+  tmux set-option -t "$MOBILE_SESSION" status-right '%H:%M ' >/dev/null
+  tmux set-option -t "$MOBILE_SESSION" status-right-length 7 >/dev/null
+  tmux set-window-option -t "$MOBILE_SESSION" window-status-format '#I:#W ' >/dev/null
+  tmux set-window-option -t "$MOBILE_SESSION" window-status-current-format '#[reverse]#I:#W#[noreverse] ' >/dev/null
+  tmux bind-key w run-shell -b "$HOME/.local/bin/claude-hub menu '#{client_name}'"
+  tmux bind-key c new-window -c "$HOME" /usr/bin/zsh -l
+}
+
+new_window() {
+  local name="$1"
+  local directory="${2:-$HOME}"
+
+  validate_name "$name"
+  if [[ ! -d "$directory" ]]; then
+    printf 'Directory does not exist: %s\n' "$directory" >&2
+    exit 2
+  fi
+
+  ensure_hub
+  if has_window "$name"; then
+    printf 'Terminal already exists: %s\n' "$name" >&2
+    exit 3
+  fi
+
+  tmux new-window -d -t "=$HUB_SESSION" -n "$name" -c "$directory" /usr/bin/zsh -l
+  printf 'Created %s in %s\n' "$name" "$directory"
+}
+
+window_for_directory() {
+  local directory="$1"
+  local match
+
+  case "$directory" in
+    /var/www/amaral-intern-hub|/var/www/amaral-intern-hub/*)
+      printf '%s\n' amaral-hub
+      ;;
+    /var/www/DEBTHUB-2.1|/var/www/DEBTHUB-2.1/*)
+      printf '%s\n' debthub
+      ;;
+    /var/www/adb_tools|/var/www/adb_tools/*)
+      printf '%s\n' adb-tools
+      ;;
+    "$HOME/claude-usage-widget"|"$HOME/claude-usage-widget"/*)
+      printf '%s\n' usage-widget
+      ;;
+    "$HOME")
+      printf '%s\n' home
+      ;;
+    *)
+      match="$(tmux list-windows -t "=$HUB_SESSION" -F '#{pane_current_path}|#{window_name}' 2>/dev/null | awk -F '|' -v directory="$directory" '$1 == directory { print $2; exit }')"
+      if [[ -z "$match" ]]; then
+        printf 'No hub window is mapped to %s. Use: claude-hub start <name> %q\n' "$directory" "$directory" >&2
+        return 4
+      fi
+      printf '%s\n' "$match"
+      ;;
+  esac
+}
+
+view_window() {
+  local name="$1"
+  local safe_name view_session attach_status=0
+
+  validate_name "$name"
+  ensure_hub
+  if ! has_window "$name"; then
+    printf 'Hub window does not exist: %s\n' "$name" >&2
+    exit 3
+  fi
+  if [[ -n "${TMUX:-}" ]]; then
+    printf 'Already inside the hub. Use Ctrl-b w and select %s.\n' "$name" >&2
+    exit 5
+  fi
+
+  safe_name="${name//[^A-Za-z0-9]/-}"
+  view_session="claude-view-${safe_name}-$$"
+
+  tmux new-session -d -t "=$HUB_SESSION" -s "$view_session"
+  tmux select-window -t "$view_session:$name"
+  tmux set-option -t "$view_session" status-left " PC:$name " >/dev/null
+  tmux set-option -t "$view_session" status-left-length 32 >/dev/null
+
+  trap 'tmux kill-session -t "$view_session" 2>/dev/null || true' EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  tmux -u attach-session -t "$view_session" || attach_status=$?
+  tmux kill-session -t "$view_session" 2>/dev/null || true
+  trap - EXIT HUP INT TERM
+  return "$attach_status"
+}
+
+open_window() {
+  local name="$1"
+  local safe_name unit_name
+
+  validate_name "$name"
+  ensure_hub
+  if ! has_window "$name"; then
+    printf 'Hub window does not exist: %s\n' "$name" >&2
+    exit 3
+  fi
+
+  safe_name="${name//[^A-Za-z0-9]/-}"
+  unit_name="claude-view-${safe_name}-$(date +%s)-$$"
+  systemd-run --user --unit="$unit_name" --collect --service-type=exec \
+    /usr/bin/konsole --separate -p "tabtitle=Claude-$name" \
+    -e "$HOME/.local/bin/claude-hub" view "$name" >/dev/null
+  printf 'Opened %s in a synchronized Konsole window.\n' "$name"
+}
+
+external_agent_in_directory() {
+  local directory="$1"
+  local process_dir pid comm process_cwd
+
+  for process_dir in /proc/[0-9]*; do
+    pid="${process_dir##*/}"
+    [[ -r "$process_dir/comm" ]] || continue
+    read -r comm < "$process_dir/comm" || continue
+    [[ "$comm" == "claude" || "$comm" == "codex" || "$comm" == "codex-cli" ]] || continue
+    process_cwd="$(readlink -f "$process_dir/cwd" 2>/dev/null || true)"
+    if [[ "$process_cwd" == "$directory" ]]; then
+      printf '%s\n' "$pid"
+      return 0
+    fi
+  done
+}
+
+start_ai_command() {
+  local provider="$1"
+  local name="$2"
+  local directory="$3"
+  local mode="$4"
+  local session_id="${5:-}"
+  local directory_owner external_pid existing_directory existing_command existing_dead command
+  local -a ai_command=()
+
+  validate_name "$name"
+  if [[ ! -d "$directory" ]]; then
+    printf 'Directory does not exist: %s\n' "$directory" >&2
+    exit 2
+  fi
+
+  directory="$(realpath "$directory")"
+  case "$provider:$mode" in
+    claude:start)
+      ai_command=(claude --permission-mode bypassPermissions)
+      ;;
+    claude:resume)
+      ai_command=(claude --permission-mode bypassPermissions --resume)
+      [[ -z "$session_id" ]] || ai_command+=("$session_id")
+      ;;
+    codex:start)
+      ai_command=(codex --dangerously-bypass-approvals-and-sandbox)
+      ;;
+    codex:resume)
+      ai_command=(codex resume --dangerously-bypass-approvals-and-sandbox)
+      [[ -z "$session_id" ]] || ai_command+=("$session_id")
+      ;;
+    *)
+      printf 'Unknown provider or mode: %s %s\n' "$provider" "$mode" >&2
+      exit 2
+      ;;
+  esac
+  printf -v command '%q ' "${ai_command[@]}"
+  command="${command% }"
+
+  ensure_hub
+  if has_window "$name"; then
+    IFS='|' read -r existing_directory existing_command existing_dead < <(
+      tmux display-message -p -t "$HUB_SESSION:$name" \
+        '#{pane_current_path}|#{pane_current_command}|#{pane_dead}'
+    )
+    if [[ ( "$existing_command" == "claude" || "$existing_command" == "codex" ) && "$existing_dead" == "0" ]]; then
+      printf 'Session %s is already live; attaching instead of starting a duplicate.\n' "$name" >&2
+      if [[ "${AI_HUB_DETACHED:-0}" == "1" ]]; then
+        return
+      elif [[ -n "${TMUX:-}" ]]; then
+        tmux select-window -t ":$name"
+      else
+        view_window "$name"
+      fi
+      return
+    fi
+    if [[ "$(realpath "$existing_directory")" != "$directory" ]]; then
+      printf 'Window %s already maps to a different directory: %s\n' "$name" "$existing_directory" >&2
+      exit 3
+    fi
+  fi
+
+  directory_owner="$(tmux list-windows -t "=$HUB_SESSION" \
+    -F '#{window_name}|#{pane_current_path}|#{pane_current_command}|#{pane_dead}' | \
+    awk -F '|' -v directory="$directory" -v name="$name" \
+      '$1 != name && $2 == directory && ($3 == "claude" || $3 == "codex") && $4 == 0 { print $1; exit }')"
+  if [[ -n "$directory_owner" ]]; then
+    printf 'Refusing a second writing agent in the same worktree: %s already owns %s.\n' "$directory_owner" "$directory" >&2
+    printf 'Continue it with: ch continue %s\n' "$directory_owner" >&2
+    printf 'For parallel writing use a worktree: ch worktree-%s %s %q\n' "$provider" "$name" "$directory" >&2
+    exit 6
+  fi
+
+  external_pid="$(external_agent_in_directory "$directory")"
+  if [[ -n "$external_pid" ]]; then
+    printf 'Refusing a duplicate: agent PID %s already owns %s outside AI Central.\n' "$external_pid" "$directory" >&2
+    printf 'Let it finish, then resume it through the hub; use a worktree for safe parallel work.\n' >&2
+    exit 9
+  fi
+
+  if ! has_window "$name"; then
+    tmux new-window -d -t "=$HUB_SESSION" -n "$name" -c "$directory" /usr/bin/zsh -l
+    tmux set-window-option -t "$HUB_SESSION:$name" aggressive-resize on >/dev/null
+  elif [[ "$existing_dead" == "1" ]]; then
+    tmux respawn-pane -k -t "$HUB_SESSION:$name" -c "$directory" /usr/bin/zsh -l
+  fi
+
+  tmux send-keys -l -t "$HUB_SESSION:$name" -- "$command"
+  tmux send-keys -t "$HUB_SESSION:$name" Enter
+  if [[ -n "$session_id" && -x "$REGISTRY_HELPER" ]]; then
+    "$REGISTRY_HELPER" upsert "$name" "$provider" "$directory" "$session_id" >/dev/null 2>&1 || true
+  fi
+
+  if [[ "${AI_HUB_DETACHED:-0}" == "1" ]]; then
+    return
+  elif [[ -n "${TMUX:-}" ]]; then
+    tmux select-window -t ":$name"
+  else
+    view_window "$name"
+  fi
+}
+
+start_claude() {
+  start_ai_command claude "$1" "${2:-$PWD}" start
+}
+
+resume_claude() {
+  start_ai_command claude "$1" "${2:-$PWD}" resume "${3:-}"
+}
+
+start_codex() {
+  start_ai_command codex "$1" "${2:-$PWD}" start
+}
+
+resume_codex() {
+  start_ai_command codex "$1" "${2:-$PWD}" resume "${3:-}"
+}
+
+start_worktree() {
+  local provider="$1"
+  local name="$2"
+  local repository="${3:-$PWD}"
+  local branch="${4:-ai/$name}"
+  local repository_root worktree_parent worktree_directory
+
+  validate_name "$name"
+  repository_root="$(git -C "$repository" rev-parse --show-toplevel 2>/dev/null)" || {
+    printf 'Not a Git repository: %s\n' "$repository" >&2
+    exit 7
+  }
+  worktree_parent="$HOME/wt"
+  worktree_directory="$worktree_parent/$name"
+
+  if [[ -e "$worktree_directory" ]]; then
+    printf 'Worktree path already exists: %s\n' "$worktree_directory" >&2
+    exit 8
+  fi
+
+  mkdir -p "$worktree_parent"
+  if git -C "$repository_root" show-ref --verify --quiet "refs/heads/$branch"; then
+    git -C "$repository_root" worktree add "$worktree_directory" "$branch"
+  else
+    git -C "$repository_root" worktree add -b "$branch" "$worktree_directory" HEAD
+  fi
+  start_ai_command "$provider" "$name" "$worktree_directory" start
+}
+
+wizard() {
+  local mode="$1"
+  local provider name directory session_id branch default_branch
+
+  case "$mode" in
+    claude|codex)
+      provider="$mode"
+      ;;
+    resume-claude)
+      provider=claude
+      ;;
+    resume-codex)
+      provider=codex
+      ;;
+    worktree)
+      printf 'Provedor [claude/codex] (claude): '
+      read -r provider
+      provider="${provider:-claude}"
+      [[ "$provider" == "claude" || "$provider" == "codex" ]] || { printf 'Provedor inválido.\n' >&2; return 2; }
+      ;;
+    *)
+      printf 'Modo inválido: %s\n' "$mode" >&2
+      return 2
+      ;;
+  esac
+
+  printf 'Nome curto da sessão: '
+  read -r name
+  validate_name "$name"
+  printf 'Pasta/repositório (%s): ' "$PWD"
+  read -r directory
+  directory="${directory:-$PWD}"
+
+  if [[ "$mode" == "worktree" ]]; then
+    default_branch="ai/$name"
+    printf 'Branch (%s): ' "$default_branch"
+    read -r branch
+    start_worktree "$provider" "$name" "$directory" "${branch:-$default_branch}"
+  elif [[ "$mode" == resume-* ]]; then
+    printf 'ID da sessão (vazio abre o seletor): '
+    read -r session_id
+    start_ai_command "$provider" "$name" "$directory" resume "$session_id"
+  else
+    start_ai_command "$provider" "$name" "$directory" start
+  fi
+}
+
+dashboard() {
+  "$HOME/.local/bin/ai-hub-state.py" --text
+  printf '\nPressione Enter para voltar ao menu...'
+  read -r
+}
+
+web_access() {
+  local url
+
+  url="$("$HOME/.local/bin/ai-central-web.py" --print-url)"
+  clear
+  printf '\033[1;36mAI CENTRAL · INTERFACE VISUAL\033[0m\n\n'
+  printf 'Abra ou toque no endereço privado abaixo:\n\n'
+  printf '\033]8;;%s\033\\\033[1;4m%s\033[0m\033]8;;\033\\\n\n' "$url" "$url"
+  if command -v qrencode >/dev/null 2>&1; then
+    qrencode -t ANSIUTF8 "$url"
+  fi
+  printf 'O token já está no link e será salvo somente neste dispositivo.\n'
+  printf 'Pressione Enter para voltar ao menu...'
+  read -r
+}
+
+declare -A HUB_STATUS_BY_WINDOW=()
+declare -A HUB_MARKER_BY_WINDOW=()
+declare -A HUB_PROVIDER_BY_WINDOW=()
+
+load_agent_states() {
+  local window marker status provider
+
+  HUB_STATUS_BY_WINDOW=()
+  HUB_MARKER_BY_WINDOW=()
+  HUB_PROVIDER_BY_WINDOW=()
+  command -v jq >/dev/null 2>&1 || return 0
+  while IFS=$'\t' read -r window marker status provider; do
+    [[ -n "$window" && -n "$status" ]] || continue
+    HUB_MARKER_BY_WINDOW["$window"]="$marker"
+    HUB_STATUS_BY_WINDOW["$window"]="$status"
+    case "$provider" in
+      claude) HUB_PROVIDER_BY_WINDOW["$window"]="CL" ;;
+      codex) HUB_PROVIDER_BY_WINDOW["$window"]="CX" ;;
+      *) HUB_PROVIDER_BY_WINDOW["$window"]="SH" ;;
+    esac
+  done < <(
+    timeout 8s "$HOME/.local/bin/ai-hub-state.py" 2>/dev/null |
+      jq -r '.sessions[] | [.name, .marker, .status, .provider] | @tsv' 2>/dev/null || true
+  )
+}
+
+build_menu_items() {
+  local target_session="$1"
+  local output_name="$2"
+  local -n output="$output_name"
+  local index name directory label state marker provider shortcut
+
+  load_agent_states
+  while IFS='|' read -r index name directory _ _; do
+    marker="${HUB_MARKER_BY_WINDOW[$name]:-○}"
+    state="${HUB_STATUS_BY_WINDOW[$name]:-SHELL}"
+    provider="${HUB_PROVIDER_BY_WINDOW[$name]:-SH}"
+
+    printf -v label '%s %-2s %-2s %-13.13s %s' "$marker" "$index" "$provider" "$name" "$state"
+    shortcut="$index"
+    [[ "$shortcut" =~ ^[0-9]$ ]] || shortcut=""
+    output+=("$label" "$shortcut" "select-window -t ':$index'")
+  done < <(tmux list-windows -t "$target_session" \
+    -F '#I|#W|#{pane_current_path}|#{pane_current_command}|#{pane_dead}')
+
+  output+=("▣    STATUS GERAL" "s" "display-popup -d '#{pane_current_path}' -E -w 94% -h 90% '$HOME/.local/bin/claude-hub dashboard'")
+  output+=("◈    CENTRAL VISUAL" "v" "display-popup -d '#{pane_current_path}' -E -w 94% -h 90% '$HOME/.local/bin/claude-hub web'")
+  output+=("＋    NOVO CLAUDE" "a" "display-popup -d '#{pane_current_path}' -E -w 94% -h 90% '$HOME/.local/bin/claude-hub wizard claude'")
+  output+=("＋    NOVO CODEX" "x" "display-popup -d '#{pane_current_path}' -E -w 94% -h 90% '$HOME/.local/bin/claude-hub wizard codex'")
+  output+=("↻    RETOMAR CLAUDE" "r" "display-popup -d '#{pane_current_path}' -E -w 94% -h 90% '$HOME/.local/bin/claude-hub wizard resume-claude'")
+  output+=("↻    RETOMAR CODEX" "e" "display-popup -d '#{pane_current_path}' -E -w 94% -h 90% '$HOME/.local/bin/claude-hub wizard resume-codex'")
+  output+=("◇    WORKTREE ISOLADO" "t" "display-popup -d '#{pane_current_path}' -E -w 94% -h 90% '$HOME/.local/bin/claude-hub wizard worktree'")
+  output+=("＋    NOVA SHELL       HOME" "n" "new-window -c '$HOME' /usr/bin/zsh -l")
+}
+
+mobile_attach() {
+  local -a menu_items=()
+  local client session
+
+  ensure_hub
+
+  # A shortcut can be opened more than once in Termux.  Keep only the newest
+  # phone attachment so stale clients cannot force Claude back to a smaller
+  # terminal size.  Desktop clients attach to HUB_SESSION and are untouched.
+  while IFS='|' read -r client session; do
+    if [[ "$session" == "$MOBILE_SESSION" ]]; then
+      tmux detach-client -t "$client" 2>/dev/null || true
+    fi
+  done < <(tmux list-clients -F '#{client_tty}|#{client_session}' 2>/dev/null || true)
+
+  build_menu_items "$MOBILE_SESSION" menu_items
+
+  exec tmux -u attach-session -t "=$MOBILE_SESSION" \; \
+    display-menu -T ' AI CENTRAL · CLAUDE + CODEX ' "${menu_items[@]}"
+}
+
+show_mobile_menu() {
+  local target_client="$1"
+  local -a menu_items=()
+
+  ensure_hub
+  build_menu_items "$MOBILE_SESSION" menu_items
+
+  tmux display-menu -c "$target_client" -T ' AI CENTRAL · CLAUDE + CODEX ' "${menu_items[@]}"
+}
+
+case "${1:-}" in
+  init)
+    ensure_hub
+    ;;
+  attach)
+    [[ $# -le 2 ]] || { usage >&2; exit 2; }
+    view_window "${2:-amaral-hub}"
+    ;;
+  mobile)
+    # Present a compact, touch-friendly menu on every fresh phone connection.
+    mobile_attach
+    ;;
+  view)
+    [[ $# -eq 2 ]] || { usage >&2; exit 2; }
+    view_window "$2"
+    ;;
+  here)
+    [[ $# -eq 1 ]] || { usage >&2; exit 2; }
+    ensure_hub
+    view_window "$(window_for_directory "$PWD")"
+    ;;
+  open)
+    [[ $# -eq 2 ]] || { usage >&2; exit 2; }
+    open_window "$2"
+    ;;
+  continue)
+    [[ $# -eq 2 ]] || { usage >&2; exit 2; }
+    open_window "$2"
+    ;;
+  start|start-claude)
+    [[ $# -ge 2 && $# -le 3 ]] || { usage >&2; exit 2; }
+    start_claude "$2" "${3:-$PWD}"
+    ;;
+  resume|resume-claude)
+    [[ $# -ge 2 && $# -le 4 ]] || { usage >&2; exit 2; }
+    resume_claude "$2" "${3:-$PWD}" "${4:-}"
+    ;;
+  start-codex)
+    [[ $# -ge 2 && $# -le 3 ]] || { usage >&2; exit 2; }
+    start_codex "$2" "${3:-$PWD}"
+    ;;
+  resume-codex)
+    [[ $# -ge 2 && $# -le 4 ]] || { usage >&2; exit 2; }
+    resume_codex "$2" "${3:-$PWD}" "${4:-}"
+    ;;
+  worktree|worktree-claude)
+    [[ $# -ge 2 && $# -le 4 ]] || { usage >&2; exit 2; }
+    start_worktree claude "$2" "${3:-$PWD}" "${4:-ai/$2}"
+    ;;
+  worktree-codex)
+    [[ $# -ge 2 && $# -le 4 ]] || { usage >&2; exit 2; }
+    start_worktree codex "$2" "${3:-$PWD}" "${4:-ai/$2}"
+    ;;
+  wizard)
+    [[ $# -eq 2 ]] || { usage >&2; exit 2; }
+    wizard "$2"
+    ;;
+  status)
+    [[ $# -eq 1 ]] || { usage >&2; exit 2; }
+    "$HOME/.local/bin/ai-hub-state.py" --text
+    ;;
+  web)
+    [[ $# -eq 1 ]] || { usage >&2; exit 2; }
+    web_access
+    ;;
+  dashboard)
+    [[ $# -eq 1 ]] || { usage >&2; exit 2; }
+    dashboard
+    ;;
+  gui)
+    shift
+    exec "$HOME/.local/bin/claude-hub-gui" "$@"
+    ;;
+  list)
+    ensure_hub
+    tmux list-windows -t "=$HUB_SESSION" -F '#{window_index}:#{window_name} #{pane_current_path} [#{pane_current_command}]'
+    ;;
+  menu)
+    [[ $# -eq 2 ]] || { usage >&2; exit 2; }
+    show_mobile_menu "$2"
+    ;;
+  new)
+    [[ $# -ge 2 && $# -le 3 ]] || { usage >&2; exit 2; }
+    new_window "$2" "${3:-$HOME}"
+    ;;
+  -h|--help|help|'')
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

@@ -124,6 +124,22 @@ def test_slug_matches_the_projects_layout(probe):
     assert probe._slug("/home/ti") == "-home-ti"
 
 
+def test_session_hint_selects_the_right_transcript_in_same_directory(probe, tmp_path, monkeypatch):
+    projects = tmp_path / "projects"
+    folder = projects / probe._slug("/same/repo")
+    folder.mkdir(parents=True)
+    wanted = folder / "aaaa1111-full-session-id.jsonl"
+    newer_but_wrong = folder / "bbbb2222-other-session.jsonl"
+    wanted.write_text("{}\n")
+    newer_but_wrong.write_text("{}\n")
+    now = __import__("time").time()
+    __import__("os").utime(wanted, (now - 60, now - 60))
+    __import__("os").utime(newer_but_wrong, (now, now))
+    monkeypatch.setattr(probe, "PROJECTS", projects)
+
+    assert probe._newest_transcript("/same/repo", "aaaa1111") == wanted
+
+
 # ── announcements ──
 
 def _data(pid, state, name="repo"):
@@ -159,6 +175,27 @@ def test_working_and_idle_never_announce(probe, monkeypatch):
     probe.announce(_data(1, "working"))
     probe.announce(_data(2, "idle"))
     assert fired == []
+
+
+def test_notification_is_transient_and_never_waits_for_an_action(probe, monkeypatch):
+    """Plasma can retain actionable notifications forever.
+
+    ``notify-send --action`` implies ``--wait`` and previously leaked one
+    notify-send plus one shell process per state transition.
+    """
+    seen = {}
+
+    def fake_popen(command, **kwargs):
+        seen["command"] = command
+        seen["kwargs"] = kwargs
+
+    monkeypatch.setattr(probe.subprocess, "Popen", fake_popen)
+    probe._notify(_data(42, "waiting")["sessions"][0], "pt")
+
+    assert seen["command"][0] == "notify-send"
+    assert "--expire-time=12000" in seen["command"]
+    assert not any(arg.startswith("--action") for arg in seen["command"])
+    assert seen["kwargs"]["start_new_session"] is True
 
 
 def test_probe_is_silent_without_the_flag(tmp_path):

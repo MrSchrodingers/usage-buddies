@@ -1,0 +1,12 @@
+[Unit]
+Description=Restore registered AI Central sessions without duplicates
+After=claude-hub.service
+Requires=claude-hub.service
+Before=ai-hub-monitor.service ai-central-terminal.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/ti/.local/bin/ai-hub-restore.py
+
+[Install]
+WantedBy=default.target

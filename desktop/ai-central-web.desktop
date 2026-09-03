@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=AI Central · Mobile e Web
+Comment=Controle bilateral de Claude Code e Codex com terminal ao vivo
+Exec=/home/ti/.local/bin/ai-central-open.py
+Icon=/home/ti/claude-usage-widget/ai-central-web/static/icon.svg
+Terminal=false
+Categories=Development;
+StartupNotify=true

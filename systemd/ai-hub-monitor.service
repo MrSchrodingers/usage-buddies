@@ -1,0 +1,14 @@
+[Unit]
+Description=AI Central session state notifications
+After=graphical-session.target ai-hub-restore.service
+Requires=ai-hub-restore.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/ti/.local/bin/ai-hub-state.py --monitor --interval 8
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

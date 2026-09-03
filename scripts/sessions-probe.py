@@ -63,9 +63,19 @@ def _live_sessions() -> list[dict]:
         try:
             cwd = os.readlink(f"/proc/{pid}/cwd")
             started = os.stat(f"/proc/{pid}").st_mtime
+            raw_command = Path(f"/proc/{pid}/cmdline").read_bytes()
         except OSError:
             continue          # exited between listing and reading
-        out.append({"pid": int(pid), "cwd": cwd, "ageSeconds": int(time.time() - started)})
+        arguments = [part.decode(errors="replace") for part in raw_command.split(b"\0") if part]
+        session_hint = ""
+        for flag in ("--resume", "attach"):
+            if flag in arguments:
+                position = arguments.index(flag)
+                if position + 1 < len(arguments):
+                    session_hint = arguments[position + 1]
+                    break
+        out.append({"pid": int(pid), "cwd": cwd, "ageSeconds": int(time.time() - started),
+                    "sessionHint": session_hint})
     return out
 
 
@@ -104,10 +114,18 @@ def _tail_records(path: Path, limit=25):
     return out
 
 
-def _newest_transcript(cwd: str):
+def _newest_transcript(cwd: str, session_hint: str = ""):
     folder = PROJECTS / _slug(cwd)
     if not folder.is_dir():
         return None
+    if session_hint:
+        try:
+            matched = [path for path in folder.glob(f"{session_hint}*.jsonl")
+                       if "subagents" not in str(path)]
+            if matched:
+                return max(matched, key=lambda path: path.stat().st_mtime)
+        except OSError:
+            pass
     newest, newest_mtime = None, 0
     try:
         for f in folder.glob("*.jsonl"):
@@ -306,11 +324,13 @@ def classify(records, idle_seconds, background=0, executing=False):
 
 
 def _notify(session, lang="en"):
-    """Announce a session that needs the human, with a button that goes there.
+    """Announce a session that needs the human without leaving waiters behind.
 
-    --action implies --wait, so this runs detached and the chosen action is
-    read from its stdout by a small waiter. Without that the probe would block
-    for the notification's whole lifetime, every cycle.
+    libnotify actions imply ``--wait``. Plasma may keep an actionable
+    notification in history indefinitely, which used to leave one shell and
+    one notify-send process alive for every transition.  The central provides
+    the navigation action now, so this notification is deliberately transient
+    and non-interactive.
     """
     name = session.get("name") or "?"
     state = session.get("state")
@@ -318,26 +338,22 @@ def _notify(session, lang="en"):
         title = f"{name}: pronto" if state == "waiting" else f"{name}: perguntou algo"
         body = ("Terminou o que tinha para fazer." if state == "waiting"
                 else "Está esperando sua resposta.")
-        go = "Ir para lá"
     else:
         title = f"{name}: done" if state == "waiting" else f"{name}: asking"
         body = ("Finished what it was doing." if state == "waiting"
                 else "Waiting on your answer.")
-        go = "Go there"
 
-    helper = str(FOCUS_HELPER)
-    if not os.path.exists(helper):
-        helper = str(Path.home() / ".local" / "bin" / "focus-session.sh")
-
-    # notify-send prints the chosen action name; feed that to the focus helper.
-    shell = (
-        f'a=$(notify-send --app-name="Usage Buddies" --icon=claude-logo '
-        f'--urgency={"critical" if state == "asking" else "normal"} '
-        f'--action="go={go}" {json.dumps(title)} {json.dumps(body)} 2>/dev/null); '
-        f'[ "$a" = go ] && exec {json.dumps(helper)} {int(session["pid"])}'
-    )
+    command = [
+        "notify-send",
+        "--app-name=Usage Buddies",
+        "--icon=claude-logo",
+        f'--urgency={"critical" if state == "asking" else "normal"}',
+        "--expire-time=12000",
+        title,
+        body,
+    ]
     try:
-        subprocess.Popen(["sh", "-c", shell],
+        subprocess.Popen(command,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True)
     except (OSError, subprocess.SubprocessError) as error:
@@ -378,7 +394,7 @@ def announce(data, lang="en"):
 def collect() -> dict:
     sessions = []
     for live in _live_sessions():
-        transcript = _newest_transcript(live["cwd"])
+        transcript = _newest_transcript(live["cwd"], live.get("sessionHint", ""))
         idle = None
         records = []
         record = None
@@ -394,6 +410,7 @@ def collect() -> dict:
         name = os.path.basename(live["cwd"].rstrip("/")) or live["cwd"]
         sessions.append({
             "pid": live["pid"],
+            "sessionId": transcript.stem if transcript is not None else live.get("sessionHint", ""),
             "cwd": live["cwd"],
             "name": name,
             "branch": next((r.get("gitBranch") for r in records if r.get("gitBranch")), ""),

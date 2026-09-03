@@ -24,13 +24,18 @@ LOG="${XDG_CACHE_HOME:-$HOME/.cache}/usage-buddies/companion.log"
 
 # Echoes the pid of every running companion.
 companion_pids() {
-    local pid p argv
+    local pid p fd argv0 argv1 first second interpreter
     for pid in "$PROC"/[0-9]*; do
         p="${pid#"$PROC"/}"
         [ "$p" = "$SELF" ] && continue
-        argv=$( { tr '\0' '\n' < "$pid/cmdline"; } 2>/dev/null | head -2) || continue
-        first=$(basename -- "$(printf '%s\n' "$argv" | sed -n 1p)" 2>/dev/null)
-        second=$(basename -- "$(printf '%s\n' "$argv" | sed -n 2p)" 2>/dev/null)
+        argv0=
+        argv1=
+        { exec {fd}<"$pid/cmdline"; } 2>/dev/null || continue
+        IFS= read -r -d '' argv0 <&"$fd" || true
+        IFS= read -r -d '' argv1 <&"$fd" || true
+        exec {fd}<&-
+        first="${argv0##*/}"
+        second="${argv1##*/}"
         # Who is running the script, not who mentions it. Matching the name
         # anywhere in the command line takes `vim scripts/usage-buddy-companion.py`
         # and `cp scripts/usage-buddy-companion.py ~/.local/bin/` — the second
@@ -44,7 +49,8 @@ companion_pids() {
         # buddy_peers.is_companion and not this, so such a companion survived
         # `stop` and `start` left two of them running. Two implementations of
         # one rule that disagree are a contract nobody wrote.
-        case "$(printf '%s' "$first" | tr -d '0-9.')" in
+        interpreter="${first//[0-9.]/}"
+        case "$interpreter" in
             python|pypy) [ "$second" = "$SCRIPT_NAME" ] && echo "$p" ;;
         esac
         [ "$first" = "$SCRIPT_NAME" ] && echo "$p"
