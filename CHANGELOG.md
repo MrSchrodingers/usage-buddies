@@ -2,6 +2,88 @@
 
 ## Unreleased
 
+### The widget
+
+Every field of `widget-data.json` was already on screen — measured, not
+assumed — so the additions are what it was not doing with it. A weekly
+forecast, because `limitEta` projects the five-hour window and the weekly
+ceiling is the one that hurts. Cost by project. Today against the median of
+your own recent days, scaled to the hour.
+
+The alert thresholds are configurable, which took some care: they lived as
+literals in two files, and a test pinned them together because when they drift
+the bar turns red and no notification comes. They resolve in one place now and
+are published alongside the numbers they were applied to, so the bar is painted
+with the pair the run would have announced on. Both sides own the config file
+and it holds the org id the whole collection depends on, so every write goes
+through one mutator holding a lock, reading, merging and renaming.
+
+A compact mode that ranks what is on screen rather than showing one fixed
+thing: a major incident above a spent quota, a degraded service below it.
+Rising is immediate and falling is held, because a panel that changes face
+every refresh is worse than one that never does.
+
+And the QML is rendered in tests now instead of being read as text. A sixth
+header button had shipped a popup with every row cut off at the same x, and
+qmllint plus twenty-three assertions over the file all passed — the only thing
+that caught it was someone opening the popup and looking. The harness
+reproduces that defect against the pre-fix file, so the reproduction cannot rot.
+
+### The companion
+
+It talks to you now, and the lines were rewritten: 31 categories, eight lines
+each, in both languages. The two-clause shape that every one of the previous
+139 had is capped at three per category, because repeated that many times it
+stops being a voice and becomes a tic. The philosophy had been fortune
+cookies; the rule now is that if it fits on a mug it is out.
+
+It also stopped inventing figures. The live voice is handed session names,
+their states and two quotas rounded to tens — and nothing else — while the
+companion let its line replace whatever the Brain had rendered. Every sentence
+quoting efficiency, compaction, latency or runway made the number up. The model
+writes the character and the table writes the facts now.
+
+Focus blocks, an escort that holds one session, and an insistence ladder that
+climbs while a session waits. Quiet hours from this account's own peak hours.
+Twelve clips, five expressions, a contact shadow, a mood band, six props and
+fifteen particles. Two mascots on one desktop notice each other. A temper that
+remembers being thrown, a basket, a target, a distance record and juggling.
+
+### Defects worth recording
+
+- Running the test suite stopped whatever companion was running: one test
+  called the real `companion-ctl.sh stop`.
+- `companion-ctl.sh stop` matched the script name anywhere in a command line,
+  so it killed `vim` on the file and the `cp` inside `install.sh` — truncating
+  the file being installed.
+- Both overlay windows swallowed every click aimed at the mascot.
+  `WA_TransparentForMouseEvents` governs Qt's own hit testing and leaves a
+  separate top level's X input region alone; `Qt.WindowTransparentForInput` is
+  what empties it. The test had asserted the attribute and stated the wrong
+  mechanism as fact in its own docstring.
+- One lasting condition owned every line the mascot said. The ladder ranks by
+  urgency and the first allowed signal is spoken, so an open incident produced
+  twenty incident lines in twenty polls while the quota, the compaction count
+  and the read ratio were all firing and never reached.
+- The Codex collector exited 1 on every run for over an hour:
+  `item.get("info", {})` does not defend against a present key holding null,
+  and 3 of 941 records carry `"info": null`.
+- A companion that died said nothing at all, because `start` sent its output
+  to /dev/null and nothing here is a systemd unit.
+- The uninstaller left seven library modules behind.
+
+### Measurement mistakes, since they cost more than the defects
+
+Three of the same shape, and the third was caught by the second. A `uinput`
+write returning True proves the write, not that the pointer moved. A pointer
+read reported a working carry as inert — measured against KWin's own
+`cursorPos`, the XWayland shadow is 225 px from the truth at the median and
+frozen for 55 of 90 seconds. And an attribute set without effect passed a test
+that asserted the attribute. An instrument that cannot see the positive case
+cannot report its absence.
+
+## Unreleased
+
 The desktop companion stops being a character that walks and comments, and
 becomes one that can be configured, interrupted and worked with.
 

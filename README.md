@@ -410,6 +410,44 @@ than a look at the window tree: the X11 route works and costs 23.9 ms against
 0.26 ms, which is 72% of a frame spent in three fork/execs on the thread that
 draws, and the geometry it returns is the window's rather than the character's.
 
+#### Throwing it, which is the part people keep doing
+
+Released mid-motion it tumbles rather than dangling — carried and thrown are
+not the same thing to look at — leaves a trail, and raises dust scaled to the
+speed of *that* impact rather than of the throw that began it, since a hard
+fling already spent on two walls arrives gently.
+
+There are two things to aim at. Hold it for six seconds and a **basket**
+appears: it is the apology, and scoring pays off the temper it built up. After
+a throw settles, a **target** goes up, rings scoring four to one from the
+bullseye out. Catch it in the air before it touches the floor and the catches
+count as a rally. The longest throw is kept between sessions, per brand.
+
+Two decisions in there are worth knowing because they are not obvious. Hits are
+scored per integration step against the *segment* travelled, never against
+where the sprite is this frame: at the speed cap one step covers 118 px against
+a 112-px target face, so point sampling would miss precisely the throws worth
+aiming. And the basket is the only thing that *forgives* the temper — the
+target and a rally merely suspend it, because a second forgiver would weaken
+the retaliation without anyone deciding to.
+
+#### What it wears
+
+The mood band follows `dumbness.level` and stays for as long as the state does,
+which is the difference between a state and the four-second reaction that
+preceded it. Six props answer conditions that already had signals and no face:
+an umbrella for a service incident, an extinguisher for a critical quota, a mug
+for the small hours, a helmet for climbing errors, an hourglass during a focus
+block, a party hat for a streak. Particles do the rest — Z's asleep, a sweat
+drop panicking, an exclamation on alert, confetti celebrating.
+
+None of that is decoration that anything may or may not reach: a test holds
+every mood to a level the collector writes, every prop trigger to a key the
+detector emits, and every particle effect to a clip the animator can enter —
+and each in the other direction too, which is the one that catches art nobody
+wired. The project shipped eight written lines no code could select once
+already; that test is what stops the same defect arriving as pixels.
+
 #### Not verified, and why
 
 - **Not speaking while you type** needs a source of user idle time. This
