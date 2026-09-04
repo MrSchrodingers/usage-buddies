@@ -19,6 +19,8 @@ A threshold that fires on nothing. Signals that are true all day are read as
 decoration within an afternoon, so each one is tested against the number just
 below its bar as well as the number above it.
 """
+import datetime
+import os
 import re
 import sys
 import time
@@ -77,6 +79,23 @@ def _sessions(*rows, **over):
                "attention": None, "generatedAt": ""}
     payload.update(over)
     return payload
+
+
+def _stamp(when):
+    """`when` as the ISO text a collector writes into generatedAt.
+
+    Zone-aware, like both real writers, and built from the timestamp rather
+    than typed, so a suite run in any zone produces a stamp that means the
+    moment it was asked for.
+    """
+    return datetime.datetime.fromtimestamp(when).astimezone().isoformat()
+
+
+# One hour before the reading. The collector that prompted all of this was
+# dead for more than that, and it is past both payloads' thresholds with room
+# to spare, so a scenario built on it does not become a threshold test by
+# accident.
+DEAD_FOR_AN_HOUR = 3600
 
 
 # A busy history, the shape the machine this was written on actually has:
@@ -203,6 +222,16 @@ def _scenarios():
         "nightOwl": (
             (quiet, {}, NIGHT),
             (quiet, {}, NOON)),
+        # Both payloads an hour past being written, against both of them
+        # written a minute ago. The near-miss is a minute rather than a
+        # second because a minute is inside both thresholds and outside the
+        # measured cadence of either file: a healthy desktop really does hand
+        # a reader a payload that old.
+        "staleData": (
+            (_sessions(_session(), generatedAt=_stamp(NOON - DEAD_FOR_AN_HOUR)),
+             {"generatedAt": _stamp(NOON - DEAD_FOR_AN_HOUR)}, NOON),
+            (_sessions(_session(), generatedAt=_stamp(NOON - 60)),
+             {"generatedAt": _stamp(NOON - 60)}, NOON)),
         # The only scenario with a fourth element, and the only signal whose
         # justification is not in either payload: no file records that the
         # process has just started, so the caller says so. The near-miss is the
@@ -375,9 +404,18 @@ def test_the_order_is_the_priority_and_not_the_order_detectors_run():
 
 def test_two_empty_payloads_say_nothing_rather_than_guessing():
     """First run, before either collector has written anything. Silence is the
-    correct answer; a signal here would be invented from no data."""
-    assert signals.detect({}, {}) == []
+    correct answer; a signal here would be invented from no data.
+
+    Pinned to a fixed hour. The version of this that called detect() with no
+    timestamp asserted an empty list against the wall clock, so it passed all
+    day and failed between midnight and 05:00 on nightOwl — a test that
+    reports the hour it was run at rather than the thing it was written to
+    check. The no-argument call is still made, because the default clock is a
+    code path, and what is asserted about it is what is actually true: it
+    raises nothing and invents nothing beyond the hour it was run at.
+    """
     assert signals.detect({}, {}, NOON) == []
+    assert {signal.key for signal in signals.detect({}, {})} <= {"offPeak", "nightOwl"}
 
 
 def test_nulls_where_numbers_belong_do_not_raise():
@@ -420,7 +458,7 @@ def test_wrong_types_where_blocks_belong_do_not_raise():
              "lifetime": {"peakHours": ["9", "10"]}, "mcpAuthPending": "github",
              "serviceStatus": {"active_incidents": "none"}, "streak": 7}
     assert signals.detect("not a payload", usage, NOON) == []
-    assert signals.detect(None, None) == []
+    assert signals.detect(None, None, NOON) == []
     assert signals.detect({"sessions": ["a string", 3, None]}, {}, NOON) == []
 
 
@@ -432,7 +470,8 @@ def test_one_broken_detector_does_not_take_the_others_with_it():
 
     original = signals._DETECTORS
     try:
-        signals._DETECTORS = (_boom, signals._quota, _boom)
+        signals._DETECTORS = ((_boom, signals.USAGE), (signals._quota, signals.USAGE),
+                              (_boom, signals.CLOCK))
         found = signals.detect(_sessions(),
                                {"rateLimits": {"session": {"percentUsed": 97}}}, NOON)
     finally:
@@ -476,3 +515,291 @@ def test_a_thin_history_leaves_every_hour_alone_in_both_modules():
     for hour in (2, 5, 13, 20):
         assert "offPeak" not in fired(
             (_sessions(), {"lifetime": {"peakHours": fresh}}, at_hour(hour)))
+
+
+# ── a reading that stopped being a reading ─────────────────────────────────
+#
+# The defect these were written against was measured rather than imagined. On
+# 2026-09-03 the Codex collector died with an AttributeError on every run and
+# went more than an hour without writing widget-data.json, and for that whole
+# hour the widget and the companion kept serving the last numbers as current.
+# Nothing said anything; the person noticed by looking at the screen. Both
+# payloads had carried `generatedAt` the entire time and no code read it.
+
+def _aged(arguments, sessions_age, usage_age):
+    """The same scenario with each payload stamped that many seconds old.
+
+    Both ages are given explicitly and separately, because the two files are
+    written by different processes on different cadences and the whole
+    question below is what happens when one of them stops and the other does
+    not.
+    """
+    when = arguments[2]
+    sessions, usage = dict(arguments[0]), dict(arguments[1])
+    sessions["generatedAt"] = _stamp(when - sessions_age)
+    usage["generatedAt"] = _stamp(when - usage_age)
+    return (sessions, usage) + tuple(arguments[2:])
+
+
+def _clock_keys():
+    """Every key a detector tagged CLOCK can emit, derived from the table.
+
+    Listed here as a set literal it would be a second copy of the sources,
+    and the copy is what drifts: a detector moved from CLOCK to USAGE would
+    leave this suite asserting that a signal survives a dead collector after
+    the module had stopped letting it.
+    """
+    original = signals._DETECTORS
+    found = set()
+    try:
+        signals._DETECTORS = tuple(entry for entry in original
+                                   if entry[1] is signals.CLOCK)
+        for scenario in SCENARIOS.values():
+            found |= set(fired(_aged(scenario[0], DEAD_FOR_AN_HOUR,
+                                     DEAD_FOR_AN_HOUR)))
+    finally:
+        signals._DETECTORS = original
+    return found
+
+
+def test_a_minute_old_is_still_a_reading_and_an_hour_old_is_not():
+    """The two ends of the verdict, against both thresholds.
+
+    A minute is inside both limits and outside the measured write cadence of
+    either file, so a healthy desktop really does hand a reader a payload that
+    old; an hour is the outage that prompted this.
+    """
+    for limit in signals.STALE_AFTER.values():
+        recent = signals.freshness({"generatedAt": _stamp(NOON - 60)}, NOON,
+                                   stale_after=limit)
+        assert recent.state == "fresh", limit
+        assert recent.age == "1min"
+        dead = signals.freshness({"generatedAt": _stamp(NOON - DEAD_FOR_AN_HOUR)},
+                                 NOON, stale_after=limit)
+        assert dead.state == "stale", limit
+        assert dead.age == "1h"
+
+
+def test_each_payload_is_judged_against_its_own_cadence():
+    """One threshold for both files would be wrong for one of them.
+
+    sessions.json is written every 19-20 s by the plasmoid's own timer;
+    widget-data.json every 27-90 s by two systemd timers whose runs take up
+    to forty seconds. Five minutes is a dead probe and an ordinary collector,
+    and the two constants exist precisely so that reading says so.
+    """
+    five_minutes = {"generatedAt": _stamp(NOON - 300)}
+    assert signals.freshness(five_minutes, NOON,
+                             stale_after=signals.SESSIONS_STALE_SECONDS).state == "stale"
+    assert signals.freshness(five_minutes, NOON,
+                             stale_after=signals.USAGE_STALE_SECONDS).state == "fresh"
+    assert set(signals.stale_payloads(five_minutes, five_minutes, NOON)) == {"sessions"}
+
+
+@pytest.mark.parametrize("value", [
+    None, "", "   ", "\t\n", 1_700_000_000, 1.5, True, [], {}, ["2026-09-04"],
+    {"iso": "2026-09-04"}, "not a date", "yesterday", "2026-13-45T99:99:99",
+    "2026-09-04T01:05:09+99:99", "2026-09-04T01:05:09-03:00 (BRT)",
+])
+def test_a_stamp_the_parser_cannot_read_is_unknown_and_never_raises(value):
+    """`generatedAt` is text written by another process and read from a
+    QTimer. Every way it can be wrong has to end in a verdict, because one
+    raise there does not drop a frame — it costs every line the companion
+    would ever have said.
+
+    Unknown is deliberately not an accusation. A payload nobody has written
+    yet is an empty dict with no numbers in it, so there is nothing to
+    suppress, and a collector too old to stamp its output would otherwise be
+    denounced forever — a permanent alarm is one nobody reads. The failure
+    this exists for leaves a stamp behind and stops refreshing it.
+    """
+    for limit in signals.STALE_AFTER.values():
+        assert signals.freshness({"generatedAt": value}, NOON,
+                                 stale_after=limit) == signals.Freshness(
+                                     "unknown", None, "")
+    payload = {"generatedAt": value}
+    assert signals.stale_payloads(payload, payload, NOON) == {}
+    assert "staleData" not in fired((_sessions(_session(), generatedAt=value),
+                                     payload, NOON))
+
+
+def test_a_missing_stamp_is_unknown_rather_than_an_accusation():
+    """The field absent altogether, which is every payload written before any
+    of this existed."""
+    for limit in signals.STALE_AFTER.values():
+        assert signals.freshness({}, NOON, stale_after=limit).state == "unknown"
+        assert signals.freshness({"sessions": []}, NOON,
+                                 stale_after=limit).state == "unknown"
+
+
+def test_a_stamp_without_a_zone_is_read_as_local_and_not_as_utc():
+    """Reading a zoneless local stamp as UTC ages a payload written this
+    second by the size of the offset — three hours on this machine — and
+    calls it dead on every cycle, which is the alarm-that-cries-always the
+    whole feature exists to avoid.
+
+    The zone is forced rather than inherited: on a machine already running on
+    UTC the two readings coincide and the assertion would pass without
+    testing anything.
+    """
+    previous = os.environ.get("TZ")
+    try:
+        # A POSIX zone string rather than a name, so this does not depend on
+        # a tzdata package being installed. "XXX3" is three hours behind UTC.
+        os.environ["TZ"] = "XXX3"
+        time.tzset()
+        now = time.time()
+        naive = datetime.datetime.fromtimestamp(now).isoformat()
+        assert "+" not in naive and naive.count("-") == 2, naive
+        verdict = signals.freshness({"generatedAt": naive}, now,
+                                    stale_after=signals.SESSIONS_STALE_SECONDS)
+        assert verdict.state == "fresh", verdict
+        assert verdict.seconds < 1.0, verdict
+    finally:
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
+
+
+@pytest.mark.parametrize("ahead", [30, 3600, 86_400])
+def test_a_stamp_in_the_future_is_a_disagreement_and_not_a_claim_of_freshness(ahead):
+    """A clock that ran backwards is information, not an error: it says the
+    two clocks disagree. Calling that fresh is the same lie inverted, and
+    calling it stale is a sentence — "the data is -1h old" — that cannot be
+    said. So it is neither, and it accuses nobody: a bad clock is not a dead
+    collector, and there is no honest number to print.
+    """
+    stamp = {"generatedAt": _stamp(NOON + ahead)}
+    for limit in signals.STALE_AFTER.values():
+        verdict = signals.freshness(stamp, NOON, stale_after=limit)
+        assert verdict.state == "ahead", verdict
+        assert verdict.seconds < 0
+        assert verdict.age == ""
+    assert signals.stale_payloads(stamp, stamp, NOON) == {}
+    assert "staleData" not in fired((_sessions(_session(), **stamp), stamp, NOON))
+
+
+def test_a_stamp_a_moment_ahead_is_rounding_and_not_a_broken_clock():
+    """Both writers share this machine's clock, so a sub-second future value
+    is the write landing between the stamp and the read. Calling that a clock
+    disagreement would put every payload into the one verdict that asserts
+    nothing at all."""
+    stamp = {"generatedAt": _stamp(NOON + 1)}
+    assert signals.freshness(stamp, NOON,
+                             stale_after=signals.USAGE_STALE_SECONDS).state == "fresh"
+
+
+# ── the refusal, and its limits ────────────────────────────────────────────
+
+@pytest.mark.parametrize("key", sorted(set(SCENARIOS) - {"staleData"}))
+def test_no_number_survives_the_file_that_produced_it_going_quiet(key):
+    """Every scenario in the suite, replayed with both payloads an hour old.
+
+    What is left has to be the signals that assert no measurement — the hour,
+    the greeting, and the verdict itself — because everything else is
+    arithmetic on figures nobody can vouch for. The surviving set is derived
+    from the detector table rather than listed here, so a detector that
+    changes source changes this test with it.
+    """
+    dead = _aged(SCENARIOS[key][0], DEAD_FOR_AN_HOUR, DEAD_FOR_AN_HOUR)
+    keys = set(fired(dead))
+    assert "staleData" in keys, f"{key}: an hour-old payload was not called stale"
+    assert keys <= _clock_keys(), f"{key}: still asserted {sorted(keys - _clock_keys())}"
+
+
+def test_the_hour_and_the_greeting_are_not_punished_for_the_collector():
+    """The three signals that never quoted a number. offPeak reads
+    lifetime.peakHours, which is a count of every hour this account has ever
+    worked — an hour without a rewrite cannot move it — and what it says is
+    about the clock now. Silencing those alongside the numbers would be
+    punishing the readings that did not go wrong.
+    """
+    dead = _aged((_sessions(), {"lifetime": {"peakHours": PEAK_HOURS}}, NIGHT, True),
+                 DEAD_FOR_AN_HOUR, DEAD_FOR_AN_HOUR)
+    keys = set(fired(dead))
+    assert {"greeting", "offPeak", "nightOwl", "staleData"} <= keys, sorted(keys)
+
+
+def test_the_two_payloads_go_stale_independently():
+    """They are written by different processes on different cadences, so one
+    dying says nothing about the other. A session that stopped to ask a
+    question is still asking it while the usage collector is down, and a quota
+    at 97% is still at 97% while the session probe is down; silencing either
+    because the other went quiet would be its own invented conclusion.
+    """
+    both = (_sessions(_session(state="asking", name="adb")),
+            {"rateLimits": {"session": {"percentUsed": 97}}}, NOON)
+
+    alive = set(fired(_aged(both, 60, 60)))
+    assert {"asking", "quotaCritical"} <= alive
+    assert "staleData" not in alive
+
+    probe_dead = set(fired(_aged(both, DEAD_FOR_AN_HOUR, 60)))
+    assert "staleData" in probe_dead
+    assert "asking" not in probe_dead, "a question was reported off a dead probe"
+    assert "quotaCritical" in probe_dead, "a live quota was silenced by the probe"
+
+    collector_dead = set(fired(_aged(both, 60, DEAD_FOR_AN_HOUR)))
+    assert "staleData" in collector_dead
+    assert "quotaCritical" not in collector_dead, "a quota was quoted off a dead file"
+    assert "asking" in collector_dead, "a live question was silenced by the collector"
+
+
+def test_a_question_off_a_live_probe_still_outranks_the_dead_collector():
+    """Where staleData sits on the ladder, in the case that decides it. The
+    argument for putting the verdict at the very top is that everything below
+    it is made of numbers that no longer hold; the answer is that the two
+    files age separately, so a question read out of a payload written twenty
+    seconds ago is a live fact and the person it is waiting for outranks the
+    news that a different file stopped."""
+    both = (_sessions(_session(state="asking", name="adb")),
+            {"rateLimits": {"session": {"percentUsed": 97}}}, NOON)
+    keys = [signal.key for signal in signals.detect(*_aged(both, 60, DEAD_FOR_AN_HOUR))]
+    assert keys.index("asking") < keys.index("staleData")
+
+
+def test_a_burning_quota_off_a_live_collector_outranks_the_dead_probe():
+    """The other half of the same decision. The band that means the ability to
+    keep working is about to end only fires on a payload that is still being
+    written, so it is a live reading and sits above the verdict; everything
+    below the verdict is diagnosis and does not."""
+    both = (_sessions(_session(state="idle", background=0)),
+            {"rateLimits": {"session": {"percentUsed": 97}},
+             "compaction": {"count": 40}}, NOON)
+    keys = [signal.key for signal in signals.detect(*_aged(both, DEAD_FOR_AN_HOUR, 60))]
+    assert keys.index("quotaCritical") < keys.index("staleData")
+    assert keys.index("staleData") < keys.index("compaction")
+
+
+def test_the_age_reported_is_the_older_of_the_two_files():
+    """One category, two files. Saying twelve minutes while half the data is
+    three hours old is the same understatement one level in."""
+    quiet = (_sessions(_session()), {}, NOON)
+    assert fired(_aged(quiet, 3 * 3600, 12 * 60))["staleData"].vars["age"] == "3h"
+    assert fired(_aged(quiet, 12 * 60, 3 * 3600))["staleData"].vars["age"] == "3h"
+    assert fired(_aged(quiet, 60, 2 * 3600))["staleData"].vars["age"] == "2h"
+
+
+def test_every_detector_names_the_payload_its_claim_rests_on():
+    """The suppression is by source. A detector added to the sweep without one
+    would go on reporting numbers out of a file that stopped being written,
+    which is the defect itself reintroduced by omission — and the tuple shape
+    is what makes that impossible to do quietly."""
+    allowed = {signals.SESSIONS, signals.USAGE, signals.CLOCK}
+    for entry in signals._DETECTORS:
+        assert isinstance(entry, tuple) and len(entry) == 2, entry
+        detector, source = entry
+        assert callable(detector), entry
+        assert source in allowed, f"{detector.__name__} claims source {source!r}"
+    listed = [detector for detector, _ in signals._DETECTORS]
+    assert len(set(listed)) == len(listed), "a detector is in the sweep twice"
+
+
+def test_the_verdict_has_a_key_the_ladder_knows_about():
+    """STALE_KEY is spelled once and read by the companion. A drift between it
+    and the priority table would raise inside _signal, be swallowed by the
+    per-detector guard, and simply never say anything."""
+    assert signals.STALE_KEY in signals.PRIORITY
+    assert set(signals.STALE_AFTER) == {"sessions", "usage"}

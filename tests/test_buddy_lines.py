@@ -1,8 +1,16 @@
 """The shape of the dialogue table, which is not the same thing as its content.
 
-Nothing here judges whether a line is funny. What it holds are the four
-properties a person cannot check by reading 496 sentences, and each one is a
-defect this table has actually shipped.
+Nothing here judges whether a line is funny. What it holds are the properties a
+person cannot check by reading 512 sentences, and each one is a defect this
+table has actually shipped.
+
+A diagnosis with no number in it. 133 of the 416 lines whose category exists to
+report a measurement never mentioned the measurement, so "days left, quota not"
+went out at thirty percent and at ninety and read identically both times. That
+is what was reported as the sentences sounding generic, and it is the half of
+the complaint a test can hold: which categories owe a value is read off what
+the signals actually emit, so the rule covers a category nobody remembered to
+add to a list.
 
 One rhythm for the whole table. Every line used to be "clause. clause." - a
 statement and a dry remark, a hundred and thirty-nine times. Read once it is a
@@ -21,6 +29,7 @@ the person actually sees.
 An emoji. Banned across the repository, and easier to catch here than to notice
 in a diff of five hundred strings.
 """
+import functools
 import re
 import sys
 from pathlib import Path
@@ -59,6 +68,12 @@ LONG_ENOUGH = 95
 EMOJI = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\uFE0F]")
 
 
+# A value the companion drops into the sentence before showing it. `{n}` and
+# `${usd}` both count; a lone brace does not, and catching that one is the job
+# of the render check at the bottom of this file.
+PLACEHOLDER = re.compile(r"{\w+}")
+
+
 def _sentence_breaks(line):
     """Full stops with a sentence on both sides of them.
 
@@ -69,11 +84,16 @@ def _sentence_breaks(line):
     return len(re.findall(r"[.!?]\s+\S", line))
 
 
+@functools.cache
 def _scenario_vars():
     """The variables each signal really emits, borrowed from its own suite.
 
     Imported rather than restated: a second copy of the payloads here would
     drift, and then this would be substituting values nothing produces.
+
+    Cached because it is now read by three tests rather than one, and executing
+    the sibling module a couple of hundred times to get back the same
+    dictionary is most of this file's runtime spent on nothing.
     """
     import importlib.util
 
@@ -99,6 +119,80 @@ CATEGORIES = sorted(LINES["en"])
 @pytest.mark.parametrize("key", CATEGORIES)
 def test_a_category_is_eight_lines_in_both_languages(lang, key):
     assert len(LINES[lang][key]) == PER_CATEGORY, len(LINES[lang][key])
+
+
+@pytest.mark.parametrize("lang", LANGS)
+@pytest.mark.parametrize("key", CATEGORIES)
+def test_a_category_says_the_value_it_was_given_or_is_given_none(lang, key):
+    """The complaint about the sentences being generic, as a property.
+
+    Which side a category falls on is not written down here. It is whether the
+    signal that selects the category hands the line anything to say: quotaHigh
+    arrives with a percentage, philosophy arrives with nothing. So a category
+    added to buddy_signals with a variable is held to the rule from its first
+    run, and one added without a variable is held to the opposite, and neither
+    depends on somebody remembering to edit a list in this file.
+
+    The rule runs in both directions on purpose. A diagnosis missing its number
+    reads the same in every state it can fire in - "days left, quota not" is
+    the line that shipped, and it is as true at thirty percent as at ninety.
+    A placeholder in the five categories that describe no measurement is the
+    mirror defect: those are where the voice lives, and a value dropped into
+    one of them would print braces, because no signal fills it.
+    """
+    variables = _scenario_vars()
+    assert key in variables, f"{key} has no scenario, so nothing classifies it"
+    silent = [line for line in LINES[lang][key] if not PLACEHOLDER.search(line)]
+    speaking = [line for line in LINES[lang][key] if PLACEHOLDER.search(line)]
+    if variables[key]:
+        assert not silent, (
+            f"{lang}/{key} is handed {sorted(variables[key])} and "
+            f"{len(silent)} of {PER_CATEGORY} lines never say it:\n"
+            + "\n".join(silent))
+    else:
+        assert not speaking, (
+            f"{lang}/{key} is handed nothing, so these print braces:\n"
+            + "\n".join(speaking))
+
+
+def test_the_split_those_rules_run_on_has_two_sides():
+    """The instrument, against a case it is known to have to find.
+
+    Both halves of the rule above read the same dictionary, so a _scenario_vars
+    that came back empty for everything - a renamed field, a sibling suite that
+    stopped exporting its table - would silently reclassify every category as
+    voice and turn a real property into "nothing may carry a value". That would
+    fail loudly rather than pass, which is the right direction, but it would
+    fail for the wrong reason and send the next person to the wrong file. This
+    says out loud that the split has two sides and puts one known member on
+    each: staleData, which exists to quote a duration, and philosophy, which
+    exists to quote nothing.
+    """
+    variables = _scenario_vars()
+    fact = sorted(key for key in CATEGORIES if variables.get(key))
+    voice = sorted(key for key in CATEGORIES if not variables.get(key))
+    assert fact and voice, f"degenerate split: {len(fact)} fact, {len(voice)} voice"
+    assert "staleData" in fact, fact
+    assert "philosophy" in voice, voice
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_stale_data_says_how_old_the_reading_is(lang):
+    """The one category whose job is refusing to answer.
+
+    Nothing read generatedAt until the freshness guard went in, so a dead
+    collector left the companion quoting the last figures with the confidence
+    it had when they were fresh. Refusing without saying how stale is the same
+    defect one step quieter, so {age} is required in all eight rather than in
+    the category somewhere.
+    """
+    assert "staleData" in LINES[lang], sorted(LINES[lang])
+    lines = LINES[lang]["staleData"]
+    assert len(lines) == PER_CATEGORY, len(lines)
+    mute = [line for line in lines if "{age}" not in line]
+    assert not mute, (
+        f"{lang}/staleData: {len(mute)} lines refuse without saying how old:\n"
+        + "\n".join(mute))
 
 
 @pytest.mark.parametrize("lang", LANGS)

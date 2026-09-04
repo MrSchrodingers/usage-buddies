@@ -1435,3 +1435,145 @@ def test_the_live_prompt_forbids_stating_figures():
     for language, prompt in buddy_voice.SYSTEM.items():
         assert ("Never state a number" in prompt
                 or "Nunca diga um número" in prompt), language
+
+
+# ── a reading that stopped being a reading ─────────────────────────────────
+#
+# Measured on 2026-09-03: the Codex collector died with an AttributeError on
+# every run and went more than an hour without writing, and for that whole
+# hour the widget and this companion served the last numbers as if they were
+# current. The operator noticed by looking at the screen; nothing in the
+# product said a word. buddy_signals now refuses to quote a payload that
+# stopped being written, and what is checked here is the half that needs
+# memory: saying so once instead of once every twenty seconds.
+
+def _stamp(when):
+    """`when` as the ISO text a collector writes into generatedAt."""
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(when)) + \
+        time.strftime("%z", time.localtime(when))
+
+
+def _dated(age, when=None):
+    """The persistent desktop with both payloads stamped `age` seconds old."""
+    when = _MIDDAY if when is None else when
+    sessions, usage = _persistent_desktop()
+    sessions["generatedAt"] = usage["generatedAt"] = _stamp(when - age)
+    return sessions, usage
+
+
+def _spoken(brain, polls, wall=None):
+    """The categories `polls` consecutive readings actually put on screen."""
+    wall = _MIDDAY if wall is None else wall
+    return [brain.spoke for _ in range(polls) if brain.line(now=0.0, wall=wall)]
+
+
+@needs_qt
+def test_a_dead_collector_is_said_once_and_not_once_every_poll():
+    """A collector dead for three hours is one piece of news, not five hundred
+    and forty lines about a stopped clock. The poll runs every twenty seconds,
+    and a watcher that will not stop repeating itself is read as the broken
+    thing rather than as the one reporting it.
+
+    The category rationing that already exists does not answer this. It hands
+    a category back after four others, which over three hours is still dozens
+    of lines saying the same sentence about the same outage.
+    """
+    mod = _load()
+    brain = mod.Brain("en")
+    brain.sessions, brain.usage = _dated(3 * 3600)
+    spoken = _spoken(brain, 60)
+    assert spoken.count("staleData") == 1, \
+        "said %d times in sixty polls: %s" % (spoken.count("staleData"), spoken[:12])
+    assert spoken[0] == "staleData", \
+        "the first thing said on a dead desktop was %r" % (spoken[0],)
+
+
+@needs_qt
+def test_a_stale_payload_silences_every_number_and_leaves_the_voice():
+    """What the refusal costs, and what it is not allowed to cost.
+
+    Everything the ladder says about a measurement comes out of one of the two
+    files, so with both dead none of it may be said. The mascot's own voice
+    asserts nothing — ambient and philosophy quote no figure and read no
+    payload — and silencing those alongside the numbers would punish the one
+    thing that did not go wrong and leave a mute character on the desktop,
+    which looks exactly like a crashed one.
+    """
+    mod = _load()
+
+    def categories(age):
+        brain = mod.Brain("en")
+        brain.sessions, brain.usage = _dated(age)
+        return set(_spoken(brain, 40))
+
+    live = categories(60)
+    assert {"incident", "quotaHigh"} <= live, sorted(live)
+    assert "staleData" not in live, "a payload written a minute ago was called dead"
+
+    dead = categories(3 * 3600)
+    assert "staleData" in dead
+    assert dead & {"ambient", "philosophy"}, "a stale desktop went completely mute"
+    assert dead <= {"staleData", "ambient", "philosophy"}, \
+        "still asserted %s off a three-hour-old file" % sorted(
+            dead - {"staleData", "ambient", "philosophy"})
+
+
+@needs_qt
+def test_a_collector_that_comes_back_and_dies_again_is_announced_again():
+    """Silence about an outage is silence about *that* outage. A flag never
+    cleared would announce the first collector death of the session and then
+    never mention another one, which is the same defect one layer along: a
+    watcher that has stopped watching and does not say so.
+    """
+    mod = _load()
+    brain = mod.Brain("en")
+    brain.sessions, brain.usage = _dated(3 * 3600)
+    assert _spoken(brain, 8).count("staleData") == 1
+
+    brain.sessions, brain.usage = _dated(60)
+    recovered = _spoken(brain, 8)
+    assert "staleData" not in recovered, recovered
+
+    brain.sessions, brain.usage = _dated(3 * 3600)
+    assert _spoken(brain, 8).count("staleData") == 1, "the second outage was swallowed"
+
+
+@needs_qt
+def test_a_second_file_going_quiet_is_a_second_piece_of_news():
+    """The two payloads are written by different processes and die separately,
+    so the announcement is held per payload. One flag for both would report
+    whichever stopped first and stay silent when the other followed, while the
+    companion quietly stopped quoting the rest of the numbers too.
+    """
+    mod = _load()
+    brain = mod.Brain("en")
+    sessions, usage = _persistent_desktop()
+    sessions["generatedAt"] = _stamp(_MIDDAY - 3 * 3600)
+    usage["generatedAt"] = _stamp(_MIDDAY - 60)
+    brain.sessions, brain.usage = sessions, usage
+    first = _spoken(brain, 12)
+    assert first.count("staleData") == 1, first
+    # The collector is still writing, so its readings are still spoken.
+    assert {"incident", "limitSoon"} & set(first), sorted(set(first))
+
+    usage["generatedAt"] = _stamp(_MIDDAY - 3 * 3600)
+    second = _spoken(brain, 12)
+    assert second.count("staleData") == 1, \
+        "the second file went quiet and nothing was said: %s" % second
+
+
+@needs_qt
+def test_the_one_announcement_is_not_spent_on_a_line_that_never_lands():
+    """A focus block, the hands on the keyboard, or a category with no lines
+    written yet all return None from _pick. Recording the outage as announced
+    at that point would spend its single mention on a silence, and the dead
+    collector would never be mentioned at all.
+    """
+    mod = _load()
+    brain = mod.Brain("en")
+    brain.sessions, brain.usage = _dated(3 * 3600)
+    brain.focus.start(now=0.0, minutes=25)
+    assert _spoken(brain, 6) == [], "a focus block let a line through"
+    brain.focus.cancel()
+    assert _spoken(brain, 6).count("staleData") == 1, \
+        "the announcement was spent while the block was holding it"

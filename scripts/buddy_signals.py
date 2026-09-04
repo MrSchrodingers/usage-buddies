@@ -27,9 +27,18 @@ guard, so the worst case is one missing signal rather than a mute companion.
 Every threshold is a named constant with the reason for the number next to it.
 A bare `>= 0.7` in the middle of a condition is unarguable-with: the next
 person cannot tell whether it was measured, inherited or typed.
+
+And a third, newer than the other two. Nothing is asserted from a payload that
+stopped being written. Both files carry `generatedAt` and for a long time
+nothing read it, so when a collector died and went an hour without writing,
+every number in it kept being served as current — a dead reading dressed as a
+live one, which is worse than no reading because it buys confidence nobody
+earned. Each detector is tagged with the payload its claim rests on, a stale
+payload's detectors do not run, and one signal says so.
 """
 from __future__ import annotations
 
+import datetime
 import time
 from collections import namedtuple
 
@@ -41,6 +50,14 @@ import buddy_focus
 # priority: lower is more urgent; the caller takes the first.
 # vars: the placeholders that category's lines use, already formatted.
 Signal = namedtuple("Signal", "key priority vars")
+
+# state: one of the four verdicts freshness() can reach — "fresh", "stale",
+#   "ahead" (the stamp is in the future) or "unknown" (there is no usable one).
+# seconds: how old the payload says it is, or None when there is no stamp to
+#   subtract. Negative for "ahead", which is the point of keeping the number.
+# age: that same age already formatted for a line — "12min", "2h" — and ""
+#   whenever there is no age that can honestly be printed.
+Freshness = namedtuple("Freshness", "state seconds age")
 
 
 # ── the ladder ─────────────────────────────────────────────────────────────
@@ -64,6 +81,18 @@ PRIORITY = {
     "incident": 24,
     "limitSoon": 26,
     "creditsLow": 28,
+
+    # 30 — the instrument stopped, so what is below this line is arithmetic on
+    # numbers nobody can vouch for any more. Deliberately *below* the band
+    # above: those five only fire when the payload that produced them is
+    # fresh — a stale payload's detectors are not run at all — so a quota that
+    # genuinely runs out within the hour is a live reading and outranks the
+    # news that the *other* file stopped being written. Deliberately above
+    # everything below it, including the sessions: a broken instrument beats
+    # any reading taken with a working one, and "ti has been idle for 12min"
+    # off a probe that died an hour ago is precisely the confident wrong
+    # number this key exists to refuse.
+    "staleData": 30,
 
     # 40 — a session wants a human, but nothing is on fire. Same order the
     # companion has always used: finished first, then stopped-with-nothing-
@@ -224,6 +253,75 @@ BASH_MIN_CALLS = 200
 SESSION_SPREAD_MIN = 4
 
 
+# ── how old a reading is allowed to be ─────────────────────────────────────
+#
+# Both payloads have always carried `generatedAt` and nothing had ever read
+# it. What that cost was measured rather than imagined: on 2026-09-03 the
+# Codex collector died with an AttributeError on every run and went more than
+# an hour without writing, and for that whole hour the widget and this
+# companion served the last numbers as if they were current. Nothing in the
+# product said anything; the person noticed by looking at it. That is the
+# worst kind of wrong measurement — not a bad sum, a dead reading served as a
+# live one — because it buys confidence that was never earned.
+#
+# Each threshold is derived from that payload's own measured cadence, and the
+# two cadences differ by more than a factor of two, so a single number for
+# both would either accuse sessions.json during an ordinary cycle or let
+# widget-data.json rot for ten minutes before saying so. Measured on this
+# machine, 2026-09-04:
+#
+#   sessions.json     written by the plasmoid's own 20 s timer running
+#                     sessions-probe.py (main.qml: `interval: 20000`).
+#                     Twenty-eight consecutive gaps over ten minutes: 18.9 s
+#                     shortest, 19.3 s median, 20.0 s longest. The stamp is at
+#                     most 0.9 s older than the write carrying it. Worst age a
+#                     healthy desktop can hand a reader: about 21 s.
+#
+#   widget-data.json  written by usage-buddies-collector.timer and
+#                     codex-usage-collector.timer, both OnUnitActiveSec=30s
+#                     plus however long the run takes — and the runs are not
+#                     short: 30-40 s of CPU each. Thirteen gaps over the same
+#                     ten minutes: 48.7, 39.5, 50.9, 27.0, 20.9, 60.6, 13.7,
+#                     89.1, 1.1, 86.2, 3.2, 90.0, 3.3 s. The short ones are
+#                     the second collector following the first; what matters
+#                     is the long ones, and the longest was 90.0 s. The stamp
+#                     is taken when a run starts and the file is written up to
+#                     15.9 s later. Worst healthy age: about 106 s.
+#
+# So: 180 s is 8.6 times sessions.json's worst healthy age, and 600 s is 5.7
+# times widget-data.json's. Both are far enough above ordinary variance — a
+# slow API call, a run that overruns its own timer, four or five missed cycles
+# in a row — that a working desktop never reaches them, and far enough below
+# the hour the collector was actually dead that the failure is caught while it
+# still matters. A threshold under the cadence would cry on every normal cycle
+# and be switched off within a day; one at several hours would never have
+# caught the failure that prompted it.
+SESSIONS_STALE_SECONDS = 180.0
+USAGE_STALE_SECONDS = 600.0
+
+# Which threshold belongs to which payload. Named rather than passed by
+# position, because the two are three-and-a-bit minutes apart and getting them
+# the wrong way round would produce a mascot that complains about the probe
+# every three minutes and never notices the collector.
+STALE_AFTER = {"sessions": SESSIONS_STALE_SECONDS, "usage": USAGE_STALE_SECONDS}
+
+# A stamp in the future is information rather than an error: it means the
+# writing clock and the reading clock disagree, and asserting freshness from
+# it is the same lie the other way round. Both writers share this machine's
+# clock, so the only sub-second future values are rounding between a stamp
+# taken before a write and a read taken after it; a correction that steps the
+# clock backwards lands seconds to minutes out. This absorbs the first without
+# swallowing the second.
+CLOCK_AHEAD_SECONDS = 5.0
+
+# The key of the verdict, named once here rather than spelled again in the
+# companion. The companion has to recognise this one signal by key — it is the
+# only one it says once per outage instead of once per poll — and two spellings
+# of a string that must match is a defect nothing fails on: the mascot would
+# simply never stop repeating itself.
+STALE_KEY = "staleData"
+
+
 # ── reading whatever is actually in the file ───────────────────────────────
 
 def _dict(value):
@@ -280,6 +378,115 @@ def format_idle(seconds):
     return f"{value // 3600}h"
 
 
+# ── is this reading still a reading ────────────────────────────────────────
+
+def _generated_at(payload):
+    """The payload's `generatedAt` as a Unix timestamp, or None.
+
+    `generatedAt` is text written by another process, and every way it can be
+    wrong ends here as None rather than as an exception: absent, empty, not a
+    string at all, or a shape no date parser accepts. This is reached from a
+    QTimer, where one raise does not cost a frame — it costs every line the
+    companion would ever have said.
+
+    A stamp with no zone is read as local time. Both writers are processes on
+    this machine, and reading a local stamp as UTC would age a freshly written
+    payload by the size of the offset — three hours here — and call it dead on
+    every single cycle. The two writers currently disagree about the format
+    (`2026-09-04T04:05:18.734139+00:00` from the collector,
+    `2026-09-04T01:05:09-0300` from the probe), which is exactly why this
+    reads the offset rather than assuming one.
+
+    A number is refused on purpose. An epoch would be usable, but nothing
+    writes one, and guessing whether an unannounced number is seconds or
+    milliseconds is how a fresh payload becomes fifty years old.
+    """
+    raw = _dict(payload).get("generatedAt")
+    if not isinstance(raw, str):
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    # fromisoformat learned "Z" in 3.11 and this has to keep reading a file on
+    # whatever Python the desktop has.
+    if raw[-1:] in ("Z", "z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        stamp = datetime.datetime.fromisoformat(raw)
+    except (ValueError, TypeError):
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.astimezone()
+    try:
+        return stamp.timestamp()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def freshness(payload, now=None, *, stale_after):
+    """Whether the payload is recent enough to quote, and how old it says it is.
+
+    Four verdicts, and the two that are neither "fresh" nor "stale" are the
+    point of the function rather than an afterthought:
+
+    "fresh"    a stamp within `stale_after`. The numbers may be quoted.
+    "stale"    a stamp older than that. The numbers are a photograph of a
+               moment that has gone, and the caller must stop asserting them.
+    "ahead"    a stamp in the future by more than CLOCK_AHEAD_SECONDS. The
+               clocks disagree; nothing here knows by how much or in which
+               direction the truth lies, so this is *not* fresh — asserting
+               freshness from it is the same lie inverted — and it is not an
+               accusation either, because "the data is -4min old" is not a
+               sentence and a bad clock is not a dead collector.
+    "unknown"  no usable stamp. Not an accusation, deliberately. A payload
+               that has never been written is an empty dict with no numbers in
+               it, so there is nothing to suppress; a payload written by a
+               collector too old to stamp would otherwise be accused forever,
+               and a permanent alarm is one nobody reads. The failure that
+               motivated all of this leaves a stamp behind and simply stops
+               refreshing it, which is the "stale" case above.
+
+    `stale_after` is keyword-only and has no default. The two payloads' limits
+    differ by three and a half minutes and neither is a sensible default for
+    the other, so there is no value here that could be silently wrong.
+    """
+    when = time.time() if now is None else (_num(now) or time.time())
+    stamp = _generated_at(payload)
+    if stamp is None:
+        return Freshness("unknown", None, "")
+    seconds = when - stamp
+    if seconds < -CLOCK_AHEAD_SECONDS:
+        return Freshness("ahead", seconds, "")
+    # Inside the tolerance a future stamp is rounding, and a negative age is
+    # not something to format.
+    seconds = max(seconds, 0.0)
+    state = "stale" if seconds > _num(stale_after) else "fresh"
+    return Freshness(state, seconds, format_idle(seconds))
+
+
+def stale_payloads(sessions, usage, now=None):
+    """Which of the two payloads can no longer be quoted, and how old each is.
+
+    A dict from payload name to its Freshness holding only the stale ones, so
+    the ordinary answer is an empty dict. The detector below and the
+    companion's say-it-once gate both read this instead of each deciding for
+    itself what stale means — two definitions of the same word drift, and the
+    one that drifts is the one nobody is looking at.
+
+    The two age separately and are reported separately on purpose. They come
+    from different writers on different cadences, and a probe that dies while
+    the collector keeps running leaves half the payloads worth quoting: a
+    session that is asking a question is still asking it, and silencing that
+    because a different file went quiet would be its own invented conclusion.
+    """
+    found = {}
+    for name, payload in (("sessions", sessions), ("usage", usage)):
+        verdict = freshness(payload, now, stale_after=STALE_AFTER[name])
+        if verdict.state == "stale":
+            found[name] = verdict
+    return found
+
+
 def _signal(key, **vars_):
     return Signal(key, PRIORITY[key], vars_)
 
@@ -316,6 +523,19 @@ def _greeting(ctx):
     that is waiting, which is the whole reason the ladder exists.
     """
     return [_signal("greeting")] if ctx.greet else []
+
+
+def _stale(ctx):
+    """The one signal that is about the instrument rather than the reading."""
+    stale = stale_payloads(ctx.sessions, ctx.usage, ctx.now)
+    if not stale:
+        return []
+    # Two files, two cadences, one category. When both have stopped, the older
+    # of the two is the number that gets said: a line reading "3min" while half
+    # the data is three hours old is the same understatement this key exists to
+    # refuse, one level in.
+    worst = max(stale.values(), key=lambda verdict: verdict.seconds)
+    return [_signal(STALE_KEY, age=worst.age)]
 
 
 def _sessions_wanting_a_human(ctx):
@@ -590,25 +810,54 @@ def _hour_of_day(ctx):
     return found
 
 
+# Which payload each detector's claim rests on. A detector whose source has
+# stopped being written is not run at all, so a dead collector takes down the
+# signals made of its numbers and leaves the rest of the ladder alone.
+#
+# The source is written next to the detector rather than kept as a table of
+# keys elsewhere, because that is the only shape of this that cannot drift: a
+# detector cannot join the tuple without someone answering the question, and a
+# key/source map three hundred lines away would be one more thing to forget —
+# which is how twoRed spent its whole life written and unreachable.
+#
+# CLOCK is the deliberate third answer, for the four detectors that assert no
+# measurement at all:
+#   _greeting     reads no file.
+#   _stale        is the verdict itself, and the last thing that may be
+#                 silenced by its own subject.
+#   _hour_of_day  nightOwl reads the hour. offPeak reads lifetime.peakHours,
+#                 which is a count of every hour this account has ever worked
+#                 — an hour without a rewrite cannot move it — and what it
+#                 says is about the clock now, not about a figure in the file.
+#                 Silencing it with the collector would punish the one reading
+#                 that did not go wrong.
+#
+# _record_session reads both files and is filed under sessions, because its
+# claim is "this session has been running for N hours" and the N comes from
+# ageSeconds in the rows. The record it is measured against is a lifetime
+# figure that an hour of staleness cannot move.
+SESSIONS, USAGE, CLOCK = "sessions", "usage", None
+
 _DETECTORS = (
-    _greeting,
-    _sessions_wanting_a_human,
-    _quota,
-    _limit_eta,
-    _credits,
-    _incident,
-    _mcp_auth,
-    _errors,
-    _opus_fallback,
-    _slow,
-    _expensive_session,
-    _runway,
-    _record_session,
-    _diagnostics,
-    _session_spread,
-    _branch_opinion,
-    _streak,
-    _hour_of_day,
+    (_greeting, CLOCK),
+    (_stale, CLOCK),
+    (_sessions_wanting_a_human, SESSIONS),
+    (_quota, USAGE),
+    (_limit_eta, USAGE),
+    (_credits, USAGE),
+    (_incident, USAGE),
+    (_mcp_auth, USAGE),
+    (_errors, USAGE),
+    (_opus_fallback, USAGE),
+    (_slow, USAGE),
+    (_expensive_session, USAGE),
+    (_runway, USAGE),
+    (_record_session, SESSIONS),
+    (_diagnostics, USAGE),
+    (_session_spread, SESSIONS),
+    (_branch_opinion, SESSIONS),
+    (_streak, USAGE),
+    (_hour_of_day, CLOCK),
 )
 
 
@@ -625,6 +874,11 @@ def detect(sessions, usage, now=None, greet=False):
     been said. It is an argument rather than state in here because this module
     keeps none — two callers on one desktop would otherwise share a greeting.
 
+    A payload whose `generatedAt` is older than its own threshold is not read
+    at all: the detectors tagged with it are skipped, and `staleData` is
+    emitted in their place. The two payloads age separately, so a dead probe
+    does not silence the collector's numbers or the other way round.
+
     Returns a list, never None, and raises nothing. The caller takes the first
     entry; the rest are there so a caller that wants to skip a category it has
     said too recently has somewhere to go.
@@ -633,8 +887,21 @@ def detect(sessions, usage, now=None, greet=False):
     ctx = _Context(sessions=_dict(sessions), usage=_dict(usage),
                    rows=_rows(sessions), now=when,
                    hour=time.localtime(when).tm_hour, greet=bool(greet))
+    # Which payloads stopped being written, decided once for the whole sweep.
+    # Guarded like everything else here: if this ever raises, the answer is
+    # "nothing is known to be stale" and the ladder runs exactly as it did
+    # before any of this existed, rather than the companion going mute.
+    try:
+        stale = set(stale_payloads(ctx.sessions, ctx.usage, when))
+    except Exception:
+        stale = set()
     found = []
-    for detector in _DETECTORS:
+    for detector, source in _DETECTORS:
+        if source in stale:
+            # Skipped rather than run-and-discarded. A detector whose file
+            # stopped being written has nothing to add, and running it anyway
+            # is the arithmetic that produced the confident wrong number.
+            continue
         try:
             found.extend(detector(ctx) or [])
         except Exception:

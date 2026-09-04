@@ -687,6 +687,12 @@ class Brain(QObject):
     two lines and so effectively said one. And when several sessions qualify it
     rotates between them, because "ti finished" for an hour is the same
     complaint whether the sentence changes or not.
+
+    A third rule is narrower and applies to one signal. `staleData` says a
+    collector has stopped writing, and that stays true until somebody fixes it:
+    it is announced once per payload per outage and then not again, because a
+    watcher that repeats itself every twenty seconds for three hours is read as
+    the broken thing rather than as the one reporting it.
     """
 
     RECENT = 12          # lines to remember before allowing a repeat
@@ -761,6 +767,15 @@ class Brain(QObject):
         # alert waiting at start-up spends it rather than delaying it: the
         # greeting has this moment or none.
         self.greeting_due = False
+        # Which payloads this process has already said were stale. A collector
+        # dead for three hours is one piece of news; at a twenty-second poll,
+        # saying it every time it is still true would be five hundred and forty
+        # lines about a stopped clock, and a watcher that will not stop
+        # repeating itself is read as broken in exactly the way it is
+        # complaining about. Held per payload rather than as a flag, so a probe
+        # dying an hour after the collector is a second piece of news; emptied
+        # again as each one comes back, so the next outage is heard.
+        self._stale_said = frozenset()
         self._recent = []
         self._categories = []
         self._subjects = []
@@ -929,6 +944,18 @@ class Brain(QObject):
         narrowed = self.alerts_only or quiet or self.escort.locked_on is not None
         detected = signals.detect(self.payload(), self.usage, wall,
                                   greet=self.greeting_due)
+        # Which payloads have stopped being written. Recomputed here from the
+        # same reading rather than read off the signal, because the ladder says
+        # only *that* something is stale and the gate below needs to know
+        # *which*: staleData is one category and there are two files behind it.
+        try:
+            stale = frozenset(signals.stale_payloads(self.sessions, self.usage,
+                                                     wall))
+        except Exception:
+            stale = frozenset()
+        # A payload that came back is forgotten, so its next death is heard
+        # rather than mistaken for the one already announced.
+        self._stale_said &= stale
         # Recorded before the loop, not inside it. The loop breaks out of the
         # ladder in alerts-only and in the quiet hours, and what is on the
         # other side of that break is still measured and still true — a mode
@@ -961,6 +988,15 @@ class Brain(QObject):
                     and not narrowed
                     and signal.key not in focus_engine.FocusSession.ALLOWED):
                 continue
+            # Said once per outage, not once per poll. Not folded into the
+            # rationing above: that one buys variety and hands the category
+            # back after four others, which over an hour of a dead collector
+            # is still forty lines saying the same thing. This one is silent
+            # until a payload that had come back goes away again. The ladder
+            # carries on below it, so the hour, the greeting and the mascot's
+            # own voice are all still reachable while the numbers are not.
+            if signal.key == signals.STALE_KEY and stale <= self._stale_said:
+                continue
             vars_ = dict(signal.vars)
             chosen = self._rotate(self._candidates(signal.key))
             if chosen is not None:
@@ -970,6 +1006,13 @@ class Brain(QObject):
                 self.spoke = signal.key
                 self.greeting_due = False
                 self._remember_category(signal.key)
+                if signal.key == signals.STALE_KEY:
+                    # Recorded only once the sentence actually reached the
+                    # caller. A focus block, the typing gate or a category with
+                    # no lines in it yet all return None above, and spending
+                    # the one announcement on a silence would mean the outage
+                    # is never mentioned at all.
+                    self._stale_said = stale
                 return text
             # Silenced by the block, or a category with no lines: try the next
             # signal down rather than jumping straight to a joke.
