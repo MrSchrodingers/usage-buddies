@@ -12,8 +12,9 @@ for unit in ai-central-terminal.service ai-central-web.service ai-hub-monitor.se
 done
 systemctl --user daemon-reload >/dev/null 2>&1 || true
 
-for script in claude-hub claude-hub-gui.py ai-central-open.py ai-central-web.py \
-              ai-central-enable-https.sh ai-hub-state.py ai-hub-restore.py ai_hub_registry.py; do
+for script in claude-hub ch claude-hub-gui.py ai-central-open.py ai-central-web.py \
+              ai-central-enable-https.sh ai-hub-state.py ai-hub-restore.py ai_hub_registry.py \
+              ai-hub-registry.py; do
     rm -f "$BIN_DIR/$script"
 done
 rm -f "$SHARE_DIR/applications/ai-central-web.desktop" \

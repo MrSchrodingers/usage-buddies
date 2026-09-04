@@ -4,6 +4,20 @@ AI Central é a superfície única para acompanhar e controlar Claude Code, Code
 shells no PC e no celular. O tmux no PC é a fonte da verdade: Konsole, Termux e a
 PWA são clientes do mesmo processo, não cópias da conversa.
 
+## Início rápido
+
+| Objetivo | Comando no PC |
+|---|---|
+| Auditar sem alterar nada | `./install-ai-central.sh --check` |
+| Instalar para o login atual e futuros | `./install-ai-central.sh` |
+| Instalar dependências e subir antes do login | `./install-ai-central.sh --auto` |
+| PC + Android conectado por ADB | `./install-ai-central.sh --auto --android` |
+| Apenas instalar/atualizar o Android | `./install-ai-central-android.sh` |
+| Transferir ao Android e concluir manualmente | `./install-ai-central-android.sh --manual` |
+
+Antes da primeira execução, use `--dry-run` com as mesmas opções. Ele valida as
+fontes e mostra todos os destinos sem escrever no PC ou no aparelho.
+
 ## O que ela garante
 
 - Entrada e saída ao vivo nas duas telas.
@@ -50,52 +64,161 @@ independentes simultâneas não são possíveis para o mesmo processo TUI.
 O PC e o celular devem estar na mesma tailnet. Não exponha a porta da PWA na
 internet e não ative Tailscale Funnel.
 
-## Instalar no PC
+## Instalação no PC
+
+### 1. Clonar e auditar
 
 ```bash
-cd ~/claude-usage-widget
+git clone https://github.com/MrSchrodingers/usage-buddies.git
+cd usage-buddies
+./install-ai-central.sh --dry-run --auto
+./install-ai-central.sh --check
+```
+
+`--check` exige que as dependências já existam; `--dry-run` serve para revisar o
+plano mesmo antes de instalá-las.
+
+### 2. Escolher o modo
+
+Instalação padrão:
+
+```bash
 ./install-ai-central.sh
 ```
 
-O instalador copia comandos para `~/.local/bin`, a PWA para
-`~/.local/share/ai-central-web`, atalhos de desktop e unidades systemd portáveis.
-Ele habilita o hub, a restauração, o monitor e a PWA. Abrir automaticamente um
-Konsole no login é opcional:
+Ela não instala pacotes nem modifica serviços de sistema. Habilita o hub, a
+restauração, o monitor, a PWA e, por padrão, uma única janela Konsole anexada ao
+tmux no login gráfico. Para não abrir a janela automaticamente:
 
 ```bash
-systemctl --user enable --now ai-central-terminal.service
+./install-ai-central.sh --no-terminal
 ```
 
-Diagnóstico não destrutivo:
+Instalação automática para uma máquina dedicada/remota:
 
 ```bash
-claude-hub doctor
-claude-hub status
+./install-ai-central.sh --auto
+```
+
+`--auto` instala pacotes conhecidos em Fedora, Debian/Ubuntu ou Arch, habilita
+OpenSSH e Tailscale no boot e ativa o `linger` do usuário. Com isso, os serviços
+de usuário e o tmux restaurado sobem mesmo sem login gráfico. O instalador pode
+pedir `sudo` exclusivamente para pacotes, serviços de sistema e `linger`; a
+central em si continua instalada no diretório do usuário.
+
+Tailscale ainda precisa de autenticação humana uma vez (`sudo tailscale up`). O
+instalador aborta se não houver IPv4 da tailnet, em vez de expor a interface por
+uma rede pública.
+
+### 3. O que é alterado e como o rollback funciona
+
+- comandos: `~/.local/bin/claude-hub`, `~/.local/bin/ch` e auxiliares;
+- frontend: `~/.local/share/ai-central-web/`;
+- atalhos: `~/.local/share/applications/`;
+- unidades: `~/.config/systemd/user/`;
+- backups: `~/.local/state/ai-central/backups/AAAAmmdd-HHMMSS/`.
+
+Antes da primeira escrita, o instalador valida Bash e Python. Depois copia cada
+destino anterior, registra os estados das unidades e faz a atualização. Se
+assets, systemd, health ou `ch doctor` falharem, restaura arquivos e estados das
+unidades sem encerrar o tmux ou os agentes existentes. Reexecutar o instalador é
+seguro e cria um novo snapshot, inclusive ao atualizar versões.
+
+### 4. Validar
+
+```bash
+ch doctor
+ch status
 systemctl --user status claude-hub ai-hub-restore ai-hub-monitor ai-central-web
+systemctl --user is-enabled ai-central-terminal
+loginctl show-user "$USER" -p Linger
 ```
 
-## Instalar no celular com ADB
+O comando curto `ch` é um executável instalado, não um alias dependente do
+`.zshrc`. Se `ch` não for encontrado em uma shell antiga, execute uma vez
+`hash -r` ou abra uma nova shell; `~/.local/bin` precisa estar no `PATH`.
 
-Instale Termux e Termux:Widget pela mesma origem, instale `openssh` no Termux e
-cadastre a chave pública do celular em `~/.ssh/authorized_keys` no PC. Descubra o
-IPv4 Tailscale do PC:
+## Instalação no Android
+
+### Pré-requisitos
+
+1. Instale e autentique o Tailscale no Android na mesma tailnet do PC.
+2. Instale Termux e Termux:Widget pela mesma origem.
+3. Para o preflight automático após reinício, instale também Termux:Boot pela
+   mesma origem e abra o aplicativo Termux:Boot uma vez.
+4. Abra Termux ao menos uma vez e autorize a depuração USB do computador.
+5. Confirme no PC: `adb devices -l` deve mostrar o aparelho como `device`.
+
+O instalador não baixa APKs nem tenta automatizar o login do Tailscale. Isso
+evita misturar assinaturas/fontes de Termux e não guarda credenciais. Ele instala
+o pacote `openssh` dentro do Termux automaticamente quando necessário.
+
+### Opção A — instalação direta via ADB
+
+Com um único aparelho conectado:
 
 ```bash
-tailscale ip -4
+./install-ai-central-android.sh --check
+./install-ai-central-android.sh
 ```
 
-Com o aparelho autorizado no ADB, no PC:
+Com vários aparelhos ou parâmetros explícitos:
+
+```bash
+./install-ai-central-android.sh \
+  --serial 0123456789ABCDEF \
+  --host 100.64.0.1 \
+  --user meu-usuario
+```
+
+Ou faça PC e celular em uma única execução:
+
+```bash
+./install-ai-central.sh --auto --android --serial 0123456789ABCDEF
+```
+
+Nesse modo combinado, Termux:Boot é requisito: `--auto` promete retomada após
+reinícios e, portanto, não aceita silenciosamente uma instalação móvel incapaz
+de executar o preflight. No instalador Android isolado ele continua opcional;
+use `--require-boot` para aplicar o mesmo portão.
+
+A automação direta:
+
+1. valida ADB, Termux, Tailscale, porta SSH do PC e parâmetros;
+2. transfere somente o payload móvel para
+   `/sdcard/Download/ai-central-mobile/`;
+3. compara o SHA-256 de cada arquivo no PC e no Android;
+4. desanexa apenas a tela móvel antiga — agentes e workflows seguem vivos;
+5. abre uma nova sessão local do Termux, sem digitar sobre um Claude ativo;
+6. cria backup, mescla o bloco gerenciado de `termux.properties` e instala os
+   atalhos;
+7. gera uma chave Ed25519 no Android se necessário e autoriza a chave pelo
+   conteúdo, sem duplicá-la por causa do comentário;
+8. exige um arquivo de resultado `status=ok` e um novo cliente `claude-mobile`
+   no tmux antes de declarar sucesso.
+
+Se a tela estiver bloqueada, a automação para e entrega o comando manual; ela
+não tenta contornar o bloqueio do Android.
+
+### Opção B — ADB com conclusão manual
+
+No PC:
+
+```bash
+./install-ai-central-android.sh --manual
+```
+
+O comando exato aparecerá na tela. Execute-o em uma shell comum do Termux. A
+forma totalmente manual equivalente é:
 
 ```bash
 adb shell mkdir -p /sdcard/Download/ai-central-mobile
 adb push mobile/. /sdcard/Download/ai-central-mobile/
+bash /sdcard/Download/ai-central-mobile/install-termux.sh \
+  100.64.0.1 meu-usuario
 ```
 
-No Termux, substitua o IP e o usuário:
-
-```bash
-bash /sdcard/Download/ai-central-mobile/install-termux.sh 100.64.0.1 meu-usuario
-```
+O último `bash` é executado dentro do Termux, não no `adb shell`.
 
 O instalador móvel:
 
@@ -103,11 +226,42 @@ O instalador móvel:
 - não sobrescreve `~/.ssh/config`;
 - guarda versões anteriores em `~/.config/ai-central/backups/`;
 - instala `PC-Hub` e `PC-Shell` em `~/.shortcuts/`;
+- instala um preflight não visual em `~/.termux/boot/ai-central`;
 - instala a barra móvel com `TECLA`, `MENU`, `+SH`, `ANT`, `PROX`, `OK`, `TELA`
   e `SAIR`.
 
 Atualize o widget do Termux ou remova e adicione-o novamente à tela inicial caso
 os atalhos não apareçam de imediato.
+
+### Validar o Android
+
+No PC:
+
+```bash
+adb shell cat /sdcard/Download/ai-central-mobile/install-result.txt
+tmux list-clients -F '#{client_session} #{client_width}x#{client_height} #{client_tty}'
+ch doctor
+```
+
+Após reiniciar o celular e desbloqueá-lo, o Termux:Boot grava o último preflight
+em `~/.cache/ai-central/boot-status`. Ele não anexa um cliente invisível, pois
+isso reduziria a grade compartilhada e poderia recriar os pontos no Konsole.
+
+## Disponibilidade e reinícios
+
+| Evento | O que retorna automaticamente |
+|---|---|
+| Login/relogin no PC | hub, restore, monitor, PWA e um Konsole central |
+| Reinício do PC com `--auto`/`--always-on` | hub, restore, monitor e PWA antes do login; Konsole ao entrar na sessão gráfica |
+| Queda de SSH/Tailscale no celular | `PC-Hub` mostra offline e tenta reconectar; o tmux permanece no PC |
+| Reinício do Android com Termux:Boot | preflight inicializa/confirma o hub após o primeiro desbloqueio |
+| Abrir `PC-Hub` ou a PWA depois | reconecta à mesma sessão tmux e ao mesmo processo vivo |
+
+Nenhum sistema Android confiável pode prometer abrir uma Activity interativa
+antes do primeiro desbloqueio, e fabricantes podem suspender apps em segundo
+plano. Retire Tailscale, Termux e Termux:Boot da otimização agressiva de bateria
+se o aparelho a aplicar. Mesmo nesse caso, os processos de desenvolvimento
+continuam no PC; o celular é um cliente descartável e reconectável.
 
 ## Fluxo diário
 
@@ -119,6 +273,11 @@ ch gui
 ch open amaral-hub
 ch here
 ```
+
+Ao ligar o PC, a unidade `ai-central-terminal.service` executa a mesma operação
+de `ch attach`: o Konsole já nasce conectado ao hub compartilhado. Para abrir
+outra janela organizada na sessão correta, use `ch open NOME`; não execute um
+segundo `claude --resume` para uma sessão que ainda está viva.
 
 ### Dentro de qualquer cliente tmux
 
@@ -160,6 +319,16 @@ ch worktree-codex revisor-c /var/www/projeto ai/revisor-c
 ```
 
 Cada agente recebe pasta e branch próprias em `~/wt/<nome>`.
+
+Exemplo de uma central organizada com dois repositórios e dois agentes isolados:
+
+```bash
+ch start-claude adb-main /var/www/adb_tools
+ch start-codex hub-review /var/www/amaral-intern-hub
+ch worktree-claude adb-ui /var/www/adb_tools ai/mobile-ui
+ch list
+ch open adb-main
+```
 
 ## Retomar no PC versus continuar no celular
 
@@ -245,3 +414,19 @@ podem saturar CPU e atrasar captura de tela/ADB sem significar perda do SSH.
 Por segurança, a remoção preserva o tmux vivo e
 `~/.config/ai-central/sessions.json`. O script imprime comandos separados caso
 você também queira encerrar as sessões ou apagar o registro.
+
+A remoção não desativa `linger`, `sshd`, `tailscaled`, Termux, Tailscale nem
+Termux:Boot: esses componentes podem ser compartilhados por outros serviços e
+exigem uma decisão explícita do administrador.
+
+## Referências oficiais do Android
+
+- [Termux app: instalação e fontes compatíveis](https://github.com/termux/termux-app)
+- [Atalhos de teclado do Termux](https://github.com/termux/termux-tools/blob/master/doc/termux.1.md.in)
+- [Permissão oficial RUN_COMMAND](https://github.com/termux/termux-app/wiki/RUN_COMMAND-Intent)
+
+A instalação ADB deliberadamente não usa `RUN_COMMAND`: essa API é destinada a
+outro aplicativo Android que declare a permissão correspondente e requer
+habilitar aplicativos externos no Termux. O ADB shell não possui essa permissão.
+Por isso a automação usa o atalho oficial de nova sessão e mantém o modo manual
+como fallback verificável.

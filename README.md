@@ -46,16 +46,33 @@ controlado pelo Konsole, Termux e pela PWA, com sessões agrupadas por repositó
 criação e retomada, worktrees para paralelismo seguro, métricas do Usage Buddies e
 notificações que distinguem turno concluído de workflow ainda ativo em background.
 
+Instalação local segura (abre uma única Central no Konsole a cada login):
+
 ```bash
+./install-ai-central.sh --check
 ./install-ai-central.sh
-claude-hub status
-claude-hub doctor
-claude-hub gui
+ch doctor
 ```
+
+Instalação automática completa, incluindo disponibilidade antes do login e um
+Android já autorizado no ADB:
+
+```bash
+./install-ai-central.sh --dry-run --auto --android
+./install-ai-central.sh --auto --android
+```
+
+O instalador valida as fontes antes de alterar o sistema, guarda a instalação
+anterior em `~/.local/state/ai-central/backups/`, atualiza os arquivos como uma
+transação e restaura o snapshot se uma validação pós-instalação falhar. A etapa
+Android transfere seis arquivos com verificação SHA-256, abre uma sessão Termux
+nova e isolada, gera/autoriza a chave SSH e só declara sucesso quando um cliente
+tmux novo aparece no PC.
 
 O instalador da central é separado do instalador do widget para não habilitar SSH,
 tmux ou serviços remotos em máquinas que desejam somente as métricas. Veja o guia
-completo de PC, Termux/ADB, atalhos, recuperação e modelo de sincronização em
+completo de PC, Termux/ADB, disponibilidade após reinícios, atalhos, exemplos,
+recuperação e modelo de sincronização em
 [docs/AI-CENTRAL.md](docs/AI-CENTRAL.md).
 
 > **Windows Widget** (`win-widget/`) is a fresh, Windows-first build in Tauri v2 — not a port of the Linux UI. It docks a frameless popup at the bottom-right corner, opened from a tray icon, with an animated **Clawd** pixel-art mascot, a per-second session countdown, weekly limits (including the API-scoped model, e.g. **Fable**), service health, activity tiles, model distribution, a JSON-derived 7-day chart, and peak hours. It installs as a self-contained `.exe` that auto-starts on login — no vite/dev server, no admin rights.

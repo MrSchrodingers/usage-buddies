@@ -4,6 +4,20 @@
 
 ### AI Central
 
+Installation is now end-to-end and reproducible from a fresh PC through an
+authorized Android device. The PC installer has check and dry-run modes,
+distro-aware dependency installation, an always-on profile, timestamped
+backups, atomic web staging, post-install health gates, and automatic rollback
+that leaves live tmux agents untouched. It installs the `ch` executable and
+opens one synchronized Konsole by default at graphical login.
+
+The ADB installer verifies every transferred payload with SHA-256, types only
+into a newly-created local Termux session, exchanges an Ed25519 public key, and
+requires a fresh mobile tmux client before reporting success. Termux config is
+merged through a delimited managed block and restored on failure. An optional
+Termux:Boot preflight restores reachability after Android unlock without
+attaching a hidden 80x24 client that could resize the shared TUI.
+
 The shared Claude Code/Codex hub is now reproducible instead of being a set of
 machine-local shortcuts. It has dedicated PC and Termux installers, portable
 systemd and desktop entries, an operational `claude-hub doctor`, a documented

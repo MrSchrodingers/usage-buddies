@@ -1,0 +1,17 @@
+#!/data/data/com.termux/files/usr/bin/bash
+
+# Termux:Boot runs this after Android is unlocked. It verifies the path to the
+# PC and initializes the persistent tmux hub without attaching a hidden 80x24
+# client, which would otherwise resize full-screen Claude/Codex TUIs.
+SSH_CONFIG="$HOME/.config/ai-central/ssh-config"
+LOG_DIR="$HOME/.cache/ai-central"
+
+mkdir -p "$LOG_DIR"
+sleep 8
+if ssh -F "$SSH_CONFIG" -o RequestTTY=no pc-shell \
+    '$HOME/.local/bin/claude-hub init' > "$LOG_DIR/last-boot.log" 2>&1; then
+    printf '%s status=ok\n' "$(date -Iseconds)" > "$LOG_DIR/boot-status"
+else
+    status=$?
+    printf '%s status=offline code=%s\n' "$(date -Iseconds)" "$status" > "$LOG_DIR/boot-status"
+fi
