@@ -67,6 +67,12 @@ SESSIONS_FILE = CACHE / "sessions.json"
 # Written by the widget, read here. See CommandChannel below for why it carries
 # a timestamp and why it is replaced by a rename rather than written in place.
 COMMAND_FILE = CACHE / "companion-command.json"
+# Where the longest throw outlives the process. buddy_target keeps the number
+# and does no I/O at all — it says so in as many words — so the file is named
+# here, in the one directory this program already owns state in, and the whole
+# of the writing is _write_record below. A record that resets at every login
+# is not a record.
+RECORDS_FILE = CACHE / "companion-records.json"
 WIDGET_DATA = Path.home() / ".claude" / "widget-data.json"
 ICONS = Path(__file__).resolve().parent.parent / "plasmoid" / "contents" / "icons"
 INSTALLED_ICONS = (Path.home() / ".local/share/plasma/plasmoids"
@@ -133,6 +139,24 @@ HOOP_SCALE = sprites.SCALE
 # The frame the basket rests on between the one-shots. Named once, because it
 # is both what is drawn when it appears and what the score clip returns to.
 HOOP_RESTING = "hoop_hang"
+
+# The target thrown at, the record and the rally. buddy_target owns every
+# verdict; what lives here is the drawing, the window it hangs in, the frame
+# clock they are stepped on and the file the record survives a restart in.
+#
+# There is no scale constant, and that is the decision. buddy_target's
+# target_rings() and target_centre() convert the art's radii and its centre
+# with buddy_sprites.SCALE, and they are the only conversion that happens
+# anywhere: a second multiplication here would draw the rings at one size and
+# score them at another. The window is therefore drawn at that scale and takes
+# no scale argument at all — see TargetWindow.
+#
+# The frame the target rests on between the one-shots, read off the art rather
+# than written again: it is both what is drawn when it appears and what the
+# hit clip returns to. getattr, on target_rings()' precedent, so a build whose
+# art has no target in it loses the game and not the process.
+TARGET_RESTING = getattr(sprites, "TARGET_RESTING", "target_rest")
+
 # How long the run at the pointer may take before the getaway starts anyway.
 # The character has just been let go of, so the cursor is normally within a
 # sprite or two of it and the leg is over in a few frames; the ceiling is for
@@ -1192,6 +1216,170 @@ class HoopWindow(QWidget):
         p.end()
 
 
+class TargetWindow(QWidget):
+    """The target: a third top-level window, and scenery in every other way.
+
+    HoopWindow's shape, for HoopWindow's reasons — it is 144 by 140 while the
+    character's window is 56 by 56 and moves every frame, and that window is
+    the click target, the drop target and the thing the bubble's side is
+    measured from. It is a separate window from the basket's as well, because
+    buddy_target places the two so they never overlap and both may be up at
+    once; one window could not be in two places.
+
+    It does not take the mouse, and Qt.WindowTransparentForInput is the half of
+    that promise that actually does it. WA_TransparentForMouseEvents governs
+    Qt's own hit testing inside an application; on a separate top level it
+    leaves the X input region alone and the server goes on delivering the click
+    to whatever window is in front. Measured with XShapeGetRectangles: with the
+    attribute and without the flag an overlay reports one input rectangle and
+    swallows everything under it, which is how the operator ended up unable to
+    click the mascot at all. This drawing is bigger than the one that did it.
+    Nothing here has a mouse handler either, so there is no second way in.
+
+    No scale argument, deliberately, and it is the one difference from the
+    basket's window. buddy_target.target_rings() and target_centre() convert
+    the art's numbers with buddy_sprites.SCALE and are the only conversion
+    there is; a window drawn at any other scale would be a target one size to
+    look at and another size to hit, and there would be nothing on screen
+    saying so. The basket carries a scale because rim_width() takes an art to
+    convert; this one takes its geometry from a module that has already chosen.
+
+    The clip table is walked here rather than handed to sprites.Animator, on
+    HoopWindow's argument: the Animator resolves names against CLIPS, which is
+    the character's sheet, and a target frame looked up there resolves to
+    nothing. Every name is checked against this window's own sheet before it is
+    drawn, so a table naming a frame the art does not have costs that frame and
+    not the process.
+    """
+
+    def __init__(self):
+        super().__init__(None)
+        # The basket's flags and the basket's attributes, in the basket's
+        # order. WindowTransparentForInput first among them, because it is the
+        # one the operator can feel the absence of.
+        self.setWindowFlags(
+            Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
+            | Qt.WindowDoesNotAcceptFocus | Qt.WindowTransparentForInput)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.scale = int(sprites.SCALE)
+        self.sheet = sprites.build_target_sheet(self.scale)
+        self.frame = TARGET_RESTING
+        self._frames = []
+        self._at = 0
+        self._elapsed = 0.0
+        self._stuck = False
+        image = self.sheet.get(TARGET_RESTING)
+        if image is not None:
+            self.resize(image.width(), image.height())
+
+    @property
+    def centre(self):
+        """Where the middle of the rings sits inside the drawing, in pixels.
+
+        buddy_target.target_centre()'s answer, passed through and never scaled
+        again: the target hangs from a hook, with twelve rows of canvas above
+        the disc and two below it, so the middle of the rings is five source
+        pixels BELOW the middle of the image. MEASURED at this scale:
+        target_centre() is (72, 80) and the middle of the rectangle is
+        (72, 70), so a window hung by its own rectangle drops the bullseye ten
+        screen pixels under whatever it was aimed at. That reads as bad luck
+        rather than as a bug, which is why the offset exists at all.
+
+        The middle of the image is a fallback and not a dead branch: the rings
+        and the centre are two independent declarations in the art
+        (TARGET_RINGS and TARGET_CENTRE), so an art that has the first and not
+        the second reaches this and is hung ten pixels off. That is a drawing
+        defect and it has a tripwire of its own in
+        test_the_target_hangs_by_its_rings_and_not_by_its_rectangle; what is
+        decided here is only that it is not an exception on the frame path.
+        """
+        spot = target_game.target_centre()
+        if spot is not None:
+            return spot
+        return (self.width() / 2.0, self.height() / 2.0)
+
+    @staticmethod
+    def duration(name):
+        """How long a target clip runs for, in seconds. Zero if there is none."""
+        clip = getattr(sprites, "TARGET_CLIPS", {}).get(name) or {}
+        return sum(ms for _frame, ms in clip.get("frames", ())) / 1000.0
+
+    def place(self, centre):
+        """Move so the middle of the rings lands on `centre`.
+
+        Snapped to the drawing's own scale, for the reason Companion._place
+        gives: a grid that sits on half a source pixel does not look blurry, it
+        looks like the picture is crawling.
+        """
+        ox, oy = self.centre
+        step = max(1, self.scale)
+        self.move(int(round((centre[0] - ox) / step) * step),
+                  int(round((centre[1] - oy) / step) * step))
+
+    def rest(self):
+        """Back to the hanging disc, with nothing playing."""
+        self._frames = []
+        self._at = 0
+        self._elapsed = 0.0
+        self.frame = TARGET_RESTING
+        self.update()
+
+    def play(self, name):
+        """Start a one-shot from TARGET_CLIPS, skipping frames the sheet lacks."""
+        clip = getattr(sprites, "TARGET_CLIPS", {}).get(name) or {}
+        self._frames = [(frame, ms) for frame, ms in clip.get("frames", ())
+                        if frame in self.sheet]
+        self._at = 0
+        self._elapsed = 0.0
+        if self._frames:
+            self.frame = self._frames[0][0]
+        self.update()
+
+    def advance(self, dt):
+        """Step whatever is playing. Nothing here loops, and nothing repaints
+        when nothing is playing: a target hanging still costs no frames."""
+        if not self._frames:
+            return
+        self._elapsed += max(0.0, float(dt))
+        while self._frames:
+            _frame, ms = self._frames[self._at]
+            if self._elapsed < ms / 1000.0:
+                break
+            self._elapsed -= ms / 1000.0
+            self._at += 1
+            if self._at >= len(self._frames):
+                self._frames = []
+                self._at = 0
+                break
+        self.frame = self._frames[self._at][0] if self._frames else TARGET_RESTING
+        self.update()
+
+    def appear(self, centre):
+        """Put it up at a point, hanging still, on every virtual desktop."""
+        self.rest()
+        self.place(centre)
+        self.show()
+        if not self._stuck:
+            self._stuck = True
+            # After the window is mapped, or there is nothing to set the
+            # property on. The same delay the other two windows use.
+            QTimer.singleShot(600, lambda: _stick_to_all_desktops(self))
+
+    def paintEvent(self, _event):
+        image = self.sheet.get(self.frame)
+        if image is None:
+            return
+        p = QPainter(self)
+        # Pixel art, like everything else drawn here: no antialiasing and no
+        # smoothing, or the hard edges that carry the style become gradients.
+        p.setRenderHint(QPainter.Antialiasing, False)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, False)
+        p.drawImage(0, 0, image)
+        p.end()
+
+
 # Every frame the companion can put on screen, which is not one table.
 #
 # The clips name most of them; the drag names twenty-five more through
@@ -1544,6 +1732,28 @@ class Companion(QWidget):
         self.hoop_window = None
         self.hoop_hide_at = 0.0      # the score clip is allowed to finish
         self.hoop_tries_at = 0       # misses at the moment this one went up
+
+        # The other game, which shares the screen with the basket on purpose:
+        # buddy_target places a target clear of whatever is passed in `avoid`,
+        # and the basket is what is passed. The target and a rally of catches
+        # suspend the getaway while they last and forgive nothing — scoring a
+        # basket is still the only thing that clears the temper, which is what
+        # keeps the basket worth offering.
+        #
+        # `rings` is None when the art has no target in it, and that turns off
+        # the target alone: the record, the rally and the force bands go on
+        # working. `target_enabled` is the one switch that disarms the lot, on
+        # the basket's precedent — the failure path sets it, and so does
+        # --self-test, because a third always-on-top window put up by a
+        # throwaway process is exactly what that mode exists to prevent.
+        self.throws = target_game.ThrowGame(
+            BUDDY_PX, target_game.target_rings(),
+            screen_px=self._tallest_screen(),
+            record=target_game.Record.from_dict(self._read_record()))
+        self.target_enabled = True
+        self.target_window = None
+        self.target_hide_at = 0.0    # the hit clip is allowed to finish
+        self.target_tries_at = 0     # misses at the moment this one went up
         # The overlay layer: the mood band, the prop and the particles. Its
         # window is built the first time there is something to draw in it, for
         # the reason the basket's is: a companion nobody looks at should not
@@ -2255,6 +2465,7 @@ class Companion(QWidget):
 
         self._tug(now)
         self._hoop_tick(now, dt)
+        self._target_tick(now, dt)
         self._antics_tick(now, moving)
         self._animate(dt, now, moving)
         self._halo_tick(now)
@@ -2342,15 +2553,26 @@ class Companion(QWidget):
             # The screen height matters to the top band, so it is the one the
             # character is actually on rather than the module's default.
             screen = self._screen_at(self.pos_x, self.pos_y)
-            band = target_game.force_band(math.hypot(step.vx, step.vy),
-                                          BUDDY_PX, float(screen.height()))
+            speed = math.hypot(step.vx, step.vy)
+            band = target_game.force_band(speed, BUDDY_PX,
+                                          float(screen.height()))
             self._play_once(LANDING_FOR_BAND.get(band, "land"))
+            # The same impact, told to the rally. What is left after a bounce
+            # is what decides whether a hand on the character is a catch or a
+            # scoop: above the speed it could lift itself with it is still a
+            # body in the air, and below it the flight is over in all but name.
+            self._target_bounced(speed)
         self._place()
         # Judged step by step and against the travel rather than against this
         # frame's position: a throw covers up to 120 px in one integration
         # step, which is more than two sprite widths, so asking only where it
         # is now misses every throw fast enough to be worth aiming.
         self._hoop_landed(was, (self.pos_x, self.pos_y), now)
+        # And the target, with the same pair of positions and for the same
+        # reason. Passing only where it is now would turn a hit into a point
+        # sampled thirty times a second on a path made of 120 px jumps, and the
+        # throws it would miss are exactly the ones somebody aimed.
+        self._target_landed(was, (self.pos_x, self.pos_y), now)
         if step.resting:
             self.flying = False
             self.vel_x = self.vel_y = 0.0
@@ -2359,6 +2581,10 @@ class Companion(QWidget):
             self.next_move = now + random.uniform(IDLE_MIN, IDLE_MAX)
             self._play_once("land")
             self._hoop_ended(now)
+            # The record, the rally that nobody caught, the miss if a target
+            # was up — and then the next target, offered now that the throw
+            # which would have scored it is over.
+            self._target_settled(now, (self.pos_x, self.pos_y))
 
     def swing_frame(self):
         """The pose for the current speed: how far it leans, and how far it is
@@ -2813,6 +3039,339 @@ class Companion(QWidget):
         # is what tells a miss from a score: landed() takes the basket down on
         # a hit, so a scored flight never arrives here at all.
         self.streak.missed()
+
+    # ── the target, the record and the rally ──
+
+    def _tallest_screen(self):
+        """The height of the tallest screen, for buddy_target's force bands.
+
+        The module defaults to the desktop it was measured on and says in its
+        own comment that the companion knows better and should pass it. The
+        tallest and not the current one, because the bands are a property of
+        the game rather than of where the character happens to be standing: a
+        throw that is a `launch` on the short monitor and a `hurl` on the tall
+        one would change name as the character walked between them.
+        """
+        try:
+            return float(max(g.height() for g in self.screens))
+        except (TypeError, ValueError):
+            return target_game.TALLEST_SCREEN_PX
+
+    @staticmethod
+    def _records_file():
+        """Everything in the records file, keyed by brand, as a plain dict.
+
+        Anything at all wrong with it is an empty dict rather than an
+        exception, and this is the same call buddy_target.Record.from_dict
+        makes about junk inside the file: this is state the program wrote for
+        itself, and refusing to start because it got truncated by a full disk
+        would be a worse bug than losing a number that can be re-earned by
+        throwing the character across the screen.
+        """
+        try:
+            data = json.loads(RECORDS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _read_record(self):
+        """This character's own record, as Record.from_dict wants it.
+
+        Under its brand and not at the top of the file, because two mascots on
+        one desktop is a configuration this program supports rather than an
+        accident — buddy_peers exists for it and opens by saying so, and
+        companion-ctl.sh starts one per brand. One flat number in a file both
+        of them write is the claude mascot's 1200 px throw silently replaced by
+        the codex one's 300 px, which is data the operator earned and cannot
+        get back except by earning it again.
+
+        A brand key and not a pid, which is what buddy_peers uses: presence
+        dies with the process and a record is exactly the thing that must not.
+        Two mascots of the *same* brand still share one number and the last
+        writer still wins — that is a race and not a certainty, and keying it
+        finer would mean a record per process, which is no record at all.
+        """
+        record = self._records_file().get(self.options.brand)
+        return record if isinstance(record, dict) else {}
+
+    def _write_record(self):
+        """Put this character's record on disk, and never raise doing it.
+
+        Written by rename, like every other file this cache holds: a companion
+        killed between the open and the write would otherwise leave a truncated
+        file where the record was, and the next start would read a record of
+        zero out of it. The temporary is in the same directory because
+        os.replace is only atomic within one filesystem.
+
+        The file is re-read here rather than kept in memory, so that the other
+        mascot's entry is carried across instead of being dropped by whichever
+        of the two happens to write second.
+
+        A record that cannot be saved is a record lost, which is a shame; a
+        record that cannot be saved and takes the mascot with it is a bug. So
+        every failure here is swallowed, and the temporary is cleaned up after.
+        """
+        tmp = RECORDS_FILE.with_name(".%s.%d.tmp" % (RECORDS_FILE.name, os.getpid()))
+        try:
+            records = self._records_file()
+            records[self.options.brand] = self.throws.record.to_dict()
+            # 0700 and 0600, which is what every other writer in this cache
+            # uses. mkdir's mode applies only when it creates the directory.
+            RECORDS_FILE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(records, handle)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, RECORDS_FILE)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+    def _target_off(self):
+        """Turn the target game off for good and take the drawing down.
+
+        _hoop_off's shape and _hoop_off's argument: a failure inside a frame
+        timer slot is the process rather than the frame, so the answer to one
+        is to stop playing rather than to raise thirty times a second until
+        the mascot disappears.
+        """
+        self.target_enabled = False
+        try:
+            self.throws.clear()
+            if self.target_window is not None:
+                self.target_window.hide()
+        except Exception:
+            return
+
+    def _target_ready(self):
+        """The target's window, made the first time one is offered.
+
+        Lazily, so a companion nobody ever throws never builds a third window
+        or a third sheet of images. A window that cannot be built raises here,
+        which is what the guards above are for.
+        """
+        if self.target_window is None:
+            self.target_window = TargetWindow()
+        return self.target_window
+
+    def _target_suspends(self, now):
+        """Whether a game in progress is holding the getaway off.
+
+        Answered here rather than at the release, so that a game which has
+        been turned off by a failure cannot go on suspending anything. False
+        on any error for the same reason: the getaway is the character's, and
+        an exception in a toy must not be able to disarm it permanently.
+        """
+        if not self.target_enabled:
+            return False
+        try:
+            return bool(self.throws.suspends_getaway(now))
+        except Exception:
+            self._target_off()
+            return False
+
+    def _target_tick(self, now, dt):
+        """Take the target away when it runs out, and step the drawing.
+
+        Everything the game does on a frame is inside this one guard, and the
+        only part of it that can fail on a desktop rather than in arithmetic is
+        the window: a top-level window, a third sheet of images, and a property
+        set on somebody else's compositor.
+
+        Nothing here puts a target up. That happens where a flight comes to
+        rest, because a target that materialised around a body already in the
+        air would pay out for a coincidence — buddy_target.offer says so, and
+        this is the half of it that has to not do it anyway.
+        """
+        if not self.target_enabled:
+            return
+        try:
+            self._target_frame(now, dt)
+        except Exception:
+            self._target_off()
+
+    def _target_frame(self, now, dt):
+        """One frame of the target. See _target_tick for why it is wrapped."""
+        if self.throws.expired(now):
+            # It ran out. Which sentence depends on whether anybody threw at
+            # it, and the module's own counter answers that: the bookmark taken
+            # when it went up is the only thing kept here.
+            tried = self.throws.state(now).misses > self.target_tries_at
+            self._say(self._t("targetMissed" if tried else "targetGone"))
+            self.throws.clear()
+            self.target_hide_at = now
+
+        window = self.target_window
+        if window is None:
+            return
+        if self.throws.live(now) or now < self.target_hide_at:
+            # advance() repaints nothing while nothing is playing, so a target
+            # hanging still for twenty seconds costs no frames.
+            window.advance(dt)
+        elif window.isVisible():
+            window.hide()
+
+    def _target_released(self, now, position, velocity):
+        """A release, thrown or merely put down. Both have to be reported.
+
+        A placement is not a non-event here: it is what ends a rally, and
+        buddy_target answers a velocity under the throw floor by doing exactly
+        that. Reporting only the throws would leave a rally alive across a
+        character set down on the desktop, which is a rally parked rather than
+        played.
+        """
+        if not self.target_enabled:
+            return
+        try:
+            self.throws.released(now, position, velocity)
+        except Exception:
+            self._target_off()
+
+    def _target_bounced(self, speed):
+        """An impact during a flight, with the speed it left behind.
+
+        What the rally is judged on: above the speed the character could lift
+        itself with, it is still a body in the air and catching it is timing;
+        below it, the flight is over in all but name and picking it up is a
+        scoop.
+        """
+        if not self.target_enabled:
+            return
+        try:
+            self.throws.bounced(speed)
+        except Exception:
+            self._target_off()
+
+    def _target_landed(self, start, end, now):
+        """Judge one step of a flight against the target.
+
+        The pair of positions and not the current one: buddy_actions integrates
+        in steps of up to 120 px, which is wider than the whole face, so asking
+        only where the character is on this frame misses every throw fast
+        enough to be worth aiming. Guarded like the rest, because this is
+        reached from the frame timer by way of _fly.
+        """
+        if not self.target_enabled:
+            return
+        try:
+            hit = self.throws.landed(start, end, now)
+            if hit is not None:
+                self._target_scored(now, hit)
+        except Exception:
+            self._target_off()
+
+    def _target_scored(self, now, hit):
+        """It hit. The flash, the swing, the pose and the sentence.
+
+        Three sentences and not one, because the drawing makes three different
+        promises and a single line would keep none of them. The bullseye is
+        worth five times the outer band and has to sound like it; a run of
+        three is the first that cannot be luck; and everything else is a hit,
+        which is worth saying once and not celebrating.
+        """
+        window = self.target_window
+        if window is not None:
+            window.play("hit")
+        self.target_hide_at = now + TargetWindow.duration("hit")
+        self.mood_clip = clip_or_fallback("celebrate")
+        self.mood_until = now + MOOD_SECONDS
+        if hit.combo >= 3:
+            self._say(self._t("targetCombo"))
+        elif hit.ring == 1:
+            self._say(self._t("targetBull"))
+        else:
+            self._say(self._t("targetHit"))
+
+    def _target_settled(self, now, position):
+        """A flight that came to rest: the record, the rally and the miss.
+
+        buddy_target ends all three in one call on purpose — the throw that
+        breaks a rally is the same throw that sets a record — and the one this
+        end would forget on its own is the miss.
+
+        The record is written here and only here. It is the moment the number
+        changes, and writing it on a timer instead would lose the last throw of
+        every session that ends with the machine going to sleep.
+        """
+        if not self.target_enabled:
+            return
+        try:
+            throw = self.throws.settled(now, position)
+            if throw.record:
+                self.mood_clip = clip_or_fallback("celebrate")
+                self.mood_until = now + MOOD_SECONDS
+                self._say(self._t("targetRecord").format(px=int(throw.best)))
+                self._write_record()
+            self._target_offer(now, position)
+        except Exception:
+            self._target_off()
+
+    def _target_offer(self, now, position):
+        """Put a target up, now that the throw that would have scored it is over.
+
+        `avoid` is the basket, and this is the seam the two games meet at: they
+        are on screen together deliberately, and the only thing that must not
+        happen is one drawn on top of the other. The basket's own state is read
+        through its state() rather than off its object, so a basket that
+        expired on this very frame is not passed as something to keep clear of.
+
+        The sentence hangs off the return value, which is the target on the
+        frame it goes up and None on every other, so it cannot repeat once per
+        frame for as long as the target lasts.
+        """
+        if not self.isVisible():
+            # A character nobody can see is not playing, so nothing is put up
+            # for it. Not _halo_frame's reason, and the difference matters
+            # enough to write down: that guard is about geometry — it hangs the
+            # overlay off self.x(), which is meaningless before the window is
+            # mapped — and nothing here reads a window's geometry at all. This
+            # one is about the drawing. buddy_target says a scoring area with
+            # nothing drawn in it is worse than no game at all, and a target
+            # hung on a character that is not on screen is exactly that.
+            #
+            # The concrete cost of not refusing, and the reason it is a guard
+            # rather than a comment: the suite builds hundreds of Companions on
+            # the same machine a real mascot is running on, and every one that
+            # finished a throw would leave a 144 by 140 always-on-top window on
+            # somebody's desktop — one with no mouse handler and no menu.
+            return
+        avoid = []
+        try:
+            basket = self.game.state(now)
+        except Exception:
+            basket = None
+        if basket is not None and basket.centre is not None:
+            avoid.append((basket.centre[0], basket.centre[1],
+                          (basket.rim or 0.0) / 2.0))
+        offered = self.throws.offer(now, position, self._screen_rects(),
+                                    random, avoid)
+        if offered is None:
+            return
+        self._target_ready().appear(offered.centre)
+        self.target_hide_at = 0.0
+        self.target_tries_at = self.throws.state(now).misses
+        self._say(self._t("targetUp"))
+
+    def _target_caught(self, now, speed):
+        """A hand closed on the character in mid-flight.
+
+        Whether that was a catch is buddy_target's to say: a scoop off the
+        floor at the end of a flight looks the same from here and is not one.
+        The rally is the count, and the first one worth a sentence is the
+        second catch — one catch is somebody stopping a throw.
+        """
+        if not self.target_enabled:
+            return
+        try:
+            catch = self.throws.caught(now, speed)
+            if catch is None or catch.run < 2:
+                return
+            self.mood_clip = clip_or_fallback("celebrate")
+            self.mood_until = now + MOOD_SECONDS
+            self._say(self._t("targetRally").format(n=catch.run))
+        except Exception:
+            self._target_off()
 
     # ── the fidget, the overlays and the shake ──
 
@@ -3315,9 +3874,19 @@ class Companion(QWidget):
         # is aimed at where the pointer was at the last release, and a hand on
         # the character means that reading is now old. The release that
         # follows decides again, with a reading of its own.
+        # Read before the flag is cleared and before the drag's spring takes
+        # the velocity over: how fast it was going when the hand closed is what
+        # a catch is worth, and a moment later this is the hand's speed instead.
+        caught_at = time.monotonic()
+        caught_speed = math.hypot(self.vel_x, self.vel_y) if self.flying else 0.0
+        was_flying = self.flying
         self.flying = False
         self.chasing = False
         self.chase_until = 0.0
+        if was_flying:
+            # Whether that was a catch or a scoop off the floor is
+            # buddy_target's to say; this end only reports the hand.
+            self._target_caught(caught_at, caught_speed)
         # A hand on it is something happening, which is what boredom is
         # measured from the absence of. Here rather than on the drag, because a
         # click is a hand on it too and it ends with a terminal being raised.
@@ -3458,8 +4027,20 @@ class Companion(QWidget):
             # anybody could accept it. It does expire, which is what stops
             # holding the button down from being a way never to be retaliated
             # against at all.
+            #
+            # And so does the other game, for a narrower reason. A target on
+            # screen and a rally in the player's hands are both games the
+            # character is playing along with, and taking the mouse in the
+            # middle of one is the game dying on the third throw. Suspension
+            # and nothing more: neither of them touches the temper, so the
+            # moment the game is over the character is exactly as angry as it
+            # was, and the basket is still the only thing that forgives it.
+            # Both are bounded — the target by its own twenty seconds, the
+            # rally by a hold that ends it — so neither is a way of never
+            # being retaliated against.
             if (not thrown and egg is None
                     and not self.game.suspends_getaway(now)
+                    and not self._target_suspends(now)
                     and (insistent
                          or ((provoked or furious)
                              and now - self.tugged_at > TUG_COOLDOWN))):
@@ -3485,6 +4066,29 @@ class Companion(QWidget):
                 if spot is None or not self._begin_chase(now, spot, seconds):
                     self._begin_tug(now, seconds, self._far_target(here))
                 self._say(self._t("tugging"))
+            # And now the other game is told what this release was, which is
+            # last on purpose and was measured before it was moved here.
+            #
+            # Both answers matter to it: a throw starts the flight the record
+            # and the target are measured against, and a placement is what ends
+            # a rally — a character set down on the desktop is not being
+            # juggled, and without that a rally could be parked indefinitely by
+            # putting it on the desktop.
+            #
+            # But a placement ends the rally *and* is the release the getaway
+            # fires on, and reported any earlier it ends the rally before the
+            # getaway is asked whether one was going on. Every catch and every
+            # throw of a rally lands in recent_drags, so the release that ends
+            # a five-catch rally arrives already past DRAG_TUG_AFTER: reported
+            # first, the answer to a game played to its end is the character
+            # running off with the mouse, which is the one thing the suspension
+            # exists to prevent.
+            #
+            # The position is only read for a throw — a placement records no
+            # launch to measure a distance from — and nothing on the throw
+            # path above moves the character. _snap does move it, and _snap
+            # answers a placement.
+            self._target_released(now, (self.pos_x, self.pos_y), velocity)
             return
         # A click, not a drag: go to whatever most needs attention.
         self._go_to_session()
@@ -3561,13 +4165,32 @@ class Companion(QWidget):
         companion visible to the other one for five seconds after it is gone.
         """
         self._retire()
-        # And the windows that are not this one. Both are top-level, so
-        # closing the character leaves them on screen with nothing under them:
-        # a mood band hanging over an empty patch of wallpaper.
-        for window in (self.halo, self.hoop_window):
-            if window is not None:
-                window.hide()
+        # And the windows that are not this one. Every one of them is a
+        # top-level, so closing the character leaves them on screen with
+        # nothing under them: a mood band hanging over an empty patch of
+        # wallpaper, or a target hanging over nothing to throw at it.
+        #
+        # Read off the object rather than listed here, and that is the point.
+        # The list was written when there were two and the third — the target —
+        # was added without it: a window transparent to input, with no mouse
+        # handler and no menu, left on the desktop with no way to close it but
+        # killing the process. `scenery` is what the next one is found by
+        # without anybody having to remember this line.
+        for window in self.scenery():
+            window.hide()
         super().closeEvent(event)
+
+    def scenery(self):
+        """Every top-level window this character has put up but is not.
+
+        One list, so that adding a fourth cannot quietly leave it behind at
+        shutdown. They are found by what they are — a QWidget of this object's
+        own with no parent — rather than by name, because a name has to be
+        remembered and a rule does not.
+        """
+        return [value for value in vars(self).values()
+                if isinstance(value, QWidget) and value is not self
+                and value.parent() is None]
 
     def _retire(self):
         """Give up the presence file.
@@ -3799,6 +4422,19 @@ class Companion(QWidget):
                    "eggSulking": "Right. I am sitting this one out.",
                    "hoopMissed": "The basket is gone. So is your aim.",
                    "hoopGone": "Nobody threw. The basket is gone.",
+                   # The target. Six of them, and they are six because the
+                   # drawing makes six different promises: the middle is worth
+                   # five times the edge and has to sound like it, a run of
+                   # three cannot be luck, and a target nobody threw at is a
+                   # different silence from one that was missed.
+                   "targetUp": "Rings. Middle is worth the most.",
+                   "targetHit": "On the board. Aim smaller.",
+                   "targetBull": "Dead centre. That was aimed.",
+                   "targetCombo": "Three in a row. You have the range.",
+                   "targetMissed": "Gone. You threw, at least.",
+                   "targetGone": "Nobody threw. The rings are down.",
+                   "targetRecord": "Furthest yet: {px} px.",
+                   "targetRally": "{n} in a row without dropping me.",
                    "dropped": "...fine. Keep your mouse.",
                    "askAbout": "How is it going in...",
                    "thinking": "Looking at {name}...",
@@ -3837,6 +4473,14 @@ class Companion(QWidget):
                    "eggSulking": "Pronto. Essa eu vou ficar de fora.",
                    "hoopMissed": "A cesta foi embora. A tua mira também.",
                    "hoopGone": "Ninguém arremessou. A cesta foi embora.",
+                   "targetUp": "Argolas. O meio vale mais.",
+                   "targetHit": "Pegou na borda. Mira menor.",
+                   "targetBull": "Bem no meio. Isso foi mira.",
+                   "targetCombo": "Três seguidas. Tu pegou a distância.",
+                   "targetMissed": "Acabou. Pelo menos tu tentou.",
+                   "targetGone": "Ninguém arremessou. As argolas foram.",
+                   "targetRecord": "O mais longe até agora: {px} px.",
+                   "targetRally": "{n} seguidas sem me derrubar.",
                    "dropped": "...tá bom. Fica com o teu mouse.",
                    "askAbout": "Como vai o...",
                    "thinking": "Deixa eu ver o {name}...",
@@ -3899,6 +4543,12 @@ def main():
         # throwaway process is the one thing it cannot be allowed to leave
         # behind on a desktop somebody is using.
         companion.hoop_enabled = False
+        # And no target, which is the same argument one window further along.
+        # Nothing throws it here, so none would be offered; the switch is set
+        # rather than reasoned about, because the cost of being wrong is a
+        # third always-on-top window left on a desktop somebody is using by a
+        # process that was only ever asked whether the mascot walks.
+        companion.target_enabled = False
         # And no halo. The same argument the basket's switch makes, one window
         # over: the overlay layer is a second always-on-top window, and this
         # mode runs on a desktop nobody is watching precisely so that it can
