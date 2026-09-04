@@ -30,10 +30,17 @@ companion_pids() {
         [ "$p" = "$SELF" ] && continue
         argv0=
         argv1=
+        # The open can succeed and the reads still fail: /proc entries vanish
+        # between the glob and the read whenever a process exits, and the
+        # kernel then answers ESRCH on the descriptor. That is the normal race
+        # this loop was always documented to tolerate, and it reached stderr as
+        # `read: 0: read error: No such process` — noise from a control script
+        # is indistinguishable from a control script in trouble, and the stop
+        # verb is checked for a silent stderr precisely because of that.
         { exec {fd}<"$pid/cmdline"; } 2>/dev/null || continue
-        IFS= read -r -d '' argv0 <&"$fd" || true
-        IFS= read -r -d '' argv1 <&"$fd" || true
-        exec {fd}<&-
+        IFS= read -r -d '' argv0 <&"$fd" 2>/dev/null || true
+        IFS= read -r -d '' argv1 <&"$fd" 2>/dev/null || true
+        exec {fd}<&- 2>/dev/null
         first="${argv0##*/}"
         second="${argv1##*/}"
         # Who is running the script, not who mentions it. Matching the name
