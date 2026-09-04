@@ -948,6 +948,29 @@ class ThrowGame:
         self.target = target
         return target
 
+    def summon(self, now, position, screens, rng=random, avoid=()):
+        """Put a target up because the player asked for one. The new one, or None.
+
+        `offer` refuses when the last release was a placement, because setting
+        the character down is not asking for a game. A menu entry *is* the
+        asking, so that gate does not apply to it — but the others still do:
+        one target at a time, and none without a drawing to hang.
+
+        Separate from `offer` rather than a flag on it, because the two answer
+        different questions. `offer` asks whether a throw earned a target;
+        this asks nothing and grants one. Folding them together would mean a
+        caller could accidentally hand the throw path a flag that skips the
+        gate the throw path exists to enforce.
+        """
+        if self.rings is None or self.live(now):
+            return None
+        target = place_target(position, screens, self.sprite_px, self.rings,
+                              now, rng, avoid)
+        if target is None:
+            return None
+        self.target = target
+        return target
+
     def live(self, now):
         """Whether a target is on screen right now."""
         return self.target is not None and not self.target.expired(now)

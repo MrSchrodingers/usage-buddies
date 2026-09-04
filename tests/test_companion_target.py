@@ -430,9 +430,15 @@ def test_a_hit_plays_the_targets_own_clip_and_the_characters_own_pose(
 @needs_display
 def test_the_target_waits_for_the_flight_that_would_have_scored_it_to_end(
         monkeypatch):
-    """Offered at the release, a target materialises around a body already in
-    the air and pays out for a coincidence. The first thing anybody would learn
-    is that aiming is optional."""
+    """A settled throw no longer puts a target up at all, and the flight is
+    where that used to happen.
+
+    It was the reward for the provoking act: a live target suspends the
+    getaway, so throwing repeatedly kept re-arming the suspension the throwing
+    was supposed to earn. Summoning is a deliberate menu action now. The
+    original guard is kept in the first half — a target must never appear
+    around a body already in the air, because then aiming is optional — and
+    the second half asserts the new contract."""
     mod, c = _companion()
     _quiet(c, monkeypatch)
     shown = _no_windows(mod, monkeypatch)
@@ -451,8 +457,14 @@ def test_the_target_waits_for_the_flight_that_would_have_scored_it_to_end(
                 break
         assert c.flying is False, "never came down"
         later = time.monotonic()
-        assert c.throws.live(later) is True, \
-            "the flight ended and no target was ever put up"
+        assert c.throws.live(later) is False, \
+            "the flight put a target up; only the menu may do that now"
+        assert shown == [], "a drawing appeared without anyone asking for one"
+
+        # And the menu still works, hung where the game scores.
+        c._target_summon()
+        assert c.throws.live(time.monotonic()) is True, \
+            "the menu asked for a target and none went up"
         assert len(shown) == 1, f"the drawing was shown {len(shown)} times"
         assert shown[0] == c.throws.target.centre, \
             "the drawing was hung somewhere the game does not score"
@@ -537,8 +549,8 @@ def test_the_basket_is_what_the_target_is_kept_clear_of(monkeypatch):
 
     monkeypatch.setattr(mod.target_game, "place_target", spy)
     with _on_screen(c):
-        _throw(c)
-        c._target_settled(now, (c.pos_x, c.pos_y))
+        # Through the menu, which is the only door now.
+        c._target_summon()
 
     assert seen, "no target was ever placed"
     kept_clear = seen[-1]

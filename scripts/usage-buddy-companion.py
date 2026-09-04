@@ -3346,7 +3346,13 @@ class Companion(QWidget):
                 self.mood_until = now + MOOD_SECONDS
                 self._say(self._t("targetRecord").format(px=int(throw.best)))
                 self._write_record()
-            self._target_offer(now, position)
+            # No target here any more. It used to go up after every settled
+            # throw, which made it the reward for the provoking act: a live
+            # target suspends the getaway, so someone throwing repeatedly kept
+            # re-arming the suspension that the throwing was supposed to earn,
+            # and the retaliation could not happen while the game was on. It
+            # is summoned from the menu now, which is also what the operator
+            # asked for — a game you ask for rather than one that appears.
         except Exception:
             self._target_off()
 
@@ -3387,8 +3393,8 @@ class Companion(QWidget):
         if basket is not None and basket.centre is not None:
             avoid.append((basket.centre[0], basket.centre[1],
                           (basket.rim or 0.0) / 2.0))
-        offered = self.throws.offer(now, position, self._screen_rects(),
-                                    random, avoid)
+        offered = self.throws.summon(now, position, self._screen_rects(),
+                                     random, avoid)
         if offered is None:
             return
         self._target_ready().appear(offered.centre)
@@ -3898,6 +3904,7 @@ class Companion(QWidget):
             menu = QMenu(self)
             self._add_focus_menu(menu)
             self._add_escort_menu(menu)
+            self._add_target_menu(menu)
             if self.docked:
                 free = QAction(self._t("roam"), self)
                 free.triggered.connect(self._undock)
@@ -4301,6 +4308,44 @@ class Companion(QWidget):
 
     # ── the menu's own entries ──
 
+    def _add_target_menu(self, menu):
+        """Put a target up, or take the one that is up down.
+
+        The only way one appears. Everything else about the game is unchanged:
+        it still scores per integration step, still keeps the record, and a
+        live target still suspends the getaway — the difference is that the
+        suspension now costs a deliberate act instead of arriving as a side
+        effect of the act it was meant to answer.
+        """
+        try:
+            live = self.throws.state(time.monotonic()).visible
+        except Exception:
+            live = False
+        if live:
+            action = QAction(self._t("targetStop"), self)
+            action.triggered.connect(lambda _checked=False: self._target_dismiss())
+        else:
+            action = QAction(self._t("targetStart"), self)
+            action.triggered.connect(lambda _checked=False: self._target_summon())
+        menu.addAction(action)
+
+    def _target_summon(self):
+        """The menu asked for a target. Same path the throw used to take."""
+        if not self.target_enabled:
+            return
+        try:
+            self._target_offer(time.monotonic(), (self.pos_x, self.pos_y))
+        except Exception:
+            self._target_off()
+
+    def _target_dismiss(self):
+        """Take it down without scoring it, which a miss would not do."""
+        try:
+            self.throws.clear()
+        except Exception:
+            pass
+        self._target_off()
+
     def _add_focus_menu(self, menu):
         """Start or end a block. The same entry either way, because there is
         never both a block to start and a block to end."""
@@ -4471,6 +4516,8 @@ class Companion(QWidget):
                    # three cannot be luck, and a target nobody threw at is a
                    # different silence from one that was missed.
                    "targetUp": "Rings. Middle is worth the most.",
+                   "targetStart": "Put a target up",
+                   "targetStop": "Take the target down",
                    "targetHit": "On the board. Aim smaller.",
                    "targetBull": "Dead centre. That was aimed.",
                    "targetCombo": "Three in a row. You have the range.",
@@ -4517,6 +4564,8 @@ class Companion(QWidget):
                    "hoopMissed": "A cesta foi embora. A tua mira também.",
                    "hoopGone": "Ninguém arremessou. A cesta foi embora.",
                    "targetUp": "Argolas. O meio vale mais.",
+                   "targetStart": "Pôr um alvo",
+                   "targetStop": "Tirar o alvo",
                    "targetHit": "Pegou na borda. Mira menor.",
                    "targetBull": "Bem no meio. Isso foi mira.",
                    "targetCombo": "Três seguidas. Tu pegou a distância.",
