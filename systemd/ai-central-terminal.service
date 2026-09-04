@@ -6,7 +6,7 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/konsole --separate -p tabtitle=AI-Central -e /home/ti/.local/bin/claude-hub attach
+ExecStart=/usr/bin/konsole --separate -p tabtitle=AI-Central -e %h/.local/bin/claude-hub attach
 Restart=on-failure
 RestartSec=5
 

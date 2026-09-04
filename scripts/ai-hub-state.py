@@ -31,6 +31,7 @@ CODEX_USAGE = HOME / ".codex" / "widget-data.json"
 CLAUDE_SESSIONS = Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")) / "usage-buddies" / "sessions.json"
 CODEX_ROLLOUTS = HOME / ".codex" / "sessions"
 NOTIFY_STATE = Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")) / "claude-hub" / "notify-state.json"
+STATE_CACHE = Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")) / "claude-hub" / "state.json"
 SETTLED_SECONDS = 20
 IDLE_SECONDS = 600
 ACTIVE_SHELLS = {"bash", "dash", "fish", "pwsh", "sh", "zsh"}
@@ -61,6 +62,24 @@ def read_json(path: Path, default):
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return default
+
+
+def cached_snapshot(max_age: int = 15) -> dict | None:
+    try:
+        if time.time() - STATE_CACHE.stat().st_mtime > max(1, max_age):
+            return None
+    except OSError:
+        return None
+    data = read_json(STATE_CACHE, None)
+    return data if isinstance(data, dict) and isinstance(data.get("sessions"), list) else None
+
+
+def write_snapshot_cache(data: dict) -> None:
+    STATE_CACHE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = STATE_CACHE.with_suffix(f".{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, STATE_CACHE)
 
 
 def process_children(pid: int) -> list[int]:
@@ -591,6 +610,7 @@ def monitor(interval: int) -> None:
     while running:
         try:
             data = snapshot()
+            write_snapshot_cache(data)
             if sync_session_registry:
                 sync_session_registry(data)
             notify_transitions(data)
@@ -607,12 +627,18 @@ def main() -> int:
     parser.add_argument("--text", action="store_true")
     parser.add_argument("--monitor", action="store_true")
     parser.add_argument("--notify-once", action="store_true")
+    parser.add_argument("--cached", action="store_true")
+    parser.add_argument("--max-age", type=int, default=15)
     parser.add_argument("--interval", type=int, default=8)
     args = parser.parse_args()
     if args.monitor:
         monitor(max(3, args.interval))
         return 0
-    data = snapshot()
+    data = cached_snapshot(args.max_age) if args.cached else None
+    if data is None:
+        data = snapshot()
+        if args.cached:
+            write_snapshot_cache(data)
     if args.notify_once:
         notify_transitions(data)
     if args.text:

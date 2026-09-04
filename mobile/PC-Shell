@@ -1,0 +1,21 @@
+#!/data/data/com.termux/files/usr/bin/bash
+
+SSH_CONFIG="$HOME/.config/ai-central/ssh-config"
+termux-wake-lock >/dev/null 2>&1 || true
+trap 'termux-wake-unlock >/dev/null 2>&1 || true' EXIT
+
+while true; do
+    clear
+    printf '\033[1;36mPC SHELL\033[0m\n\nConectando...\n'
+    started_at="$(date +%s)"
+    ssh -F "$SSH_CONFIG" pc-shell
+    connection_status=$?
+    connected_for=$(( $(date +%s) - started_at ))
+    if [ "$connection_status" -eq 0 ]; then
+        exit 0
+    fi
+    clear
+    printf '\033[1;33mPC SHELL · OFFLINE\033[0m\n\n'
+    printf 'Conexao interrompida (codigo %s). Reconectando...\n' "$connection_status"
+    if [ "$connected_for" -lt 3 ]; then sleep 2; else sleep 1; fi
+done

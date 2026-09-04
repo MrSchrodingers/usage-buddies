@@ -1,0 +1,21 @@
+# Managed by AI Central. This file is deliberately isolated from ~/.ssh/config.
+Host pc-hub pc-shell
+    HostName __AI_CENTRAL_HOST__
+    User __AI_CENTRAL_USER__
+    Port 22
+    IdentityFile ~/.ssh/id_ed25519
+    IdentitiesOnly yes
+    StrictHostKeyChecking accept-new
+    AddressFamily inet
+    BatchMode yes
+    Compression yes
+    ConnectTimeout 5
+    ConnectionAttempts 1
+    ServerAliveInterval 5
+    ServerAliveCountMax 2
+    TCPKeepAlive yes
+    IPQoS lowdelay throughput
+
+Host pc-hub
+    RequestTTY force
+    RemoteCommand ~/.local/bin/claude-hub mobile

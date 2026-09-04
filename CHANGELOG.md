@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### AI Central
+
+The shared Claude Code/Codex hub is now reproducible instead of being a set of
+machine-local shortcuts. It has dedicated PC and Termux installers, portable
+systemd and desktop entries, an operational `claude-hub doctor`, a documented
+recovery model, and paired uninstall behavior that deliberately preserves live
+tmux sessions and their resume registry.
+
+The terminal grid follows the most recently active client. This removes the
+desktop-sized field of dots caused by forcing every pane down to the phone's
+width, while still reflowing Claude for mobile input. Termux detects a dead SSH
+transport within about ten seconds, says explicitly that the old menu is no
+longer live, reconnects, and wakes the Tailscale app after repeated failures.
+
+The monitor publishes one private atomic state cache. The PWA reads that cache
+directly, prevents overlapping status requests and backs off while hidden, so
+opening more browser clients no longer multiplies Git and process scans. Its
+service worker also removes stale AI Central caches during upgrades.
+
 ### The widget
 
 Every field of `widget-data.json` was already on screen — measured, not

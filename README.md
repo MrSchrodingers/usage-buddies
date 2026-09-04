@@ -38,6 +38,26 @@
 
 All three read the same file written by the shared Python collector at `scripts/usage-buddies-collector.py`.
 
+## AI Central: Claude Code + Codex no PC e no celular
+
+Este repositório também inclui uma central de desenvolvimento remoto baseada em
+tmux, SSH e Tailscale. O mesmo processo de Claude Code ou Codex pode ser visto e
+controlado pelo Konsole, Termux e pela PWA, com sessões agrupadas por repositório,
+criação e retomada, worktrees para paralelismo seguro, métricas do Usage Buddies e
+notificações que distinguem turno concluído de workflow ainda ativo em background.
+
+```bash
+./install-ai-central.sh
+claude-hub status
+claude-hub doctor
+claude-hub gui
+```
+
+O instalador da central é separado do instalador do widget para não habilitar SSH,
+tmux ou serviços remotos em máquinas que desejam somente as métricas. Veja o guia
+completo de PC, Termux/ADB, atalhos, recuperação e modelo de sincronização em
+[docs/AI-CENTRAL.md](docs/AI-CENTRAL.md).
+
 > **Windows Widget** (`win-widget/`) is a fresh, Windows-first build in Tauri v2 — not a port of the Linux UI. It docks a frameless popup at the bottom-right corner, opened from a tray icon, with an animated **Clawd** pixel-art mascot, a per-second session countdown, weekly limits (including the API-scoped model, e.g. **Fable**), service health, activity tiles, model distribution, a JSON-derived 7-day chart, and peak hours. It installs as a self-contained `.exe` that auto-starts on login — no vite/dev server, no admin rights.
 
 ---

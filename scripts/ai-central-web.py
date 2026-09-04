@@ -14,6 +14,7 @@ import signal
 import struct
 import subprocess
 import termios
+import time
 from contextlib import suppress
 from pathlib import Path
 
@@ -23,13 +24,18 @@ from pydantic import BaseModel
 
 HOME = Path.home()
 ROOT = Path(__file__).resolve().parents[1]
-WEB_ROOT = ROOT / "ai-central-web"
+SOURCE_WEB_ROOT = ROOT / "ai-central-web"
+INSTALLED_WEB_ROOT = HOME / ".local/share/ai-central-web"
+WEB_ROOT = Path(os.environ.get("AI_CENTRAL_WEB_ROOT") or (
+    SOURCE_WEB_ROOT if SOURCE_WEB_ROOT.is_dir() else INSTALLED_WEB_ROOT
+))
 STATIC = WEB_ROOT / "static"
 HUB = HOME / ".local/bin/claude-hub"
 STATE = HOME / ".local/bin/ai-hub-state.py"
 RESTORE = HOME / ".local/bin/ai-hub-restore.py"
 REGISTRY = HOME / ".local/bin/ai-hub-registry.py"
 TOKEN_FILE = Path(os.environ.get("AI_CENTRAL_TOKEN_FILE", HOME / ".config/ai-central/web-token"))
+STATE_CACHE = Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")) / "claude-hub" / "state.json"
 NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 app = FastAPI(title="AI Central", docs_url=None, redoc_url=None, openapi_url=None)
@@ -40,6 +46,26 @@ def run(command: list[str], timeout: float = 15, env: dict | None = None) -> sub
         return subprocess.run(command, text=True, capture_output=True, check=False, timeout=timeout, env=env)
     except (OSError, subprocess.SubprocessError) as exc:
         return subprocess.CompletedProcess(command, 1, "", str(exc))
+
+
+def state_payload(max_age: int = 15) -> dict:
+    try:
+        if time.time() - STATE_CACHE.stat().st_mtime <= max_age:
+            cached = json.loads(STATE_CACHE.read_text(encoding="utf-8"))
+            if isinstance(cached, dict) and isinstance(cached.get("sessions"), list):
+                return cached
+    except (OSError, json.JSONDecodeError):
+        pass
+    result = run([str(STATE), "--cached", "--max-age", str(max_age)], 20)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "Monitor indisponível")
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Estado inválido") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("sessions"), list):
+        raise RuntimeError("Estado inválido")
+    return payload
 
 
 def access_token() -> str:
@@ -146,13 +172,10 @@ async def health():
 @app.get("/api/status")
 async def status(request: Request):
     require_http(request)
-    result = await asyncio.to_thread(run, [str(STATE)], 20)
-    if result.returncode != 0:
-        raise HTTPException(status_code=503, detail=result.stderr.strip() or "Monitor indisponível")
     try:
-        return JSONResponse(json.loads(result.stdout))
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=503, detail="Estado inválido") from exc
+        return JSONResponse(await asyncio.to_thread(state_payload, 15))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/api/registry")
@@ -341,6 +364,8 @@ def main() -> int:
     if args.print_url:
         print(f"{public_base_url(args.port)}/#token={access_token()}")
         return 0
+    if args.host == "tailscale":
+        args.host = tailscale_ipv4()
     import uvicorn
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=False)

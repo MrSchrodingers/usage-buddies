@@ -44,7 +44,7 @@ def test_health_and_static_shell_are_available(tmp_path):
 
 def test_status_requires_constant_time_token_check(tmp_path, monkeypatch):
     server = load_server(tmp_path)
-    monkeypatch.setattr(server, "run", lambda *_args, **_kwargs: __import__("subprocess").CompletedProcess([], 0, json.dumps({"sessions": []}), ""))
+    monkeypatch.setattr(server, "state_payload", lambda *_args, **_kwargs: {"sessions": []})
     async def direct(function, *args):
         return function(*args)
     monkeypatch.setattr(server.asyncio, "to_thread", direct)
@@ -75,3 +75,19 @@ def test_launch_rejects_missing_directory_before_invoking_hub(tmp_path, monkeypa
         asyncio.run(server.launch(payload, FakeRequest(token)))
     assert denied.value.status_code == 400
     assert not invoked
+
+
+def test_status_reuses_the_monitor_cache(tmp_path, monkeypatch):
+    server = load_server(tmp_path)
+    token = server.access_token()
+    cache = tmp_path / "state.json"
+    cache.write_text(json.dumps({"sessions": [{"name": "cached"}]}))
+
+    async def direct(function, *args):
+        return function(*args)
+
+    monkeypatch.setattr(server, "STATE_CACHE", cache)
+    monkeypatch.setattr(server, "run", lambda *_args, **_kwargs: pytest.fail("fresh cache must avoid a subprocess"))
+    monkeypatch.setattr(server.asyncio, "to_thread", direct)
+    response = asyncio.run(server.status(FakeRequest(token)))
+    assert json.loads(response.body) == {"sessions": [{"name": "cached"}]}

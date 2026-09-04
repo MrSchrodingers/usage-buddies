@@ -23,6 +23,7 @@ Usage:
   claude-hub worktree-codex <name> [repository] [branch]
   claude-hub wizard <claude|codex|resume-claude|resume-codex|worktree>
   claude-hub status
+  claude-hub doctor
   claude-hub web
   claude-hub gui
   claude-hub list
@@ -68,10 +69,13 @@ ensure_hub() {
     tmux new-session -d -t "=$HUB_SESSION" -s "$MOBILE_SESSION"
   fi
 
-  # A full-screen TUI has one shared character grid.  When the PC and phone
-  # watch the same window, render for the smaller client so the phone receives
-  # reflowed text instead of a cropped slice of the desktop-sized grid.
-  tmux set-option -g window-size smallest >/dev/null
+  # A full-screen TUI has one shared character grid.  `latest` follows the
+  # client that was most recently active: Claude reflows for the phone while it
+  # is being used, then expands again as soon as the Konsole becomes active.
+  # `smallest` avoids mobile cropping but leaves a desktop-sized field of dots;
+  # `largest` does the inverse and crops the phone.
+  tmux set-option -g window-size latest >/dev/null
+  tmux set-option -g focus-events on >/dev/null
 
   while IFS='|' read -r name directory; do
     if [[ -d "$directory" ]] && ! tmux list-windows -t "$HUB_SESSION" -F '#W' | grep -Fxq -- "$name"; then
@@ -420,6 +424,66 @@ dashboard() {
   read -r
 }
 
+doctor() {
+  local failures=0 output="" tailscale_ip="" service state
+
+  printf '\033[1;36mAI CENTRAL · DIAGNÓSTICO\033[0m\n\n'
+  for command in tmux ssh tailscale python3; do
+    if command -v "$command" >/dev/null 2>&1; then
+      printf '\033[1;32mOK\033[0m   %-18s %s\n' "$command" "$(command -v "$command")"
+    else
+      printf '\033[1;31mFALHA\033[0m %-18s não encontrado\n' "$command"
+      failures=$((failures + 1))
+    fi
+  done
+
+  if has_session "$HUB_SESSION"; then
+    printf '\033[1;32mOK\033[0m   %-18s %s janelas · tamanho %s\n' \
+      tmux "$(tmux list-windows -t "=$HUB_SESSION" -F '#W' | wc -l)" \
+      "$(tmux show-options -gv window-size 2>/dev/null || printf '?')"
+    tmux list-clients -F '#{client_session} #{client_width}x#{client_height} #{client_flags}' 2>/dev/null | \
+      sed 's/^/       tela: /'
+  else
+    printf '\033[1;31mFALHA\033[0m %-18s sessão ausente\n' tmux
+    failures=$((failures + 1))
+  fi
+
+  tailscale_ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
+  if [[ -n "$tailscale_ip" ]]; then
+    printf '\033[1;32mOK\033[0m   %-18s %s\n' tailscale "$tailscale_ip"
+  else
+    printf '\033[1;31mFALHA\033[0m %-18s sem IPv4 ativo\n' tailscale
+    failures=$((failures + 1))
+  fi
+
+  if command -v systemctl >/dev/null 2>&1; then
+    for service in ai-central-web.service ai-hub-monitor.service; do
+      state="$(systemctl --user is-active "$service" 2>/dev/null || true)"
+      if [[ "$state" == "active" ]]; then
+        printf '\033[1;32mOK\033[0m   %-18s ativo\n' "$service"
+      else
+        printf '\033[1;33mAVISO\033[0m %-18s %s\n' "$service" "${state:-ausente}"
+      fi
+    done
+  fi
+
+  if [[ -x "$HOME/.local/bin/ai-hub-state.py" ]] && \
+     output="$(timeout 20s "$HOME/.local/bin/ai-hub-state.py" 2>/dev/null)" && [[ -n "$output" ]]; then
+    printf '\033[1;32mOK\033[0m   %-18s snapshot íntegro\n' monitor
+  else
+    printf '\033[1;31mFALHA\033[0m %-18s snapshot indisponível\n' monitor
+    failures=$((failures + 1))
+  fi
+
+  printf '\n'
+  if [[ "$failures" -eq 0 ]]; then
+    printf '\033[1;32mCentral operacional.\033[0m Nenhum agente foi alterado.\n'
+  else
+    printf '\033[1;31m%s falha(s) bloqueante(s).\033[0m Execute novamente após corrigir.\n' "$failures"
+  fi
+  return "$failures"
+}
+
 web_access() {
   local url
 
@@ -582,6 +646,10 @@ case "${1:-}" in
   status)
     [[ $# -eq 1 ]] || { usage >&2; exit 2; }
     "$HOME/.local/bin/ai-hub-state.py" --text
+    ;;
+  doctor)
+    [[ $# -eq 1 ]] || { usage >&2; exit 2; }
+    doctor
     ;;
   web)
     [[ $# -eq 1 ]] || { usage >&2; exit 2; }

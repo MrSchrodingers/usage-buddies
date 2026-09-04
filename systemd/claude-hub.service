@@ -1,0 +1,11 @@
+[Unit]
+Description=Persistent synchronized tmux hub for Claude Code and Codex
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/claude-hub init
+RemainAfterExit=yes
+
+[Install]
+WantedBy=default.target

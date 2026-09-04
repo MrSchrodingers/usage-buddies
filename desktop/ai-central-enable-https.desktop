@@ -2,7 +2,7 @@
 Type=Application
 Name=AI Central · Ativar HTTPS privado
 Comment=Autorizar o Tailscale Serve para PWA e notificações no celular
-Exec=/usr/bin/konsole --separate -p tabtitle=AI-Central-HTTPS -e /home/ti/.local/bin/ai-central-enable-https.sh
+Exec=/bin/sh -lc "exec /usr/bin/konsole --separate -p tabtitle=AI-Central-HTTPS -e $HOME/.local/bin/ai-central-enable-https.sh"
 Icon=security-high
 Terminal=false
 Categories=Development;

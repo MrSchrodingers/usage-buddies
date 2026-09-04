@@ -1,0 +1,49 @@
+#!/data/data/com.termux/files/usr/bin/bash
+
+# Resilient launcher for the synchronized tmux hub. A dead mobile connection
+# must become visibly offline quickly instead of leaving a frozen menu behind.
+SSH_CONFIG="$HOME/.config/ai-central/ssh-config"
+failures=0
+
+termux-wake-lock >/dev/null 2>&1 || true
+trap 'termux-wake-unlock >/dev/null 2>&1 || true' EXIT
+
+wake_tailscale() {
+    # Android occasionally keeps the VPN icon while the userspace tunnel is no
+    # longer exchanging packets. Opening Tailscale once lets Android wake it;
+    # return to Termux immediately afterwards. Both calls are best-effort.
+    /system/bin/am start -n com.tailscale.ipn/.MainActivity >/dev/null 2>&1 || true
+    sleep 2
+    /system/bin/am start -n com.termux/.app.TermuxActivity >/dev/null 2>&1 || true
+}
+
+while true; do
+    clear
+    printf '\033[1;36mAI CENTRAL\033[0m\n'
+    printf '\033[2mPC + celular · tmux compartilhado\033[0m\n\n'
+    printf 'Conectando ao PC...\n'
+    started_at="$(date +%s)"
+    ssh -F "$SSH_CONFIG" pc-hub
+    connection_status=$?
+    connected_for=$(( $(date +%s) - started_at ))
+
+    if [ "$connection_status" -eq 0 ]; then
+        exit 0
+    fi
+    if [ "$connected_for" -ge 15 ]; then
+        failures=0
+    fi
+    failures=$((failures + 1))
+
+    clear
+    printf '\033[1;33mAI CENTRAL · OFFLINE\033[0m\n\n'
+    printf 'Conexao interrompida (codigo %s).\n' "$connection_status"
+    printf 'O menu anterior nao esta ativo. Reconectando...\n'
+
+    if [ "$failures" -ge 3 ]; then
+        printf '\nAcordando o Tailscale...\n'
+        wake_tailscale
+        failures=0
+    fi
+    sleep 1
+done

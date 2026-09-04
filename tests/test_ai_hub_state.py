@@ -115,3 +115,16 @@ def test_new_session_and_idle_transition_are_announced(hub, monkeypatch):
     hub.notify_transitions(data([{**original, "state": "idle"}, added]))
 
     assert [call[0].split(": ")[-1] for call in fired] == ["conectado", "parado"]
+
+
+def test_snapshot_cache_is_atomic_private_and_age_limited(hub, monkeypatch, tmp_path):
+    cache = tmp_path / "cache" / "state.json"
+    monkeypatch.setattr(hub, "STATE_CACHE", cache)
+    payload = {"sessions": [{"name": "api"}], "updated": "now"}
+
+    hub.write_snapshot_cache(payload)
+
+    assert hub.cached_snapshot(15) == payload
+    assert cache.stat().st_mode & 0o777 == 0o600
+    monkeypatch.setattr(hub.time, "time", lambda: cache.stat().st_mtime + 20)
+    assert hub.cached_snapshot(15) is None

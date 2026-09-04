@@ -6,7 +6,8 @@ const $$ = selector => [...document.querySelectorAll(selector)];
 const state = {
   token: '', snapshot: null, previous: new Map(), firstSnapshot: true,
   socket: null, terminal: null, fit: null, selected: '', reconnectDelay: 800,
-  launchMode: 'new', ctrlArmed: false, installPrompt: null
+  launchMode: 'new', ctrlArmed: false, installPrompt: null,
+  statusTimer: null, statusRefreshing: false
 };
 
 function escapeHtml(value) {
@@ -159,13 +160,26 @@ function renderSnapshot(snapshot) {
 }
 
 async function refreshStatus() {
+  if (state.statusRefreshing) return;
+  state.statusRefreshing = true;
   try {
     renderSnapshot(await api('/api/status'));
   } catch (error) {
     $('#connectionDot').className = 'connection-dot offline';
     $('#connectionText').textContent = 'Reconectando';
     $('#updatedAt').textContent = error.message;
+  } finally {
+    state.statusRefreshing = false;
   }
+}
+
+function scheduleStatusRefresh(immediate = false) {
+  clearTimeout(state.statusTimer);
+  const delay = immediate ? 0 : (document.hidden ? 30000 : 5000);
+  state.statusTimer = setTimeout(async () => {
+    await refreshStatus();
+    scheduleStatusRefresh();
+  }, delay);
 }
 
 function setupTerminal() {
@@ -339,6 +353,7 @@ function bindEvents() {
   addEventListener('beforeinstallprompt', event => { event.preventDefault(); state.installPrompt = event; $('#installButton').classList.remove('hidden'); });
   $('#installButton').addEventListener('click', async () => { await state.installPrompt?.prompt(); state.installPrompt = null; $('#installButton').classList.add('hidden'); });
   document.addEventListener('fullscreenchange', () => setTimeout(fitTerminal, 120));
+  document.addEventListener('visibilitychange', () => scheduleStatusRefresh(!document.hidden));
 }
 
 async function boot() {
@@ -347,7 +362,7 @@ async function boot() {
   if (!state.token) { $('#pairing').classList.remove('hidden'); return; }
   setupTerminal();
   await refreshStatus();
-  setInterval(refreshStatus, 5000);
+  scheduleStatusRefresh();
   if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
 }
 
